@@ -1,77 +1,152 @@
 # Hermes Coach
 
-A second model for the main Hermes agent: consult it, let it review every turn,
-gate completion on its verdict, or use it as a typed tiebreaker. Works in the
-classic CLI and the Desktop app, with settings on the Desktop page.
+A second model for the main Hermes agent. The agent can ask it for advice
+mid-task, ask for a plan review before starting, or hand it a finished piece of
+work; two optional modes let it review a turn automatically or gate the agent's
+"done" claim.
 
-## Modes
+Built and verified against Hermes Agent 0.22.7 on Linux.
 
-| Mode | Toggle | Default | Trigger |
+## What it does
+
+| Mode | Default | Trigger | What you get |
 |---|---|---|---|
-| Consult | always on | on | the agent calls `coach_ask` |
-| Active | `active_enabled` | off | `post_llm_call`, per cadence |
-| Review | `review_enabled` | on | `pre_verify`, edit turns only |
-| Decide | `decide_enabled` | off until a backend is set | the agent calls `coach_decide` |
+| Consult | on | the agent calls `coach_ask` | advice on demand; nothing is spent until it is called |
+| Active | off | after each turn, per cadence | a review of the turn that just finished |
+| Review | on | the agent is about to finish a turn that edited files | a bounded diff review; it may send the agent back to work once |
+| Decide | off | the agent calls `coach_decide` | a typed choice with a confidence, not prose |
 
-Delivery of Active advice is a setting: `ambient` (card now, the model sees it
-next turn, no extra call), `corrective` (a new turn now), or `severity`
-(blockers corrective, everything else ambient).
+Every mode uses one shared model unless you give it its own.
+
+## How advice reaches you
+
+- `severity` (default): blockers start a turn so the agent can fix them; notes
+  and concerns become a card and reach the model at the start of its next turn.
+- `ambient`: a card now, and the model sees the note next turn. No extra call.
+- `corrective`: every note starts a turn.
 
 ## Install
 
 ```bash
 ln -sfn /path/to/Hermes-Coach ~/.hermes/plugins/coach
 hermes plugins enable coach
-hermes plugins doctor ~/.hermes/plugins/coach
+hermes plugins doctor .
 ```
 
-The Desktop half is opt-in: open Settings → Plugins → Coach and toggle it on.
+`doctor` should end with `OK` and `registrations: 2 tool(s), 7 hook(s)`.
+
+The Desktop half is opt-in. Enable it in Settings → Plugins → Coach, then use
+⌘K → **Reload desktop plugins** if the page does not appear.
 
 ## First run
 
-A fresh install is deliberately unconfigured. Nothing calls a model until you
-choose one:
+A fresh install is deliberately unconfigured: no model is called until you pick
+one.
 
-1. Settings → Plugins → Coach → **Models**, pick a coach model (the same
-   catalog as the main chat picker).
-2. If you use per-mode models, press **Grant** on the permissions row so the
-   plugin may pass its own provider/model overrides.
-3. Optionally edit guidance: `COACH.md` per project, plus a short global file.
+1. Settings → Plugins → Coach → **Models**, choose the shared coach model.
+2. Choose a model that differs from your main one. The plugin refuses a coach
+   running the primary model, so the second opinion is not the same blind spot.
+3. If you set a per-mode model, press **Grant** on the Status tab (CLI:
+   `/coach grant`) so the plugin may pass its own provider and model.
+4. Optional: **Guidance** writes `COACH.md` for the current project, or a short
+   global file applied everywhere.
 
-In the CLI: `/coach model`, `/coach status`, `/coach active on`, `/coach review
-off`, `/coach decide on`, `/coach guidance`, `/coach pending`, `/coach send`.
+CLI equivalent for step 1: `/coach model`.
+
+## CLI
+
+| Command | Effect |
+|---|---|
+| `/coach status` | model, modes, spend, pending notes |
+| `/coach active on\|off` | per-turn review |
+| `/coach review on\|off` | completion review |
+| `/coach decide on\|off` | the decide tool |
+| `/coach model [mode]` | show or set a model |
+| `/coach set <key> <value>` | any setting by name |
+| `/coach guidance` | both guidance paths and whether they exist |
+| `/coach pending`, `/coach send` | list held advice, release it now |
+| `/coach pause` | pause background reviews for this session |
+| `/coach grant` | write the model-override permission |
 
 ## Settings
 
-Every key is declared in `plugin.yaml` with the description the settings page
-renders. Defaults live in `coach/settings.py`; a test fails if the two drift.
-Advanced knobs (worker deadline, ledger caps, `skip_same_model`,
-`allow_in_subagents`, `debug_log_decisions`) stay in `config.yaml` under
-`plugins.entries.coach.settings`.
+The Coach page has six tabs: **Models**, **Reviews**, **Delivery**, **Budget**,
+**Guidance**, **Status**. Each control explains itself there, and the defaults
+live in `coach/settings.py`.
 
-## State
-
-`$HERMES_HOME/coach/` holds per-session ledgers, pending notes, spend and the
-global guidance file. Project guidance is `<project>/COACH.md`. Session files
-are pruned to the newest 20.
+Eight tuning constants stay in `config.yaml` under
+`plugins.entries.coach.settings`: `worker_timeout_s`,
+`ledger_max_tool_result_chars`, `ledger_max_recent_turns`,
+`ledger_note_max_chars`, `ledger_max_tokens`, `skip_same_model`,
+`allow_in_subagents`, `debug_log_decisions`.
 
 ## Decide
 
-`coach_decide` returns a typed verdict with a confidence gate. Backends:
-`jev-openrouter` (default; uses `OPENROUTER_API_KEY`),
-`jev-direct` (uses `TYPESAFE_API_KEY`), or `chat-model` (any chat model via a
-JSON schema; weaker confidence).
+`coach_decide` returns `{decision, confidence, probabilities, gate, rationale}`.
+`gate` is `act` at or above the confidence threshold and `escalate` below it; an
+unrecognised answer also escalates.
 
-## Tests
+- `jev-openrouter` (default): `typesafe/jev-1.14` through OpenRouter, billed to
+  `OPENROUTER_API_KEY`.
+- `jev-direct`: TypeSafe's API, needs `TYPESAFE_API_KEY` in `~/.hermes/.env`.
+- `chat-model`: any chat model that returns JSON; its confidence is
+  self-reported and less reliable.
+
+## What it reads and sends
+
+The coach has no tools: it cannot read files or run commands. The plugin
+assembles what it sees — a bounded turn ledger, the diff of the files the agent
+changed for a completion review, and your guidance files. Calls go through
+Hermes' own model routing, so credentials stay in Hermes. Spend is priced from
+real usage and capped by the session budget.
+
+State lives in `$HERMES_HOME/coach/`: one JSON file per session (atomic,
+`0600`), a JSONL review log, and the global guidance file. Sessions are pruned
+to the newest twenty.
+
+## Troubleshooting
+
+**The tools answer "no coach model configured".** Expected until a model is
+chosen. Open Settings → Plugins → Coach.
+
+**No Coach page in Settings.** The Desktop half is off. Enable it in
+Settings → Plugins, then reload desktop plugins.
+
+**The model picker is empty.** The host returned no providers; authenticate one
+in Hermes first.
+
+**A per-mode model fails while the shared model works.** Grant the
+model-override permission on the Status tab, or run `/coach grant`.
+
+**Active review never fires.** It is off by default, and the default cadence
+ignores turns that made no tool calls.
+
+**Completion review never fires.** It only runs on turns that edited files.
+
+## Limitations
+
+- Verified on Linux; macOS and Windows are untested, though the code avoids
+  shell-specific calls and ships a PowerShell test runner.
+- Messaging surfaces (Telegram, Discord, …) never receive corrective turns;
+  advice stays ambient there.
+- The completion gate reviews a diff, not a plan, a document, or a chat answer.
+- One coach at a time: no panel and no vote.
+- Not published to the Hermes plugin catalog; install from a checkout.
+
+## Development
 
 ```bash
-./scripts/test.sh
+./scripts/test.sh                       # pytest + the desktop page check
+./scripts/test.sh tests/test_ledger.py  # one file
+node scripts/check-desktop-page.mjs     # page only
+hermes plugins doctor .                 # host contract
 ```
 
-Runs pytest against the Hermes venv interpreter through `uv`, so nothing is
-installed into the runtime.
+`COACH_PYTHON` overrides the interpreter; `SKIP_DESKTOP_CHECK=1` skips the node
+check. On Windows use `scripts/test.ps1`.
 
-## Design and plan
+Layout: `coach/` (pure Python core), `dashboard/plugin_api.py` (settings API),
+`desktop/plugin.js` (settings page), `tests/`, `scripts/`.
 
-- `docs/superpowers/specs/2026-11-05-hermes-coach-design.md`
-- `docs/superpowers/plans/2026-11-05-hermes-coach.md`
+- Design: [docs/superpowers/specs/2026-11-05-hermes-coach-design.md](docs/superpowers/specs/2026-11-05-hermes-coach-design.md)
+- Plan: [docs/superpowers/plans/2026-11-05-hermes-coach.md](docs/superpowers/plans/2026-11-05-hermes-coach.md)
