@@ -4,6 +4,9 @@ description: "Four modes: Consult on demand, Active per-turn review, Review befo
 author: Nous user
 kind: standalone
 
+provides_tools:
+  - coach_ask
+
 provides_hooks:
   - post_llm_call
   - pre_llm_call
@@ -16,19 +19,19 @@ provides_hooks:
 config_schema:
   # Models
   coach_model:
-    type: json
+    type: dict
     default: null
     description: "Model every mode uses unless it has its own. Until one is chosen the plugin is unconfigured: tools say so and Review stays quiet. Same catalog as the main chat picker."
   active_model:
-    type: json
+    type: dict
     default: null
     description: "Override for Active. This mode runs every turn, so a cheap fast model here saves the most."
   review_model:
-    type: json
+    type: dict
     default: null
     description: "Override for Review. It gates completion, so this is where the strongest model earns its cost."
   consult_model:
-    type: json
+    type: dict
     default: null
     description: "Override for Consult."
   max_reply_tokens:

@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import logging
 
-from coach.plugin import ASK_DESCRIPTION, ASK_SCHEMA, build_plugin
-
 log = logging.getLogger(__name__)
 
 
 def register(ctx):
+    from .coach.plugin import ASK_DESCRIPTION, ASK_SCHEMA, build_plugin
+
     try:
         plugin = build_plugin(ctx)
     except Exception:

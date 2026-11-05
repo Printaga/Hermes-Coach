@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from coach.state import SessionState
+from .state import SessionState
 
 __all__ = ["append_turn", "build_messages", "estimate_tokens", "tool_card"]
 

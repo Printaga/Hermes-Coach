@@ -15,11 +15,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
-from coach.advisor import Coach
-from coach.guidance import Guidance
-from coach.ledger import append_turn, build_messages
-from coach.settings import DEFAULTS, ModelChoice, Settings, load_settings
-from coach.state import Store
+from .advisor import Coach
+from .guidance import Guidance
+from .ledger import append_turn, build_messages
+from .settings import DEFAULTS, ModelChoice, Settings, load_settings
+from .state import Store
 
 __all__ = ["ASK_DESCRIPTION", "ASK_SCHEMA", "CoachPlugin", "build_plugin"]
 
