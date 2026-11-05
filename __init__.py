@@ -43,6 +43,7 @@ def register(ctx):
         return
 
     hooks = (
+        ("pre_verify", plugin.on_pre_verify),
         ("post_tool_call", plugin.on_post_tool_call),
         ("post_llm_call", plugin.on_post_llm_call),
         ("pre_llm_call", plugin.on_pre_llm_call),
