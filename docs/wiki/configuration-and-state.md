@@ -1,0 +1,70 @@
+# Configuration and session state
+
+Two modules answer different questions: `coach/settings.py` turns raw config
+into a validated, immutable `Settings`; `coach/state.py` remembers what happened
+in each session so reviews have continuity and spend has a ledger.
+
+## Settings
+
+```mermaid
+flowchart LR
+  A[config.yaml plugins.entries.coach.settings] --> B[load_settings]
+  B --> C{coerce per key}
+  C -->|bad value| D[default]
+  C -->|unknown choice| D
+  C --> E[clamp minimums]
+  E --> F[Settings frozen dataclass]
+  F --> G[model_for mode]
+  F --> H[same_as_primary]
+  F --> I[is_configured]
+```
+
+- **33 flat snake_case keys.** Dots are reserved: the host reads a dotted key as
+  a path, so `active.enabled` would nest instead of naming one setting.
+- **Defaults live only here.** A checker script asserts the Desktop page has a
+  control for every key, which is the drift guard that replaced the removed
+  manifest schema.
+- **Bad input degrades, never raises.** `_as_bool/_as_int/_as_float/_as_text/
+  _as_choice` fall back per value; `_as_float` rejects NaN and infinity;
+  `_as_model` requires string `provider` and `model`.
+- **Minimums are applied after validation.** `ledger_max_tokens` ≥ 500,
+  `max_reply_tokens` ≥ 80, call caps ≥ 1, `worker_timeout_s` ≥ 5, budgets ≥ 0.
+- **`model_for(mode)`** returns the mode override or the shared model; every
+  mode resolves through it, so "inherit" needs no special case.
+- **`same_as_primary`** compares model *and* provider, case-insensitively. It is
+  the guard that stops the coach from reviewing the primary model's own work.
+
+## Session state
+
+```mermaid
+flowchart TD
+  A[hook or tool call] --> B[Store.load session_id]
+  B --> C[SessionState]
+  C --> D[edit ledger, pending, spend, calls]
+  D --> E[Store.save]
+  E --> F[tmp file 0600]
+  F --> G[os.replace atomic]
+  G --> H[sessions/id.json]
+```
+
+`SessionState` carries the ledger, the coach's own session note, pending advice,
+per-turn call counters, holds used, spend, the last error, and `updated_at`.
+
+`Store` is deliberately defensive:
+
+| Behaviour | Reason |
+|---|---|
+| Percent-encoded file name + 8-char SHA-1 suffix | Session ids contain `/` and differ only by case on some filesystems; a lossy sanitiser made two sessions share one file |
+| `os.replace` from a same-directory temp file, mode `0600` | A crash mid-write never leaves a half-parsed state |
+| Corrupt or missing file ⇒ fresh state with `last_error` | A broken file must not break a turn |
+| `prune()` ordered by file mtime | Content timestamps are attacker- or bug-controlled; the filesystem is not |
+| Cap of 20 sessions | Bounded disk use without a compaction pass |
+| `sessions_on_disk()` returns stored ids | Callers see the real session id, not the encoded file stem |
+
+`save()` also stamps `updated_at` and re-applies `0700` to an existing root,
+because `mode=` only affects directory creation.
+
+## Related pages
+
+- [Prompt assembly](prompt-assembly.md) — how ledger entries become a prompt.
+- [Plugin runtime](plugin-runtime.md) — who calls `load`/`save`, and when.

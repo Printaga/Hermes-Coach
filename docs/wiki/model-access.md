@@ -1,0 +1,68 @@
+# Model access: coach client and decisions
+
+`coach/advisor.py` makes every chat call; `coach/jev.py` makes typed decisions.
+Both are fail-open: a failure returns a result object with an error, never an
+exception that could reach a turn.
+
+## The coach client
+
+```mermaid
+sequenceDiagram
+  participant P as Plugin
+  participant C as Coach
+  participant H as Hermes ctx.llm
+  participant U as usage_pricing
+  P->>C: ask(messages, mode, structured, timeout)
+  C->>C: check(mode)
+  alt unconfigured or same model
+    C-->>P: CoachReply(error)
+  else allowed
+    C->>H: complete / complete_structured(provider, model, timeout)
+    H-->>C: text, parsed, provider, model, usage
+    C->>C: compare reported identity to requested
+    C->>U: price usage
+    C-->>P: CoachReply(finding, cost_usd)
+  end
+```
+
+| Guard | Behaviour |
+|---|---|
+| `check(mode)` | `unconfigured` with no shared model; `same_model` when the resolved pair equals the primary (unless `skip_same_model` is off) |
+| Provider failure | `provider_error: <ExceptionType>`; the turn continues |
+| Fallback | If the host reports a different provider or model than requested, the reply is discarded as `fallback_mismatch`, so a silent fallback cannot make the coach review the primary model's work |
+| Pricing | Injected `cost_fn` in tests; otherwise `agent.usage_pricing.estimate_usage_cost`, guarded to `0.0` |
+| Deadline | Caller-supplied: 45 s for Active/Consult, 20 s under the Review hook (the host bounds hooks at 30 s) |
+
+The model identity check is strict on purpose: Hermes fills `provider` and
+`model` on every plugin result, so an empty or differing pair is abnormal.
+
+## Decisions
+
+```mermaid
+flowchart LR
+  A[coach_decide args] --> B[validate question + 2-6 distinct options]
+  B --> C{backend}
+  C -->|jev-openrouter| D[OpenRouter decisions API]
+  C -->|jev-direct| E[TypeSafe System One API]
+  C -->|chat-model| F[Coach.ask structured]
+  D --> G[parse answers + verdicts]
+  E --> G
+  F --> G
+  G --> H[clamp confidence, gate]
+  H --> I[Decision]
+```
+
+- Endpoints: `https://openrouter.ai/api/alpha/decisions` and
+  `https://api.typesafe.ai/v1/systemone`, JSON POST with a 15 s timeout.
+- Confidence is clamped to 0–1; NaN or infinity becomes the default.
+- An unknown or missing `gate` becomes **`escalate`**, never `act`: the
+  tiebreaker withholds action unless it is sure.
+- A choice below `decide_min_confidence` also escalates, even if the model said
+  `act`.
+- Every failure path returns `gate="error"` with a one-line reason, including a
+  malformed response body and an empty API key.
+
+## Related pages
+
+- [Prompt assembly](prompt-assembly.md) — the messages both clients receive.
+- [Plugin runtime](plugin-runtime.md) — budget, call caps, and who invokes them.

@@ -1,0 +1,56 @@
+# Settings API
+
+`dashboard/plugin_api.py` is the only backend the Desktop page talks to. It
+reads and writes the plugin's config entry, the two guidance files, and the
+model-override permission. The module is also importable without a running
+gateway through `app_for_tests()`.
+
+## Routes
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/status` | Configured state, resolved models, modes, spend, pending notes, permissions, last error |
+| `GET` | `/config` | Current values, defaults, enum choices, permission flags |
+| `PUT` | `/config` | Save one or more schema keys; rejects unknown keys and the secret |
+| `GET` | `/guidance` | Read one file (`scope=global\|project`, `cwd`) |
+| `PUT` | `/guidance` | Replace one file after validating its target |
+| `POST` | `/permissions/grant` | Set `allow_provider_override` and `allow_model_override`, return new status |
+
+```mermaid
+flowchart LR
+  A[Desktop page] -->|ctx.rest| B[plugin_api router]
+  B --> C{route}
+  C -->|config| D[plugins.entries.coach.settings]
+  C -->|guidance| E[guidance.md or COACH.md]
+  C -->|grant| F[plugins.entries.coach.llm]
+  D --> G[load_config / save_config]
+  F --> G
+  E --> H[O_NOFOLLOW write, parent check]
+```
+
+## Testability seam
+
+`app_for_tests(home, config)` builds a FastAPI app with `app.state.home` and
+`app.state.config` in memory. Every route checks `request.app.state.config`
+first, so tests exercise real request/response shapes without touching the
+user's `config.yaml`. Production falls through to `_load_host_config()` /
+`_save_host_config()`.
+
+## Safety rules encoded here
+
+- **Writes are explicit.** `PUT /config` accepts only keys present in
+  `DEFAULTS`, rejects `decide_typesafe_api_key` (it belongs in `.env`), and
+  refuses an empty payload. A failed `save_config` is a 500, not a silent no-op.
+- **Project guidance is scoped.** A project path must already be recorded in
+  `$HERMES_HOME/coach/seen_cwds`; the parent is resolved and compared, and the
+  file is opened with `O_NOFOLLOW`. A symlink swap between check and write fails
+  instead of writing through it.
+- **Grant is a real write.** The permission route mutates the config entry and
+  surfaces a failed persist; it does not report success it did not achieve.
+- **Status is derived, never stored.** Spend and pending counts are summed from
+  session files each call, so the page cannot drift from the runtime.
+
+## Related pages
+
+- [Desktop settings page](desktop-settings.md) — the consumer of these routes.
+- [Configuration and state](configuration-and-state.md) — the values and files behind them.

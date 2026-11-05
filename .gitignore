@@ -28,3 +28,8 @@ htmlcov/
 
 # Generated review output
 /review.json
+
+# CodeWiki scratch
+.codewiki/
+docs/wiki/temp/
+docs/wiki/first_module_tree.json
