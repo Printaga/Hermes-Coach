@@ -74,3 +74,21 @@ def test_guidance_block_wraps_global_and_project_files(tmp_path):
     block = Guidance(root).system_block(str(project))
     assert block.startswith("<coach-guidance>") and block.endswith("</coach-guidance>")
     assert "Be blunt." in block and "Use tabs." in block
+
+
+def test_settings_saved_by_the_page_apply_without_a_reload(tmp_path):
+    raw = {}
+    p = CoachPlugin(llm=Llm(), store=Store(tmp_path), settings=load_settings({}),
+                    settings_reader=lambda: raw)
+    assert p.status()["configured"] is False
+    raw["coach_model"] = {"provider": "openrouter", "model": "x"}
+    assert p.status()["configured"] is True
+    assert json.loads(p.tool_ask({"question": "q"}))["ok"] is True
+
+
+def test_host_ids_reach_the_tool(tmp_path):
+    p = _plugin(tmp_path)
+    out = json.loads(p.tool_ask({"question": "q"}, session_id="s1", task_id="task-1"))
+    assert out["ok"] is True
+    state = p.store.load("s1")
+    assert state.calls.get("task-1") == 1

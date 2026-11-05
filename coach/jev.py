@@ -139,10 +139,15 @@ def _parse(
         )
 
     confidence = min(1.0, max(0.0, confidence))
-    gate = str(verdict.get("gate") or "").strip().lower()
-    if gate not in {"act", "escalate"}:
-        # An unrecognised gate withholds action rather than granting it.
+    reported = str(verdict.get("gate") or "").strip().lower()
+    if reported in {"act", "escalate"}:
+        gate = reported
+    elif reported:
+        # An explicit but unknown gate withholds action rather than granting it.
         gate = "escalate"
+    else:
+        # Jev omits the gate on some answers; the confidence is the signal.
+        gate = "act" if confidence >= min_confidence else "escalate"
     if confidence < min_confidence:
         gate = "escalate"
     rationale = str(

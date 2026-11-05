@@ -241,3 +241,22 @@ def test_hold_does_not_clobber_review_spend(tmp_path):
     )
     assert out and out["action"] == "continue"
     assert p.store.load("s").spend_usd == 0.25
+
+
+class SnapshotWorker:
+    def __init__(self, store, session_id):
+        self.store = store
+        self.session_id = session_id
+        self.ledger_at_submit = None
+
+    def submit(self, session_id, turn_id=""):
+        self.ledger_at_submit = len(self.store.load(self.session_id).ledger)
+        return True
+
+
+def test_turn_is_persisted_before_the_worker_starts(tmp_path):
+    p = _p(tmp_path)
+    p.worker = SnapshotWorker(p.store, "s")
+    _tool(p)
+    p.on_post_llm_call(**TURN)
+    assert p.worker.ledger_at_submit == 1

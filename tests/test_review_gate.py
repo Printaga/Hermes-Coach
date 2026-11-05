@@ -33,7 +33,7 @@ def _p(tmp_path, *, llm=None, **cfg):
     posted = []
     p = CoachPlugin(
         llm=llm or Llm(),
-        store=Store(tmp_path),
+        store=Store(tmp_path / "sessions"),
         settings=load_settings(base),
         post=posted.append,
     )
@@ -143,7 +143,7 @@ def test_evidence_uses_the_session_cwd(tmp_path):
     project.mkdir()
     p = CoachPlugin(
         llm=Llm(),
-        store=Store(tmp_path),
+        store=Store(tmp_path / "sessions"),
         settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
         cwd=lambda: str(project),
     )
@@ -152,3 +152,10 @@ def test_evidence_uses_the_session_cwd(tmp_path):
     p.review_now = lambda **kw: None
     p.on_pre_verify(**PAY)
     assert seen["cwd"] == str(project)
+
+
+def test_review_now_logs_one_line(tmp_path):
+    p = _p(tmp_path, llm=StructuredLlm(FINDING))
+    p.review_now(session_id="s", turn_id="t1", request="r", claim="c", evidence="e")
+    lines = (tmp_path / "logs" / "s.jsonl").read_text().splitlines()
+    assert len(lines) == 1 and '"severity": "blocker"' in lines[0]

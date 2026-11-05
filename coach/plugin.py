@@ -389,6 +389,7 @@ class CoachPlugin:
         cost_fn: Callable[[str, Any, str], float] | None = None,
         guidance: Guidance | None = None,
         set_setting: Callable[..., Any] | None = None,
+        settings_reader: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self.llm = llm
         self.store = store
@@ -401,6 +402,7 @@ class CoachPlugin:
         self.cwd = cwd if cwd is not None else (lambda: os.getcwd())
         self.clock = clock
         self.set_setting = set_setting
+        self.settings_reader = settings_reader
         self.guidance = guidance if guidance is not None else Guidance(_default_root())
         self.coach = Coach(
             llm,
@@ -414,6 +416,24 @@ class CoachPlugin:
         self._queued_lock = threading.Lock()
         self._turn_tools: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._paused = False
+
+    def refresh_settings(self) -> None:
+        """Re-read settings so a page change applies without a plugin reload.
+
+        The host builds the plugin once; the Desktop page writes config through
+        a separate process. Without this, tools and hooks keep the startup copy
+        and report "no coach model configured" until Hermes restarts.
+        """
+        reader = self.settings_reader
+        if reader is None:
+            return
+        try:
+            fresh = load_settings(reader())
+        except Exception:
+            return
+        if fresh != self.settings:
+            self.settings = fresh
+            self.coach.settings = fresh
 
     def on_subagent_start(
         self, payload: Mapping[str, Any] | None = None, **kw: Any
@@ -442,6 +462,7 @@ class CoachPlugin:
 
     def status(self) -> dict[str, Any]:
         """Report configuration, modes, and this session's spend."""
+        self.refresh_settings()
         state = self.store.load("current")
         return {
             "configured": self.settings.is_configured(),
@@ -464,6 +485,7 @@ class CoachPlugin:
 
     def command(self, raw: str) -> str:
         """Run one /coach subcommand; unknown input prints the help."""
+        self.refresh_settings()
         text = str(raw or "").strip()
         if text.startswith("/coach"):
             text = text[len("/coach") :].strip()
@@ -726,6 +748,7 @@ class CoachPlugin:
         self, payload: Mapping[str, Any] | None = None, **kw: Any
     ) -> dict[str, str] | None:
         """Return pending ambient notes once, dropping notes past their TTL."""
+        self.refresh_settings()
         data = _payload(payload, kw)
         session_id = str(data.get("session_id") or "current")
         state = self.store.load(session_id)
@@ -784,6 +807,7 @@ class CoachPlugin:
         self, payload: Mapping[str, Any] | None = None, **kw: Any
     ) -> None:
         """Snapshot a finished turn and queue one Active review when due."""
+        self.refresh_settings()
         data = _payload(payload, kw)
         session_id = str(data.get("session_id") or "current")
         turn_id = str(data.get("turn_id") or "current")
@@ -804,6 +828,10 @@ class CoachPlugin:
             _record_turn(state, turn)
             worker = getattr(self, "worker", None)
             due = worker is not None and self.should_review(state, turn, self.settings)
+            state.updated_at = self.clock()
+            # Persist before submitting: the worker loads the state itself, and
+            # a submit first means it can find no turn and drop the review.
+            self.store.save(state)
             if due:
                 key = (session_id, turn_id)
                 with self._queued_lock:
@@ -815,8 +843,6 @@ class CoachPlugin:
                         del self._queued[stale]
                     if key not in self._queued and worker.submit(session_id, turn_id):
                         self._queued[key] = None
-            state.updated_at = self.clock()
-            self.store.save(state)
         except Exception:
             pass
 
@@ -851,6 +877,7 @@ class CoachPlugin:
 
     def run_review(self, session_id: str, turn_id: str) -> None:
         """Run one Active review; every outcome is swallowed and recorded."""
+        self.refresh_settings()
         sid = str(session_id or "current")
         tid = str(turn_id or "current")
         state = None
@@ -942,6 +969,7 @@ class CoachPlugin:
             return None
 
     def _pre_verify(self, data: Mapping[str, Any]) -> dict[str, str] | None:
+        self.refresh_settings()
         if not self.settings.review_enabled or self._paused:
             return None
         paths = data.get("changed_paths")
@@ -1038,6 +1066,7 @@ class CoachPlugin:
             state.last_error = reply.error
             state.updated_at = self.clock()
             self.store.save(state)
+            self._log_review(session_id, turn_id, reply)
             if reply.error:
                 return None
             return reply.finding
@@ -1065,10 +1094,11 @@ class CoachPlugin:
         except Exception:
             return False
 
-    def tool_ask(self, args: dict) -> str:
+    def tool_ask(self, args: dict, **kw: Any) -> str:
         """Answer one consultation as a JSON string; never raise."""
+        self.refresh_settings()
         try:
-            return json.dumps(self._ask(args if isinstance(args, Mapping) else {}))
+            return json.dumps(self._ask(_with_host_ids(args, kw)))
         except Exception as exc:  # fail-open by contract
             return json.dumps(
                 _error(f"internal_error: {type(exc).__name__}"),
@@ -1157,11 +1187,12 @@ class CoachPlugin:
             "error": "",
         }
 
-    def tool_decide(self, args: dict) -> str:
+    def tool_decide(self, args: dict, **kw: Any) -> str:
         """Resolve one choice as a JSON string; never raise."""
+        self.refresh_settings()
         try:
             return json.dumps(
-                self._decide(args if isinstance(args, Mapping) else {})
+                self._decide(_with_host_ids(args, kw))
             )
         except Exception as exc:  # fail-open by contract
             return json.dumps(
@@ -1271,6 +1302,23 @@ class CoachPlugin:
         )
 
 
+def _with_host_ids(args: Any, kw: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge the dispatcher's ids into the tool args.
+
+    The dispatcher passes ``session_id`` and ``task_id`` as keyword arguments,
+    not inside ``args``. Without this the plugin keys every call on "current":
+    one shared state file, and a per-turn cap that never resets.
+    """
+    merged: dict[str, Any] = dict(args) if isinstance(args, Mapping) else {}
+    session = kw.get("session_id")
+    if session and not merged.get("session_id"):
+        merged["session_id"] = str(session)
+    task = kw.get("task_id")
+    if task and not merged.get("turn_id"):
+        merged["turn_id"] = str(task)
+    return merged
+
+
 def _default_root() -> Path:
     home = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
     return home / "coach"
@@ -1296,13 +1344,17 @@ def _primary_identity() -> tuple[str, str]:
 
 def build_plugin(ctx: Any) -> CoachPlugin:
     """Build the plugin from the host context and persisted config."""
-    raw: dict[str, Any] = {}
-    for key, default in DEFAULTS.items():
-        try:
-            raw[key] = ctx.get_config(key, default)
-        except Exception:
-            raw[key] = default
 
+    def read_settings() -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        for key, default in DEFAULTS.items():
+            try:
+                values[key] = ctx.get_config(key, default)
+            except Exception:
+                values[key] = default
+        return values
+
+    raw = read_settings()
     root = _default_root()
     primary_model, primary_provider = _primary_identity()
     plugin = CoachPlugin(
@@ -1322,6 +1374,7 @@ def build_plugin(ctx: Any) -> CoachPlugin:
         clock=time.time,
         guidance=Guidance(root),
         set_setting=getattr(ctx, "set_config", None),
+        settings_reader=read_settings,
     )
     plugin.worker = Worker(plugin.run_review)
     return plugin

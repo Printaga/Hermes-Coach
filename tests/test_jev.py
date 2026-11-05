@@ -125,3 +125,18 @@ def test_chat_model_maps_a_structured_choice():
     assert decision.cost_usd == 0.002
     assert chat.kw["structured"] is True
     assert chat.kw["schema"]["properties"]["choice"]["enum"] == ["a", "b"]
+
+
+def test_missing_gate_follows_confidence():
+    body = {"answers": {"path": {"choice": "a"}},
+            "verdicts": {"path": {"confidence": 0.9}}, "usage": {}}
+    d = decide(backend="jev-openrouter", question="q", options=["a", "b"],
+               state={}, api_key="k", min_confidence=0.6, http=lambda r, **k: Resp(body))
+    assert d.gate == "act"
+
+def test_unknown_gate_escalates():
+    body = {"answers": {"path": {"choice": "a"}},
+            "verdicts": {"path": {"gate": "maybe", "confidence": 0.9}}, "usage": {}}
+    d = decide(backend="jev-openrouter", question="q", options=["a", "b"],
+               state={}, api_key="k", http=lambda r, **k: Resp(body))
+    assert d.gate == "escalate"
