@@ -1,4 +1,4 @@
-"""The coach_ask tool, its guards, delivery, and plugin construction.
+"""The coach tools, their guards, delivery, and plugin construction.
 
 Every path through :meth:`CoachPlugin.tool_ask` returns a JSON string. Bad
 input, an unconfigured coach, a child session, an exhausted budget or a
@@ -25,12 +25,20 @@ from .delivery import format_ambient, format_card, format_corrective, route
 from .evidence import collect
 from .findings import Finding
 from .guidance import Guidance
+from .jev import decide
 from .ledger import append_turn, build_messages, tool_card
 from .settings import DEFAULTS, ModelChoice, Settings, load_settings
 from .state import Store
 from .worker import Worker
 
-__all__ = ["ASK_DESCRIPTION", "ASK_SCHEMA", "CoachPlugin", "build_plugin"]
+__all__ = [
+    "ASK_DESCRIPTION",
+    "ASK_SCHEMA",
+    "DECIDE_DESCRIPTION",
+    "DECIDE_SCHEMA",
+    "CoachPlugin",
+    "build_plugin",
+]
 
 ASK_SCHEMA = {
     "type": "object",
@@ -66,6 +74,8 @@ ASK_SCHEMA = {
 }
 
 _QUESTION_MAX = 4000
+_OPTIONS_MIN = 2
+_OPTIONS_MAX = 6
 _INTENTS = {"advice", "plan", "review"}
 _LOG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _CHILD_SURFACES = {"subagent", "delegate"}
@@ -89,6 +99,46 @@ _REVIEW_SYSTEM = (
 ASK_DESCRIPTION = (
     "Ask the coach for one independent second opinion about the current work. "
     "Returns JSON with advice, or an error explaining why it is unavailable."
+)
+
+DECIDE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "question": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": (
+                "The fork to resolve. Put the deciding facts in `state`, not "
+                "in the question alone."
+            ),
+        },
+        "options": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": _OPTIONS_MIN,
+            "maxItems": _OPTIONS_MAX,
+            "description": "The choices, verbatim. The model picks exactly one.",
+        },
+        "state": {
+            "type": "object",
+            "description": "Optional facts the decision should weigh.",
+        },
+        "turn_id": {
+            "type": "string",
+            "description": "Host turn id used to enforce the per-turn call cap.",
+        },
+        "session_id": {
+            "type": "string",
+            "description": "Host session id; child sessions are refused unless allowed.",
+        },
+    },
+    "required": ["question", "options"],
+    "additionalProperties": False,
+}
+
+DECIDE_DESCRIPTION = (
+    "Resolve one fork with a typed decision. Returns JSON with the chosen "
+    "option, confidence, a gate of act, escalate or error, and a rationale."
 )
 
 
@@ -774,6 +824,99 @@ class CoachPlugin:
             "cost_usd": reply.cost_usd,
             "spend_usd": state.spend_usd,
             "calls_this_turn": state.calls[turn_id],
+            "error": "",
+        }
+
+    def tool_decide(self, args: dict) -> str:
+        """Resolve one choice as a JSON string; never raise."""
+        try:
+            return json.dumps(
+                self._decide(args if isinstance(args, Mapping) else {})
+            )
+        except Exception as exc:  # fail-open by contract
+            return json.dumps(
+                _error(f"internal_error: {type(exc).__name__}"),
+                ensure_ascii=False,
+            )
+
+    def _decide(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        question = str(args.get("question") or "").strip()
+        if not question:
+            return _error("question_required")
+        if len(question) > _QUESTION_MAX:
+            return _error("question_too_long")
+
+        raw_options = args.get("options")
+        if not isinstance(raw_options, (list, tuple)):
+            return _error("options_required")
+        options = [str(option).strip() for option in raw_options]
+        if not _OPTIONS_MIN <= len(options) <= _OPTIONS_MAX:
+            return _error("options_count")
+        if any(not option for option in options) or len(set(options)) != len(options):
+            return _error("options_invalid")
+
+        if not self.settings.decide_enabled:
+            return _error("decide_disabled")
+
+        session_id = str(args.get("session_id") or "current")
+        if not self.settings.allow_in_subagents and self._is_child(session_id):
+            return _error("child_session")
+
+        state = self.store.load(session_id)
+        if (
+            self.settings.budget_on_exceed in {"soft", "hard"}
+            and state.spend_usd >= self.settings.budget_session_usd
+        ):
+            return _error("budget_exhausted")
+
+        turn_id = str(args.get("turn_id") or "current")
+        key = f"decide:{turn_id}"
+        used = state.calls.get(key, 0)
+        if used >= self.settings.decide_max_calls_per_turn:
+            return _error("call_cap")
+        state.calls[key] = used + 1
+
+        backend = self.settings.decide_backend
+        if backend == "jev-openrouter":
+            api_key = str(os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        elif backend == "jev-direct":
+            api_key = self.settings.decide_typesafe_api_key or str(
+                os.environ.get("TYPESAFE_API_KEY") or ""
+            ).strip()
+        else:
+            api_key = ""
+
+        context = args.get("state")
+        decision = decide(
+            backend=backend,
+            question=question,
+            options=options,
+            state=context if isinstance(context, Mapping) else {},
+            model=self.settings.decide_model,
+            api_key=api_key,
+            min_confidence=self.settings.decide_min_confidence,
+            chat=self.coach,
+        )
+        state.spend_usd = round(state.spend_usd + decision.cost_usd, 9)
+        state.updated_at = self.clock()
+        if decision.gate == "error":
+            state.last_error = decision.rationale
+            self.store.save(state)
+            return _error(decision.rationale, spend_usd=state.spend_usd)
+
+        state.last_error = ""
+        self.store.save(state)
+        return {
+            "ok": True,
+            "decision": decision.decision,
+            "confidence": decision.confidence,
+            "probabilities": decision.probabilities,
+            "gate": decision.gate,
+            "rationale": decision.rationale,
+            "cost_usd": decision.cost_usd,
+            "spend_usd": state.spend_usd,
+            "backend": backend,
+            "calls_this_turn": state.calls[key],
             "error": "",
         }
 

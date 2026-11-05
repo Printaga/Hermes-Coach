@@ -29,6 +29,7 @@ class CoachReply:
 
     text: str = ""
     finding: Finding | None = None
+    parsed: Any = None
     provider: str = ""
     model: str = ""
     usage: Any = None
@@ -126,6 +127,8 @@ class Coach:
         *,
         mode: str,
         structured: bool = False,
+        schema: Mapping[str, Any] | None = None,
+        instructions: str = "",
         timeout: float = 45.0,
     ) -> CoachReply:
         """Run one call, mapping every failure mode to an error reply."""
@@ -141,9 +144,9 @@ class Coach:
             if structured:
                 system, body = _split_messages(messages)
                 result = self.llm.complete_structured(
-                    instructions=_STRUCTURED_INSTRUCTIONS,
+                    instructions=instructions or _STRUCTURED_INSTRUCTIONS,
                     input=[{"type": "text", "text": body}],
-                    json_schema=SCHEMA,
+                    json_schema=schema if schema is not None else SCHEMA,
                     system_prompt=system,
                     model=model,
                     provider=provider,
@@ -157,6 +160,7 @@ class Coach:
             return CoachReply(error=f"provider_error: {type(exc).__name__}")
 
         text = str(getattr(result, "text", "") or "")
+        parsed = getattr(result, "parsed", None)
         actual_model = str(getattr(result, "model", "") or "")
         actual_provider = str(getattr(result, "provider", "") or "")
         usage = getattr(result, "usage", None)
@@ -173,7 +177,8 @@ class Coach:
 
         return CoachReply(
             text=text,
-            finding=parse_finding(getattr(result, "parsed", None), text),
+            finding=parse_finding(parsed, text),
+            parsed=parsed,
             provider=actual_provider or provider,
             model=actual_model or model,
             usage=usage,

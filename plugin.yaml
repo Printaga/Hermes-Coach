@@ -6,6 +6,7 @@ kind: standalone
 
 provides_tools:
   - coach_ask
+  - coach_decide
 
 provides_hooks:
   - post_llm_call

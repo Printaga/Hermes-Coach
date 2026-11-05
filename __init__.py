@@ -1,6 +1,6 @@
 """Hermes coach plugin entry point.
 
-Registers ``coach_ask`` and the ``pre_llm_call`` hook for ambient delivery.
+Registers ``coach_ask``, ``coach_decide`` and the coach hooks.
 Later tasks add the remaining hook handlers and the ``/coach`` command;
 registration always fails open so an older host or a duplicate registration
 cannot break the plugin loader.
@@ -14,7 +14,13 @@ log = logging.getLogger(__name__)
 
 
 def register(ctx):
-    from .coach.plugin import ASK_DESCRIPTION, ASK_SCHEMA, build_plugin
+    from .coach.plugin import (
+        ASK_DESCRIPTION,
+        ASK_SCHEMA,
+        DECIDE_DESCRIPTION,
+        DECIDE_SCHEMA,
+        build_plugin,
+    )
 
     try:
         plugin = build_plugin(ctx)
@@ -23,19 +29,20 @@ def register(ctx):
         return
 
     register_tool = getattr(ctx, "register_tool", None)
+    tools = (
+        ("coach_ask", ASK_SCHEMA, plugin.tool_ask, ASK_DESCRIPTION),
+        ("coach_decide", DECIDE_SCHEMA, plugin.tool_decide, DECIDE_DESCRIPTION),
+    )
     if register_tool is None:
-        log.warning("coach: host has no register_tool; coach_ask unavailable")
+        log.warning("coach: host has no register_tool; coach tools unavailable")
     else:
-        try:
-            register_tool(
-                "coach_ask",
-                "coach",
-                ASK_SCHEMA,
-                plugin.tool_ask,
-                description=ASK_DESCRIPTION,
-            )
-        except Exception:
-            log.exception("coach: could not register coach_ask")
+        for name, schema, handler, description in tools:
+            try:
+                register_tool(
+                    name, "coach", schema, handler, description=description
+                )
+            except Exception:
+                log.exception("coach: could not register %s", name)
 
     register_hook = getattr(ctx, "register_hook", None)
     if register_hook is None:
