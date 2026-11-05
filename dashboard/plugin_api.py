@@ -374,6 +374,35 @@ def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[st
     return get_config(request)
 
 
+@router.get("/recent")
+def get_recent(request: Request, limit: int = Query(10, ge=1, le=50)) -> dict[str, Any]:
+    """Return the newest review findings across sessions, newest first."""
+    root = _home(request) / "coach" / "logs"
+    rows: list[dict[str, Any]] = []
+    try:
+        paths = sorted(
+            root.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True
+        )[:20]
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines[-limit:]:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            record["session"] = str(record.get("session_id") or "")[:12]
+            rows.append(record)
+    rows.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
+    return {"reviews": rows[:limit]}
+
+
 @router.get("/guidance")
 def get_guidance(
     request: Request,

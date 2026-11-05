@@ -50,3 +50,16 @@ def test_settings_save_roundtrip(tmp_path):
 def test_settings_reject_unknown_key(tmp_path):
     client = TestClient(app_for_tests(home=tmp_path))
     assert client.put("/config", json={"values": {"nope": 1}}).status_code == 400
+
+
+def test_recent_returns_newest_first(tmp_path):
+    logs = tmp_path / "coach" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "a.jsonl").write_text(
+        '{"at":"2026-01-01T00:00:00+00:00","title":"old","body":"b","severity":"nit"}\n'
+        '{"at":"2026-02-01T00:00:00+00:00","title":"new","body":"b2","severity":"concern"}\n',
+        encoding="utf-8",
+    )
+    client = TestClient(app_for_tests(home=tmp_path))
+    rows = client.get("/recent").json()["reviews"]
+    assert [row["title"] for row in rows] == ["new", "old"]

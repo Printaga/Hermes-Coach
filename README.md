@@ -86,6 +86,7 @@ and the child-session refusal; the agent does not need to send them.
 |---|---|
 | `/coach status` | model, modes, spend, pending notes |
 | `/coach last` | the last advice the coach gave in this session |
+| `/coach log [n]` | recent review findings for this session |
 | `/coach active on\|off` | per-turn review |
 | `/coach review on\|off` | completion review |
 | `/coach decide on\|off` | the decide tool |
@@ -139,9 +140,11 @@ to the newest twenty.
 
 Where to read the coach's output: consult advice is the `coach_ask` tool result
 (the agent is asked to relay it), `/coach last` reprints the most recent one,
-review findings are cards plus a line per review in
-`$HERMES_HOME/coach/logs/<session>.jsonl` with severity, title, body, evidence
-and fix, and `/coach pending` lists undelivered notes with their body.
+and `/coach pending` lists undelivered notes with their body. Review findings
+are cards, a line per review in `$HERMES_HOME/coach/logs/<session>.jsonl`
+(timestamp, severity, title, body, evidence, fix; trimmed to the newest 200),
+`/coach log` for the current session, and **Status → Recent reviews** in the
+Desktop page for the newest across sessions.
 
 ## Troubleshooting
 

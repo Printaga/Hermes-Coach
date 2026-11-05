@@ -898,6 +898,20 @@ function StatusPage(props) {
   const permissions = status.permissions || {}
   const [granting, setGranting] = useState(false)
   const [notice, setNotice] = useState("")
+  const [recent, setRecent] = useState([])
+
+  useEffect(() => {
+    let alive = true
+    ctx
+      .rest("/recent?limit=8")
+      .then((result) => {
+        if (alive) setRecent((unwrap(result) || {}).reviews || [])
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
 
   const grant = async () => {
     setGranting(true)
@@ -950,6 +964,29 @@ function StatusPage(props) {
         ),
       ),
       status.last_error ? h("p", { style: MUTED }, `Last error: ${status.last_error}`) : null,
+    ),
+    h(
+      Card,
+      {
+        title: "Recent reviews",
+        description:
+          "The last findings the coach logged for this profile, newest first. Consult advice is in the conversation and in /coach last.",
+      },
+      recent.length === 0
+        ? h("p", { style: MUTED }, "No reviews logged yet.")
+        : recent.map((row) =>
+            h(
+              "div",
+              { key: `${row.session}-${row.at}-${row.title}`, style: { display: "grid", gap: 2 } },
+              h(
+                "div",
+                { style: { fontWeight: 600, fontSize: "0.8125rem" } },
+                `${row.severity || "none"} — ${row.title || "no finding"}`,
+              ),
+              row.body ? h("p", { style: MUTED }, String(row.body).slice(0, 220)) : null,
+              row.error ? h("p", { style: MUTED }, `error: ${row.error}`) : null,
+            ),
+          ),
     ),
     h(
       Card,

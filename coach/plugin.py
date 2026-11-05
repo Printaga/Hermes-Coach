@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 import threading
 import re
 import time
@@ -97,6 +98,7 @@ _HELP = (
     "Coach commands:\n"
     "  /coach status                    configuration, modes, spend\n"
     "  /coach last                      the last advice the coach gave\n"
+    "  /coach log [n]                   recent review findings for this session\n"
     "  /coach active on|off             per-turn Active review\n"
     "  /coach review on|off             pre-completion Review gate\n"
     "  /coach decide on|off             coach_decide tool\n"
@@ -350,6 +352,23 @@ def _log_name(session_id: str) -> str:
     return name or "session"
 
 
+_LOG_KEEP = 200
+_LOG_TRIM_BYTES = 128 * 1024
+
+
+def _trim_log(path: Path, keep: int = _LOG_KEEP) -> None:
+    """Keep the review log bounded; drop the oldest lines when it grows."""
+    try:
+        if path.stat().st_size <= _LOG_TRIM_BYTES:
+            return
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if len(lines) <= keep:
+            return
+        path.write_text("\n".join(lines[-keep:]) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
 def _request_text(data: Mapping[str, Any]) -> str:
     for key in ("user_message", "request", "last_user_message"):
         text = str(data.get(key) or "").strip()
@@ -502,6 +521,8 @@ class CoachPlugin:
                 return self._status_text(session_id)
             if name == "last":
                 return self._last_advice_text(session_id)
+            if name == "log":
+                return self._log_text(session_id, args)
             if name in {"active", "review", "decide"}:
                 return self._toggle(f"{name}_enabled", name, args)
             if name == "model":
@@ -663,6 +684,37 @@ class CoachPlugin:
         if meta:
             lines.append(f"({meta})")
         return "\n".join(lines)
+
+    def _log_text(self, session_id: str = "current", args: list[str] | None = None) -> str:
+        """Print the last few review findings for this session."""
+        try:
+            count = max(1, min(20, int((args or ["5"])[0])))
+        except (TypeError, ValueError):
+            count = 5
+        path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return "No coach reviews logged for this session yet."
+        rows = []
+        for line in lines[-count:]:
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+        if not rows:
+            return "No coach reviews logged for this session yet."
+        out = [f"Last {len(rows)} coach review(s):"]
+        for row in rows:
+            out.append(
+                f"- [{row.get('severity') or 'none'}] {row.get('title') or 'no finding'}"
+            )
+            body = str(row.get("body") or "").strip()
+            if body:
+                out.append(f"  {body[:200]}")
+            if row.get("error"):
+                out.append(f"  error: {row['error']}")
+        return "\n".join(out)
 
     def _pending_text(self, session_id: str = "current") -> str:
         state = self.store.load(session_id)
@@ -998,10 +1050,12 @@ class CoachPlugin:
                 "provider": reply.provider,
                 "model": reply.model,
                 "error": reply.error,
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
             path = root / f"{_log_name(session_id)}.jsonl"
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            _trim_log(path)
         except Exception:
             pass
 

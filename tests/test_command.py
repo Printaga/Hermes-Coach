@@ -56,3 +56,30 @@ def test_pending_prints_the_note_body(tmp_path):
               session_id="s1", turn_id="t1")
     out = p.command("pending", session_id="s1")
     assert "Unchecked write" in out and "Writes before validating." in out
+
+
+def test_log_lists_recent_findings(tmp_path):
+    from coach.findings import Finding
+
+    p = _p(tmp_path)
+
+    class R:
+        finding = Finding("concern", "Unchecked write", "Writes first.", "a.py:1", "Validate.")
+        usage = None
+        cost_usd = 0.0
+        provider = "p"
+        model = "m"
+        error = ""
+
+    p._log_review("s1", "t1", R())
+    out = p.command("log", session_id="s1")
+    assert "Unchecked write" in out and "Writes first." in out
+
+
+def test_review_log_is_trimmed(tmp_path):
+    from coach.plugin import _trim_log
+
+    path = tmp_path / "big.jsonl"
+    path.write_text("".join("x" * 120 + "\n" for _ in range(2000)), encoding="utf-8")
+    _trim_log(path, keep=10)
+    assert len(path.read_text().splitlines()) == 10
