@@ -64,6 +64,7 @@ Verified against the installed tree, not against docs or other plugins.
 |---|---|---|
 | `ctx.register_hook("post_llm_call")` | verified; payload has `session_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Active |
 | `ctx.register_hook("pre_verify")` | verified; payload has `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths`; fires when a text answer would end a turn that edited files | Review |
+| `plugins.hook_callback_timeout` | verified; bounded hooks get 30 s by default, are abandoned fail-open on timeout, suppressed for 60 s after one, and skipped after 3 abandoned workers | Review's call budget must stay under it |
 | `ctx.register_hook("pre_llm_call")` | verified; `{"context": "..."}` is appended to the current user message as an `api_content` sidecar — model sees it, transcript does not, cache prefix stays stable | Ambient delivery |
 | `ctx.inject_message(text)` | verified; keyless call from a hook routes to the live CLI or the TUI/Desktop session queue, and starts a turn | Corrective delivery |
 | `ctx.post_message(text)` | verified; renders a card/notification on Desktop and TUI, a line at turn end on classic CLI; invisible to the model | Visible advice cards |
@@ -174,9 +175,11 @@ hermes-coach/
 2. `post_llm_call` snapshots the completed turn, checks cadence and skip rules,
    and enqueues a review. Hook returns immediately.
 3. Worker: single-flight. If a review is running, keep only the newest queued
-   turn; drop older ones. Checks the budget before calling.
-4. On completion: normalise the finding; if `none`, record and stop. Otherwise
-   store it and deliver per policy.
+   turn; drop older ones. Checks the budget before calling. Deadline 45 s.
+4. On completion: verify the response came from the requested provider and
+   model — a failed call can fall back to the primary model. A mismatch is
+   recorded as `fallback_mismatch` and discarded. Then normalise the finding;
+   if `none`, record and stop, otherwise store it and deliver per policy.
 5. Ambient notes are held per session and returned by the next `pre_llm_call`
    as `{"context": ...}`, once, then marked delivered. A card is posted at
    review time.
@@ -184,15 +187,19 @@ hermes-coach/
 ### 8.3 Data flow — Review gate
 
 1. `pre_verify` fires with `changed_paths` and `final_response`.
-2. Skip if a hold was already issued for this request, or the diff is empty.
-3. Evidence: `git diff --no-color` for those paths under `ctx.session_cwd()`,
-   capped at 8k characters; fall back to `git diff --stat` plus per-file heads
-   when over budget; fall back to file heads outside a repo.
-4. One LLM call with the Review model: "does the change satisfy the request;
-   is there a defect the claim hides?"
+2. Skip if a hold was already issued for this request.
+3. Evidence, composed under `ctx.session_cwd()` and capped at 8k characters:
+   `git diff HEAD -- <paths>` for tracked files (staged and unstaged), plus the
+   head of each untracked path marked `(new file)`. Over budget: `git diff
+   --stat` plus per-file heads. Outside a repo: file heads. Skip only when the
+   composed evidence is empty.
+4. One LLM call with the Review model, 20 s deadline — the hook itself is
+   bounded at 30 s by the host, and a timed-out callback is suppressed for 60 s
+   afterwards. Prompt: "does the change satisfy the request; is there a defect
+   the claim hides?"
 5. `blocker` and `authority=hold_once` and budget allows → return
    `{"action": "continue", "message": "<required fix>"}`. Everything else →
-   post a card, return `None`.
+   post a card, return `None`. A timeout is a card or nothing, never a hold.
 
 ### 8.4 Data flow — Decide
 
@@ -225,6 +232,20 @@ Coach calls go through `agent/auxiliary_client.call_llm`, which fires
 so a review cannot trigger a review. A thread-local `_in_coach_call` guard is
 still set as belt-and-braces.
 
+### 8.7 First run
+
+Shipping state is `coach_model` empty. That is an explicit unconfigured state,
+not a silent default:
+
+- `coach_ask` / `coach_decide` return one clear line: no coach model is set,
+  with the two ways to set it.
+- Review stays quiet: no calls, no cards, no holds. `/coach status` and the
+  settings page both say "Unconfigured — choose a coach model".
+- The page opens on a model picker with a single call to action, and shows the
+  permissions row if the override flags are not granted yet.
+- Nothing is auto-picked and nothing inherits the primary model. The first
+  coach call happens only after the user chooses.
+
 ## 9. Settings contract
 
 Keys are flat snake_case: `config_schema` keys with dots are path segments and
@@ -238,11 +259,20 @@ the label.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `coach_model` | json `{provider, model}` | first authenticated provider's default | Model every mode uses unless it has its own. Same catalog as the main chat picker. |
+| `coach_model` | json `{provider, model}` | empty — unconfigured | Model every mode uses unless it has its own. Until one is chosen the plugin is unconfigured: tools say so and Review stays quiet. Same catalog as the main chat picker. |
 | `active_model` | json, empty = inherit | inherit | Override for Active. This mode runs every turn, so a cheap fast model here saves the most. |
 | `review_model` | json, empty = inherit | inherit | Override for Review. It gates completion, so this is where the strongest model earns its cost. |
 | `consult_model` | json, empty = inherit | inherit | Override for Consult. |
 | `max_reply_tokens` | int | 400 | Hard cap on the coach's answer. Output is the expensive half of a review; this is the main lever. |
+
+### Permissions
+
+Not a form field: one status row with an action, because these two keys live
+under `plugins.entries.coach.llm`, not under `settings`.
+
+| Row | Default | Description |
+|---|---|---|
+| Model overrides | not granted | Per-mode models need `allow_provider_override` and `allow_model_override`. **Grant** writes both flags for the profile this page is scoped to, then re-reads them. Until granted, any non-inherit model fails at call time; inheriting needs no permission. |
 
 ### Modes
 
@@ -283,8 +313,12 @@ the label.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `guidance_enabled` | bool | true | Send guidance to the coach. Off ignores both files without deleting them. |
-| `guidance_global` | text (editor) | empty | Appended to the coach's system prompt for every project. Sent on every call, so keep it short. |
-| `guidance_project` | text (editor, focused project) | empty | The same, written to `<project>/COACH.md`. The page edits the focused session's project only; it never creates directories. |
+
+The editor is not a config field. It writes `$HERMES_HOME/coach/guidance.md`
+(global) and `<focused project>/COACH.md` through `dashboard/plugin_api.py`,
+with a scope switch, a character and token count, and an 8k cap. Files are the
+only home; there are no `guidance_*` content keys in `config.yaml`, so the
+generic form cannot disagree with the editor.
 
 ### Advanced (config.yaml only, not on the page)
 
@@ -342,6 +376,12 @@ any other call. Session spend is the sum, persisted with the session state.
 - Guidance writes: global to `$HERMES_HOME/coach/guidance.md`; project to
   `<focused cwd>/COACH.md` only when that directory was recorded from a real
   session, never a symlink target, never a new directory, capped at 8k chars.
+- A coach response whose provider/model differs from the requested pair is
+  discarded as `fallback_mismatch`, so a silent fallback can never make the
+  coach review the primary model's own work.
+- `coach_ask` and `coach_decide` refuse in child sessions, tracked through the
+  `subagent_start` / `subagent_stop` hooks. `allow_in_subagents` (config only)
+  turns that off.
 - Secrets are read from the environment only for the backend that needs them.
   The OpenRouter key is never logged or persisted.
 - Advice is always attributed (`Coach`, with severity) so the model and the
@@ -361,6 +401,8 @@ Every capability must be reachable and visible on both surfaces:
 | Guidance | `/coach guidance` (paths + contents) | editor, both scopes |
 | Status and spend | `/coach status` | status tab |
 | Pending advice | `/coach pending`, `/coach send` | listed in the status tab, with deliver/dismiss |
+| Model-override permission | `/coach grant` | Grant button |
+| Unconfigured state | `/coach status` and the tools say so | blocking prompt on the page |
 | Reviews and decisions | tools | same tools, same state |
 
 Anything created on one surface must be listed on the other: a pending note or
@@ -377,6 +419,11 @@ a hold is stored in session state, not in the page's memory.
 - Jev via OpenRouter is the default decision backend; it never enters the
   coach-model picker.
 - Budget default is a soft stop (reviews stop, explicit consults still work).
+- The plugin may write its own model-override trust flags, but only behind an
+  explicit Grant click on its settings page.
+- A fresh install starts unconfigured: no auto-picked model, no inherited
+  primary, no background reviews until the user chooses.
+- Guidance lives in files only, edited through the plugin's own backend.
 
 ## 14. Left to the builder
 
@@ -389,10 +436,16 @@ a hold is stored in session state, not in the page's memory.
   TypeSafe shape is documented in the askjev skill.
 - Test seams for hooks: how to emulate `post_llm_call`, `pre_verify` and
   `pre_llm_call` payloads without a live turn.
+- The exact config writer and profile scope for the Grant button
+  (`load_config` → `save_config`; the page passes the profile it is scoped to).
+- The field name carrying the child session id in the `subagent_start` payload,
+  used for the child-session refusal.
 - Packaging and catalog entry, if this ships beyond this machine.
 
 ## 15. Risks
 
+- A fresh install is inert until a model is chosen; the page and `/coach status`
+  must say so plainly or it reads as broken.
 - Desktop plugin halves load disabled by default; a first-run "nothing
   appears" report is the toggle, not the code.
 - `inject_message` is gateway-routed on messaging platforms and needs
