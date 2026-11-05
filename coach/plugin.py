@@ -250,6 +250,7 @@ class CoachPlugin:
         post: Callable[[str], Any] | None = None,
         inject: Callable[[str], Any] | None = None,
         surface: Callable[[], str] | str = lambda: "cli",
+        cwd: Callable[[], str] | None = None,
         clock: Callable[[], float] = time.time,
         cost_fn: Callable[[str, Any, str], float] | None = None,
         guidance: Guidance | None = None,
@@ -263,6 +264,7 @@ class CoachPlugin:
         self.post = post
         self.inject = inject
         self.surface = surface
+        self.cwd = cwd if cwd is not None else (lambda: os.getcwd())
         self.clock = clock
         self.set_setting = set_setting
         self.guidance = guidance if guidance is not None else Guidance(_default_root())
@@ -587,7 +589,7 @@ class CoachPlugin:
         if used >= max(0, int(self.settings.review_max_holds)):
             return None
 
-        cwd = str(data.get("cwd") or os.getcwd())
+        cwd = str(data.get("cwd") or self.cwd())
         finding = self.review_now(
             session_id=session_id,
             turn_id=turn_id,
@@ -799,6 +801,24 @@ def _default_root() -> Path:
     return home / "coach"
 
 
+def _primary_identity() -> tuple[str, str]:
+    """Provider and model the main agent runs, for the same-model guard."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        section = (load_config_readonly() or {}).get("model")
+        if isinstance(section, Mapping):
+            model = str(section.get("default") or "")
+            provider = str(section.get("provider") or "")
+            if "/" in model and not provider:
+                head, _, tail = model.partition("/")
+                provider, model = head, tail
+            return model, provider
+    except Exception:
+        pass
+    return "", ""
+
+
 def build_plugin(ctx: Any) -> CoachPlugin:
     """Build the plugin from the host context and persisted config."""
     raw: dict[str, Any] = {}
@@ -809,19 +829,21 @@ def build_plugin(ctx: Any) -> CoachPlugin:
             raw[key] = default
 
     root = _default_root()
+    primary_model, primary_provider = _primary_identity()
     plugin = CoachPlugin(
         llm=ctx.llm,
         store=Store(root / "sessions"),
         settings=load_settings(raw),
         primary_model=str(
-            getattr(ctx, "model", "") or getattr(ctx, "model_name", "") or ""
+            getattr(ctx, "model", "") or getattr(ctx, "model_name", "") or primary_model
         ),
         primary_provider=str(
-            getattr(ctx, "provider", "") or getattr(ctx, "model_provider", "") or ""
+            getattr(ctx, "provider", "") or getattr(ctx, "model_provider", "") or primary_provider
         ),
         post=getattr(ctx, "post_message", None),
         inject=getattr(ctx, "inject_message", None),
         surface=getattr(ctx, "session_surface", lambda: "cli"),
+        cwd=getattr(ctx, "session_cwd", lambda: os.getcwd()),
         clock=time.time,
         guidance=Guidance(root),
         set_setting=getattr(ctx, "set_config", None),

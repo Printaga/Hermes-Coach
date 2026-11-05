@@ -136,3 +136,19 @@ def test_non_blocker_is_reported_as_a_card(tmp_path):
     )
     assert p.on_pre_verify(**PAY) is None
     assert p._test_post and "Missing check" in p._test_post[0]
+
+
+def test_evidence_uses_the_session_cwd(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    p = CoachPlugin(
+        llm=Llm(),
+        store=Store(tmp_path),
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+        cwd=lambda: str(project),
+    )
+    seen = {}
+    p.collect_evidence = lambda cwd, paths: seen.setdefault("cwd", cwd) or ""
+    p.review_now = lambda **kw: None
+    p.on_pre_verify(**PAY)
+    assert seen["cwd"] == str(project)
