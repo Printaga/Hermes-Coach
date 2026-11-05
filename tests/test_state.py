@@ -38,3 +38,10 @@ def test_save_sweeps_old_sessions(tmp_path):
     for _ in range(22):
         store.save(store.load("s2"))
     assert len(store.sessions_on_disk()) <= 2
+
+
+def test_has_reports_a_known_session(tmp_path):
+    store = Store(tmp_path)
+    assert store.has("s1") is False
+    store.save(store.load("s1"))
+    assert store.has("s1") is True

@@ -24,3 +24,16 @@ def test_bad_values_fall_back_to_defaults():
     assert s.active_every_n == DEFAULTS["active_every_n"]
     assert s.decide_min_confidence == 1.0
     assert s.budget_on_exceed == "soft"
+
+
+def test_same_model_matches_when_the_primary_provider_is_unknown():
+    s = load_settings({"coach_model": {"provider": "openrouter", "model": "m"}})
+    assert s.same_as_primary(s.coach_model, model="m", provider="") is True
+    assert s.same_as_primary(s.coach_model, model="other", provider="") is False
+
+
+def test_a_per_mode_model_alone_counts_as_configured():
+    s = load_settings({"consult_model": {"provider": "p", "model": "m"}})
+    assert s.is_configured() is True
+    assert s.model_for("consult").model == "m"
+    assert s.model_for("active") is None

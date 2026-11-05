@@ -92,3 +92,19 @@ def test_host_ids_reach_the_tool(tmp_path):
     assert out["ok"] is True
     state = p.store.load("s1")
     assert state.calls.get("task-1") == 1
+
+
+def test_hook_model_becomes_the_same_model_baseline(tmp_path):
+    p = _plugin(tmp_path)
+    p.on_pre_llm_call(session_id="s", turn_id="t", conversation_history=[], model="glm-5.3")
+    p.settings = load_settings({"coach_model": {"provider": "opencode-go", "model": "glm-5.3"}})
+    p.coach.settings = p.settings
+    assert p.coach.check("consult") == "same_model"
+
+
+def test_same_model_guard_reads_the_session_model(tmp_path):
+    p = _plugin(tmp_path, settings=load_settings(
+        {"coach_model": {"provider": "opencode-go", "model": "glm-5.3"}}))
+    p.on_pre_llm_call(session_id="s", turn_id="t", conversation_history=[], model="glm-5.3")
+    out = json.loads(p.tool_ask({"question": "q"}, session_id="s", task_id="t2"))
+    assert out["ok"] is False and "matches the primary" in out["error"].lower()

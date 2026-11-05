@@ -209,19 +209,34 @@ class Settings:
         return getattr(self, field) or self.coach_model
 
     def is_configured(self) -> bool:
-        """True once a shared coach model has been chosen."""
-        return self.coach_model is not None
+        """True when any model is available.
+
+        A per-mode override on its own is a valid setup: the other modes report
+        themselves unconfigured when asked, without blocking the one that has a
+        model.
+        """
+        return any(
+            choice is not None
+            for choice in (
+                self.coach_model,
+                self.active_model,
+                self.review_model,
+                self.consult_model,
+            )
+        )
 
     def same_as_primary(
         self, choice: ModelChoice | None, model: str, provider: str
     ) -> bool:
         """Compare a resolved choice with the primary model, ignoring case."""
-        if choice is None or not model or not provider:
+        if choice is None or not model:
             return False
-        return (
-            choice.model.strip().lower() == model.strip().lower()
-            and choice.provider.strip().lower() == provider.strip().lower()
-        )
+        same_model = choice.model.strip().lower() == model.strip().lower()
+        if not provider:
+            # Hermes may not expose the primary's provider (auto-detected).
+            # The model name is then the only signal we have.
+            return same_model
+        return same_model and choice.provider.strip().lower() == provider.strip().lower()
 
 
 _MINIMUMS: dict[str, float] = {

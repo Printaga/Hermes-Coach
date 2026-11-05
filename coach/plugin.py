@@ -453,6 +453,28 @@ class CoachPlugin:
         except Exception:
             pass
 
+    def _remember_primary(self, data: Mapping[str, Any]) -> None:
+        """Track the model the session is actually running.
+
+        Config's default can differ from the model a chat was started with, and
+        the hook payload is the only place the live value appears.
+        """
+        model = str(data.get("model") or "").strip()
+        if not model:
+            return
+        self.primary_model = model
+        self.coach.primary_model = model
+        session_id = str(data.get("session_id") or "")
+        if session_id:
+            try:
+                state = self.store.load(session_id)
+                if state.last_primary_model != model:
+                    state.last_primary_model = model
+                    state.updated_at = self.clock()
+                    self.store.save(state)
+            except Exception:
+                pass
+
     def refresh_settings(self) -> None:
         """Re-read settings so a page change applies without a plugin reload.
 
@@ -561,12 +583,17 @@ class CoachPlugin:
         """Persist one setting and re-validate the in-memory copy."""
         if key not in DEFAULTS:
             return False
+        stored = (
+            {"provider": value.provider, "model": value.model}
+            if isinstance(value, ModelChoice)
+            else value
+        )
         if self.set_setting is not None:
-            result = self.set_setting(key, value)
+            result = self.set_setting(key, stored)
             if result is False:
                 return False
         raw = _raw_settings(self.settings)
-        raw[key] = value
+        raw[key] = stored
         self.settings = load_settings(raw)
         self.coach.settings = self.settings
         return True
@@ -706,6 +733,8 @@ class CoachPlugin:
         state = self.store.load(session_id)
         if has(state):
             return state, ""
+        if self.store.has(session_id):
+            return state, ""  # a known session with nothing to show: do not leak another chat's
         try:
             for other in self.store.sessions_by_recency():
                 if other == session_id:
@@ -783,7 +812,7 @@ class CoachPlugin:
             count = 5
         path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
         label = ""
-        if not path.exists():
+        if not path.exists() and not self.store.has(session_id):
             try:
                 candidates = sorted(
                     (self.store.root.parent / "logs").glob("*.jsonl"),
@@ -949,6 +978,7 @@ class CoachPlugin:
         """Return pending ambient notes once, dropping notes past their TTL."""
         self.refresh_settings()
         data = _payload(payload, kw)
+        self._remember_primary(data)
         session_id = str(data.get("session_id") or "current")
         state = self.store.load(session_id)
         state.note_seq = _as_turn(state.note_seq) + 1
@@ -1008,6 +1038,7 @@ class CoachPlugin:
         """Snapshot a finished turn and queue one Active review when due."""
         self.refresh_settings()
         data = _payload(payload, kw)
+        self._remember_primary(data)
         session_id = str(data.get("session_id") or "current")
         turn_id = str(data.get("turn_id") or "current")
         tools = self._turn_tools.pop((session_id, turn_id), [])
@@ -1363,6 +1394,8 @@ class CoachPlugin:
             return _error("child_session")
 
         state = self.store.load(session_id)
+        if state.last_primary_model:
+            self.coach.primary_model = state.last_primary_model
         if (
             self.settings.budget_on_exceed == "hard"
             and state.spend_usd >= self.settings.budget_session_usd

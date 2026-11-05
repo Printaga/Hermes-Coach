@@ -124,3 +124,15 @@ def test_shutdown_stops_the_worker(tmp_path):
     p.worker = Worker(lambda session_id, turn_id: None)
     p.shutdown()
     assert p.worker.submit("s", "t") is False
+
+
+def test_model_set_stores_a_plain_mapping(tmp_path):
+    saved = {}
+    p = CoachPlugin(
+        llm=Llm(), store=Store(tmp_path),
+        settings=load_settings({"coach_model": {"provider": "openrouter", "model": "x"}}),
+        set_setting=lambda key, value: saved.__setitem__(key, value),
+    )
+    out = p.command("model consult opencode-go/glm-5.3")
+    assert "consult" in out.lower()
+    assert saved["consult_model"] == {"provider": "opencode-go", "model": "glm-5.3"}

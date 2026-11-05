@@ -39,6 +39,7 @@ class SessionState:
     calls: dict[str, int] = field(default_factory=dict)
     last_error: str = ""
     last_user_message: str = ""
+    last_primary_model: str = ""
     last_advice: dict[str, Any] = field(default_factory=dict)
     advice: list[dict[str, Any]] = field(default_factory=list)
     last_decision: dict[str, Any] = field(default_factory=dict)
@@ -149,6 +150,7 @@ class Store:
             calls=_calls(data.get("calls")),
             last_error=_as_str(data.get("last_error")),
             last_user_message=_as_str(data.get("last_user_message")),
+            last_primary_model=_as_str(data.get("last_primary_model")),
             last_advice=(
                 dict(data["last_advice"])
                 if isinstance(data.get("last_advice"), Mapping)
@@ -162,6 +164,13 @@ class Store:
             ),
             updated_at=_as_float(data.get("updated_at"), 0.0),
         )
+
+    def has(self, session_id: str) -> bool:
+        """True when this session already has a state file."""
+        try:
+            return self._path(session_id).is_file()
+        except OSError:
+            return False
 
     def load(self, session_id: str) -> SessionState:
         """Return the stored state, or a fresh one; never raises."""
