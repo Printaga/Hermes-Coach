@@ -430,6 +430,15 @@ class CoachPlugin:
         if child:
             self._child_sessions.discard(child)
 
+    def on_session_end(
+        self, payload: Mapping[str, Any] | None = None, **kw: Any
+    ) -> None:
+        """Drop the oldest session files once a session closes."""
+        try:
+            self.store.prune()
+        except Exception:
+            pass
+
     def status(self) -> dict[str, Any]:
         """Report configuration, modes, and this session's spend."""
         state = self.store.load("current")

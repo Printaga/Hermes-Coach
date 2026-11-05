@@ -43,6 +43,31 @@ if (!/export default \{[^}]*id:\s*["']coach["']/.test(source)) {
   process.exit(1)
 }
 
+// Every setting the Python side reads should have a control on the page.
+// The TypeSafe key is set in .env, not on the page, so it is exempt.
+const settings = readFileSync(new URL("../coach/settings.py", import.meta.url), "utf8")
+const start = settings.indexOf("DEFAULTS")
+const end = settings.indexOf("\n}", start)
+const block = settings.slice(start, end)
+const keys = [...block.matchAll(/^\s{4}"([a-z_]+)":/gm)].map((match) => match[1])
+// Tuning constants that stay in config.yaml on purpose (docs in README).
+const CONFIG_ONLY = new Set([
+  "decide_typesafe_api_key",
+  "worker_timeout_s",
+  "ledger_max_tool_result_chars",
+  "ledger_max_recent_turns",
+  "ledger_note_max_chars",
+  "ledger_max_tokens",
+  "skip_same_model",
+  "allow_in_subagents",
+  "debug_log_decisions",
+])
+const missing = keys.filter((key) => !CONFIG_ONLY.has(key) && !source.includes(`"${key}"`))
+if (missing.length) {
+  console.error(`settings with no control on the page: ${missing.join(", ")}`)
+  process.exit(1)
+}
+
 const body = source
   .split("\n")
   .filter((line) => !line.startsWith("import "))
@@ -52,7 +77,8 @@ const stub = `
 const createElement = (type, props, ...children) => ({ type, props, children });
 const useState = (initial) => [initial, () => {}];
 const useEffect = () => {};
-const host = { request: async () => ({ providers: [{ slug: "p", models: ["m"] }] }) };
+const useValue = () => "";
+const host = { state: { model: "" }, request: async () => ({ providers: [{ slug: "p", models: ["m"] }] }) };
 `
 
 const dir = mkdtempSync(join(tmpdir(), "coach-page-"))
@@ -80,7 +106,7 @@ if (!page || page.id !== "coach" || !Array.isArray(page.children)) {
   process.exit(1)
 }
 const ids = page.children.map((child) => child.id)
-const expected = ["models", "modes", "delivery", "budget", "guidance", "status"]
+const expected = ["behaviour", "delivery", "budget", "guidance", "status"]
 for (const id of expected) {
   if (!ids.includes(id)) {
     console.error(`settings page is missing the ${id} tab`)
@@ -96,4 +122,4 @@ for (const child of [{ id: "overview", render: page.render }, ...page.children])
   }
 }
 
-console.log(`desktop page ok: ${ids.length + 1} views`)
+console.log(`desktop page ok: ${ids.length + 1} views, ${keys.length} settings covered`)

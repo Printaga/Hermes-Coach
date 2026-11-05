@@ -1,1042 +1,987 @@
 /**
  * Coach settings page for the Hermes Desktop plugin host.
  *
- * Plain ESM, no build step. The host supplies `jsx`, `useValue`, `rest`,
- * `host.request`, and `registerSettingsPage` on the plugin context.
+ * Plain ESM, no build step. The SDK supplies `host` (gateway RPC) and
+ * `useValue`; React supplies `createElement`; everything else is local.
+ * The Python half owns the values through this plugin's own API.
  */
 
-import { host } from "@hermes/plugin-sdk"
+import { host, useValue } from "@hermes/plugin-sdk"
 import { createElement, useEffect, useState } from "react"
 
-const MODEL_ROWS = [
-  [
-    "coach_model",
-    "Shared model",
-    "Every mode uses this unless it has its own. Nothing is configured until it is set.",
-  ],
-  [
-    "active_model",
-    "Active",
-    "Runs every reviewed turn, so a cheap fast model here saves the most.",
-  ],
-  [
-    "review_model",
-    "Review",
-    "Gates completion, so this is where the strongest model earns its cost.",
-  ],
-  [
-    "consult_model",
-    "Consult",
-    "Used by `coach_ask` when the agent asks for advice.",
-  ],
-];
+const h = createElement
 
-const NOOP_EFFECT = () => {};
+const PANEL = {
+  border: "1px solid color-mix(in srgb, currentColor 18%, transparent)",
+  borderRadius: 10,
+  padding: "14px 16px",
+  display: "grid",
+  gap: 10,
+}
+
+const INPUT = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "7px 9px",
+  borderRadius: 8,
+  border: "1px solid color-mix(in srgb, currentColor 24%, transparent)",
+  background: "transparent",
+  color: "inherit",
+  font: "inherit",
+}
+
+const BUTTON = {
+  padding: "7px 12px",
+  borderRadius: 8,
+  border: "1px solid color-mix(in srgb, currentColor 24%, transparent)",
+  background: "transparent",
+  color: "inherit",
+  font: "inherit",
+  cursor: "pointer",
+  textAlign: "left",
+}
+
+const MUTED = { opacity: 0.68, fontSize: "0.8125rem", lineHeight: 1.45, margin: 0 }
+const TITLE = { margin: 0, fontSize: "0.9375rem", fontWeight: 600 }
+const SECTION_TITLE = {
+  margin: 0,
+  fontSize: "0.8125rem",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+  opacity: 0.62,
+}
 
 function messageOf(error) {
-  if (error && error.message) return String(error.message);
-  return String(error == null ? "Unknown error" : error);
+  if (error && error.message) return String(error.message)
+  return String(error == null ? "Unknown error" : error)
 }
 
 function unwrap(response) {
-  if (response && typeof response === "object" && "data" in response) {
-    return response.data;
-  }
-  return response;
-}
-
-function formatModel(value) {
-  if (!value) return "Inherit shared model";
-  return value.provider ? `${value.provider} / ${value.model}` : value.model;
+  if (response && typeof response === "object" && "data" in response) return response.data
+  return response
 }
 
 function formatUsd(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? `$${number.toFixed(2)}` : "$0.00";
+  const number = Number(value)
+  return Number.isFinite(number) ? `$${number.toFixed(2)}` : "$0.00"
 }
 
-function modelKey(value) {
-  if (!value || !value.model) return "";
-  return `${value.provider || ""}/${value.model}`;
+function modelLabel(value) {
+  if (!value || !value.model) return "Inherit shared model"
+  return value.provider ? `${value.provider} / ${value.model}` : value.model
 }
 
-function splitModel(raw) {
-  const slash = String(raw).indexOf("/");
-  if (slash < 0) return { provider: "", model: String(raw) };
-  return {
-    provider: String(raw).slice(0, slash),
-    model: String(raw).slice(slash + 1),
-  };
+function sameModel(a, b) {
+  if (!a || !b) return false
+  return (
+    String(a.model || "") === String(b.model || "") &&
+    String(a.provider || "") === String(b.provider || "")
+  )
 }
 
-function flattenModels(input, provider) {
-  const out = [];
-  const parent = provider || "";
-  if (input == null) return out;
-  if (Array.isArray(input)) {
-    input.forEach((item) => out.push(...flattenModels(item, parent)));
-    return out;
+function flattenModels(result) {
+  const data = unwrap(result) || {}
+  const rows = Array.isArray(data.providers) ? data.providers : []
+  const out = []
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue
+    const provider = String(row.slug || row.provider || "")
+    const providerName = String(row.name || provider || "Other")
+    const models = Array.isArray(row.models) ? row.models : []
+    for (const entry of models) {
+      const model =
+        typeof entry === "string" ? entry : String((entry && (entry.model || entry.id)) || "")
+      if (model) out.push({ provider, providerName, model })
+    }
   }
-  if (typeof input === "string") {
-    const choice = splitModel(input);
-    out.push({
-      provider: choice.provider || parent,
-      model: choice.model,
-      label: input,
-    });
-    return out;
-  }
-  if (typeof input !== "object") return out;
-  const ownProvider = String(
-    input.provider || input.provider_id || input.providerId || input.slug || parent,
-  );
-  const children = input.providers || input.models || input.children || input.options;
-  if (Array.isArray(children)) {
-    children.forEach((child) => out.push(...flattenModels(child, ownProvider)));
-    return out;
-  }
-  const model = String(
-    input.model || input.id || input.value || input.name || "",
-  ).trim();
-  if (!model) return out;
-  out.push({
-    provider: ownProvider,
-    model,
-    label: String(input.label || input.name || model),
-  });
-  return out;
+  return out
 }
 
-function dedupeModels(models) {
-  const seen = new Set();
-  return models.filter((item) => {
-    if (!item || !item.model) return false;
-    const key = `${item.provider}/${item.model}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+function groupModels(models, query) {
+  const needle = query.trim().toLowerCase()
+  const groups = new Map()
+  for (const item of models) {
+    const haystack = `${item.providerName} ${item.provider} ${item.model}`.toLowerCase()
+    if (needle && !haystack.includes(needle)) continue
+    const key = item.provider || ""
+    if (!groups.has(key)) {
+      groups.set(key, {
+        provider: key,
+        providerName: item.providerName || key || "Other",
+        items: [],
+      })
+    }
+    groups.get(key).items.push(item)
+  }
+  return [...groups.values()]
 }
 
-function useConfig(ctx) {
-  const [config, setConfig] = useState(null);
-  const [status, setStatus] = useState(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
+// ---------------------------------------------------------------- data layer
+
+function useSettings(ctx) {
+  const [config, setConfig] = useState(null)
+  const [status, setStatus] = useState(null)
+  const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
 
   const reload = async () => {
     try {
       const [nextConfig, nextStatus] = await Promise.all([
         ctx.rest("/config"),
         ctx.rest("/status"),
-      ]);
-      setConfig(unwrap(nextConfig));
-      setStatus(unwrap(nextStatus));
-      setError("");
+      ])
+      setConfig(unwrap(nextConfig))
+      setStatus(unwrap(nextStatus))
+      setError("")
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err))
     }
-  };
+  }
+
+  useEffect(() => {
+    reload()
+  }, [])
 
   const save = async (key, value) => {
-    setBusy(true);
-    setError("");
+    setBusy(true)
+    setError("")
     try {
-      await ctx.rest("/config", {
+      const next = await ctx.rest("/config", {
         method: "PUT",
         body: { values: { [key]: value } },
-      });
-      await reload();
+      })
+      setConfig(unwrap(next))
+      setStatus(unwrap(await ctx.rest("/status")))
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err))
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
-  effect(() => {
-    reload();
-  }, []);
-
-  return { config, status, error, busy, reload, save };
+  return { config, status, error, busy, reload, save }
 }
 
-function PageFrame(props) {
-  const { h, state, title, children } = props;
+// ---------------------------------------------------------------- primitives
+
+function Card(props) {
+  return h(
+    "section",
+    { style: PANEL },
+    props.title ? h("h3", { style: TITLE }, props.title) : null,
+    props.description ? h("p", { style: MUTED }, props.description) : null,
+    props.children,
+  )
+}
+
+function Field(props) {
   return h(
     "div",
-    { className: "coach-page", style: { display: "grid", gap: "12px" } },
-    h("h3", { style: { margin: 0 } }, title),
-    state.error
-      ? h("p", { className: "coach-error", role: "alert" }, state.error)
-      : null,
-    ...children,
-  );
+    { style: { display: "grid", gap: 5 } },
+    h("label", { style: { fontWeight: 600, fontSize: "0.875rem" } }, props.label),
+    props.children,
+    props.hint ? h("p", { style: MUTED }, props.hint) : null,
+  )
 }
 
-function Loading(props) {
-  const { h, state } = props;
-  return h(
-    "div",
-    { className: "coach-loading" },
-    h("p", { className: "coach-muted" }, "Loading settings..."),
-    h(
-      "button",
-      { type: "button", onClick: () => state.reload() },
-      "Reload",
-    ),
-  );
-}
-
-function ToggleField(props) {
-  const { ctx, label, checked, onChange, hint } = props;
-  const h = createElement;
+function Toggle(props) {
   return h(
     "label",
-    { className: "coach-toggle", style: { display: "grid", gap: "4px" } },
-    h(
-      "span",
-      { style: { display: "flex", gap: "8px", alignItems: "center" } },
-      h("input", {
-        type: "checkbox",
-        checked: Boolean(checked),
-        onChange: (event) => onChange(event.target.checked),
-      }),
-      h("span", null, label),
-    ),
-    hint ? h("span", { className: "coach-hint" }, hint) : null,
-  );
-}
-
-function TextInput(props) {
-  const { ctx, value, onChange, placeholder } = props;
-  const h = createElement;
-  return h("input", {
-    type: "text",
-    className: "coach-input",
-    value: value == null ? "" : String(value),
-    placeholder: placeholder || "",
-    onChange: (event) => onChange(event.target.value),
-  });
-}
-
-function NumberInput(props) {
-  const { ctx, value, min, max, step, onCommit } = props;
-  const h = createElement;
-  const [draft, setDraft] = useState(value == null ? "" : String(value));
-  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
-
-  effect(() => {
-    setDraft(value == null ? "" : String(value));
-  }, [value]);
-
-  const commit = () => {
-    const parsed = Number(draft);
-    if (draft !== "" && Number.isFinite(parsed)) {
-      onCommit(parsed);
-    } else {
-      setDraft(value == null ? "" : String(value));
-    }
-  };
-
-  return h("input", {
-    type: "number",
-    className: "coach-input",
-    value: draft,
-    min,
-    max,
-    step,
-    onChange: (event) => setDraft(event.target.value),
-    onBlur: commit,
-    onKeyDown: (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        commit();
-      }
-    },
-  });
-}
-
-function ChoiceInput(props) {
-  const { ctx, value, choices, onChange } = props;
-  const h = createElement;
-  const current = value == null ? "" : String(value);
-  return h(
-    "select",
     {
-      className: "coach-select",
-      value: current,
-      onChange: (event) => onChange(event.target.value),
-    },
-    choices.map((choice) =>
-      h("option", { key: choice, value: choice }, choice),
-    ),
-  );
-}
-
-function ModelInput(props) {
-  const { ctx, value, models, inherit, onChange } = props;
-  const h = createElement;
-  const current = modelKey(value);
-  const known = new Set(models.map((item) => modelKey(item)));
-  const options = [
-    h(
-      "option",
-      { key: "__empty", value: "" },
-      inherit ? "Inherit shared model" : "Choose a model...",
-    ),
-  ];
-  if (current && !known.has(current)) {
-    options.push(
-      h("option", { key: "__current", value: current }, current),
-    );
-  }
-  models.forEach((item, index) => {
-    const key = modelKey(item);
-    const label = item.provider
-      ? `${item.provider} / ${item.model}`
-      : item.model;
-    options.push(h("option", { key: `${key}-${index}`, value: key }, label));
-  });
-  return h(
-    "select",
-    {
-      className: "coach-select",
-      value: current,
-      onChange: (event) => {
-        const raw = event.target.value;
-        onChange(raw ? splitModel(raw) : null);
+      style: {
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        padding: "6px 0",
+        cursor: "pointer",
       },
     },
-    options,
-  );
+    h("input", {
+      type: "checkbox",
+      checked: !!props.checked,
+      onChange: (event) => props.onChange(event.target.checked),
+      style: { marginTop: 3 },
+    }),
+    h(
+      "span",
+      { style: { display: "grid", gap: 3 } },
+      h("span", { style: { fontWeight: 600, fontSize: "0.875rem" } }, props.label),
+      props.hint ? h("span", { style: MUTED }, props.hint) : null,
+    ),
+  )
 }
 
-function StatusSummary(props) {
-  const { ctx, status } = props;
-  const h = createElement;
-  if (!status) {
-    return h("p", { className: "coach-muted" }, "Loading status...");
-  }
-  const rows = [
-    ["Configured", status.configured ? "Yes" : "Unconfigured"],
-    ["Shared model", formatModel(status.coach_model)],
-    [
-      "Spend",
-      `${formatUsd(status.spend_usd)} of ${formatUsd(status.budget_usd)}`,
-    ],
-    ["Pending advice", String(status.pending_notes || 0)],
-    [
-      "Model overrides",
-      status.permissions && status.permissions.model_overrides
-        ? "Granted"
-        : "Not granted",
-    ],
-  ];
+function Choice(props) {
+  const selected = props.options.find((option) => option.value === props.value)
   return h(
-    "dl",
-    {
-      className: "coach-status",
-      style: { display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px" },
-    },
-    rows.map(([label, value]) =>
-      h(
-        "div",
-        {
-          key: label,
-          style: { display: "contents" },
-        },
-        h("dt", { style: { opacity: 0.7 } }, label),
-        h("dd", { style: { margin: 0 } }, value),
+    Field,
+    { label: props.label, hint: selected && selected.description ? selected.description : props.hint },
+    h(
+      "select",
+      {
+        style: INPUT,
+        value: props.value,
+        onChange: (event) => props.onChange(event.target.value),
+      },
+      props.options.map((option) =>
+        h("option", { key: option.value, value: option.value }, option.label),
       ),
     ),
-  );
+  )
 }
 
-function OverviewPage(props) {
-  const { ctx } = props;
-  const h = createElement;
-  const state = useConfig(ctx);
-  const status = state.status;
+function NumberField(props) {
+  const [draft, setDraft] = useState(String(props.value ?? ""))
+  useEffect(() => {
+    setDraft(String(props.value ?? ""))
+  }, [props.value])
+  const commit = () => {
+    const parsed = Number(draft)
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(props.value ?? ""))
+      return
+    }
+    const min = props.min ?? Number.NEGATIVE_INFINITY
+    const max = props.max ?? Number.POSITIVE_INFINITY
+    props.onChange(Math.min(max, Math.max(min, parsed)))
+  }
+  return h(
+    Field,
+    { label: props.label, hint: props.hint },
+    h("input", {
+      type: "number",
+      style: INPUT,
+      value: draft,
+      min: props.min,
+      max: props.max,
+      step: props.step ?? 1,
+      onChange: (event) => setDraft(event.target.value),
+      onBlur: commit,
+      onKeyDown: (event) => {
+        if (event.key === "Enter") commit()
+      },
+    }),
+  )
+}
+
+// ---------------------------------------------------------------- model picker
+
+function ModelPicker(props) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const groups = groupModels(props.models, query)
+  const current = modelLabel(props.value)
+
+  const choose = (value) => {
+    props.onChange(value)
+    setOpen(false)
+    setQuery("")
+  }
+
   return h(
     "div",
-    { className: "coach-page", style: { display: "grid", gap: "12px" } },
-    h(
-      "p",
-      { className: "coach-lede", style: { margin: 0 } },
-      "A second model for advice, per-turn review, completion gating, and typed decisions.",
-    ),
-    state.error
-      ? h("p", { className: "coach-error", role: "alert" }, state.error)
-      : null,
-    status && !status.configured
-      ? h(
-          "div",
-          {
-            className: "coach-notice",
-            style: {
-              border: "1px solid currentColor",
-              borderRadius: "8px",
-              padding: "12px",
-            },
-          },
-          h("strong", null, "Unconfigured"),
-          h(
-            "p",
-            { style: { margin: "6px 0 0" } },
-            "Choose a coach model on the Models page. Until then the tools say no model is set and Review stays quiet.",
-          ),
-        )
-      : null,
-    h(StatusSummary, { ctx, status }),
+    { style: { display: "grid", gap: 8 } },
     h(
       "button",
       {
         type: "button",
-        onClick: () => state.reload(),
-        disabled: state.busy,
+        style: { ...BUTTON, display: "flex", justifyContent: "space-between", gap: 12 },
+        onClick: () => setOpen(!open),
       },
-      state.busy ? "Working..." : "Refresh",
+      h("span", null, current),
+      h("span", { style: { opacity: 0.6 } }, open ? "Close" : "Change"),
     ),
-  );
-}
-
-function ModelsPage(props) {
-  const { ctx } = props;
-  const h = createElement;
-  const state = useConfig(ctx);
-  const [catalog, setCatalog] = useState([]);
-  const [catalogError, setCatalogError] = useState("");
-  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
-
-  effect(() => {
-    let alive = true;
-    const api = host;
-    if (!api || typeof api.request !== "function") {
-      setCatalogError("This host does not expose the model catalog.");
-      return undefined;
-    }
-    Promise.resolve(api.request("model.options"))
-      .then((result) => {
-        if (alive) setCatalog(dedupeModels(flattenModels(unwrap(result))));
-      })
-      .catch((err) => {
-        if (alive) setCatalogError(messageOf(err));
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (!state.config) {
-    return h(Loading, { h, state });
-  }
-  const values = state.config.values || {};
-
-  return h(
-    PageFrame,
-    { h, state, title: "Models" },
-    h(
-      "p",
-      { className: "coach-hint", style: { margin: 0 } },
-      "Per-mode models need the override grant on the Status page. Inheriting the shared model needs no permission.",
-    ),
-    catalogError
-      ? h("p", { className: "coach-error" }, catalogError)
-      : null,
-    catalog.length === 0
+    open
       ? h(
-          "p",
-          { className: "coach-hint" },
-          "No catalog models were returned; current selections still render.",
+          "div",
+          { style: { ...PANEL, padding: 10, gap: 8, maxHeight: 320, overflowY: "auto" } },
+          h("input", {
+            autoFocus: true,
+            placeholder: "Search models or providers",
+            style: INPUT,
+            value: query,
+            onChange: (event) => setQuery(event.target.value),
+          }),
+          props.inherit
+            ? h(
+                "button",
+                { type: "button", style: BUTTON, onClick: () => choose(null) },
+                "Inherit shared model",
+              )
+            : null,
+          props.models.length === 0
+            ? h("p", { style: MUTED }, "The host returned no models. Check that a provider is authenticated.")
+            : null,
+          groups.length === 0 && props.models.length > 0
+            ? h("p", { style: MUTED }, "No model matches that search.")
+            : null,
+          groups.map((group) =>
+            h(
+              "div",
+              { key: group.provider || group.providerName, style: { display: "grid", gap: 2 } },
+              h("div", { style: { ...SECTION_TITLE, padding: "8px 4px 4px" } }, group.providerName),
+              group.items.map((item) =>
+                h(
+                  "button",
+                  {
+                    key: `${item.provider}/${item.model}`,
+                    type: "button",
+                    style: { ...BUTTON, border: "none", padding: "5px 6px" },
+                    onClick: () => choose({ provider: item.provider, model: item.model }),
+                  },
+                  item.model,
+                ),
+              ),
+            ),
+          ),
         )
       : null,
-    ...MODEL_ROWS.map(([key, label, hint]) =>
-      h(
-        "div",
-        { className: "coach-field", key, style: { display: "grid", gap: "4px" } },
-        h("span", { className: "coach-field-label" }, label),
-        h(ModelInput, {
-          ctx,
-          value: values[key],
-          models: catalog,
-          inherit: key !== "coach_model",
-          onChange: (next) => state.save(key, next),
-        }),
-        h("span", { className: "coach-hint" }, hint),
-      ),
-    ),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Max reply tokens"),
-      h(NumberInput, {
-        ctx,
-        value: values.max_reply_tokens,
-        min: 50,
-        max: 4000,
-        step: 50,
-        onCommit: (next) => state.save("max_reply_tokens", next),
-      }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "Hard cap on the coach's answer; output is the expensive half of a review.",
-      ),
-    ),
-    state.busy ? h("p", { className: "coach-muted" }, "Saving...") : null,
-  );
+  )
 }
 
-function ModesPage(props) {
-  const { ctx } = props;
-  const h = createElement;
-  const state = useConfig(ctx);
-  if (!state.config) {
-    return h(Loading, { h, state });
-  }
-  const values = state.config.values || {};
-  const choices = state.config.choices || {};
-  const save = state.save;
+// ---------------------------------------------------------------- pages
+
+function ModelSection(props) {
+  const { state, mainModel } = props
+  const values = (state.config && state.config.values) || {}
+  const [catalog, setCatalog] = useState([])
+  const [catalogError, setCatalogError] = useState("")
+
+  useEffect(() => {
+    let alive = true
+    Promise.resolve(host.request("model.options"))
+      .then((result) => {
+        if (alive) setCatalog(flattenModels(result))
+      })
+      .catch((err) => {
+        if (alive) setCatalogError(messageOf(err))
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const warning = sameModel(values.coach_model, mainModel)
+    ? "This is your main model. Pick a different one: the same model shares the same blind spots, and the plugin refuses to call it."
+    : "Pick a model that differs from the one you work in. Everything else inherits it unless you override it."
 
   return h(
-    PageFrame,
-    { h, state, title: "Modes" },
-    h(ToggleField, {
-      ctx,
-      label: "Active",
-      checked: values.active_enabled,
-      onChange: (next) => save("active_enabled", next),
-      hint: "Reviews each completed turn. Off by default because it spends on every turn.",
-    }),
+    Card,
+    {
+      title: "Models",
+      description:
+        "The coach is a second model. The shared model below is used by every mode; the overrides further down are optional.",
+    },
     h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Active cadence"),
-      h(ChoiceInput, {
-        ctx,
+      Field,
+      { label: "Shared coach model", hint: catalogError || warning },
+      h(ModelPicker, {
+        models: catalog,
+        value: values.coach_model,
+        inherit: false,
+        onChange: (next) => state.save("coach_model", next),
+      }),
+    ),
+    mainModel
+      ? h(
+          "p",
+          { style: MUTED },
+          `Your main model is ${mainModel.provider ? `${mainModel.provider} / ` : ""}${mainModel.model}.`,
+        )
+      : null,
+    h("p", { style: { ...SECTION_TITLE, marginTop: 6 } }, "Per-mode overrides"),
+    h(
+      "p",
+      { style: MUTED },
+      "Leave these on inherit unless a mode deserves a different model. Active runs on every reviewed turn, so it is the one worth making cheap; Review runs rarely and can afford the strongest model you have.",
+    ),
+    [
+      ["active_model", "Active review model", "Used by the per-turn reviewer."],
+      ["review_model", "Completion review model", "Used when the agent is about to claim it is done."],
+      ["consult_model", "Consult model", "Used when the agent asks you for advice mid-task."],
+    ].map(([key, label, hint]) =>
+      h(
+        Field,
+        { key, label, hint },
+        h(ModelPicker, {
+          models: catalog,
+          value: values[key],
+          inherit: true,
+          onChange: (next) => state.save(key, next),
+        }),
+      ),
+    ),
+    h(NumberField, {
+      label: "Longest reply (tokens)",
+      hint: "A hard cap on the coach's answer. Output is the expensive half of a review, so this is the main cost lever.",
+      value: values.max_reply_tokens,
+      min: 80,
+      max: 4000,
+      step: 20,
+      onChange: (next) => state.save("max_reply_tokens", next),
+    }),
+  )
+}
+
+function BehaviourPage(props) {
+  const { state } = props
+  const values = (state.config && state.config.values) || {}
+  return h(
+    "div",
+    { style: { display: "grid", gap: 16 } },
+    h(
+      Card,
+      {
+        title: "Active review",
+        description:
+          "Reviews each finished turn and tells the agent what it would change. It is the only mode that spends on every turn, which is why it is off by default.",
+      },
+      h(Toggle, {
+        label: "Review every turn",
+        hint: "Off by default. A cheap, fast model keeps this close to free.",
+        checked: values.active_enabled,
+        onChange: (next) => state.save("active_enabled", next),
+      }),
+      h(Choice, {
+        label: "Which turns",
         value: values.active_cadence,
-        choices: choices.active_cadence || [],
-        onChange: (next) => save("active_cadence", next),
+        options: [
+          {
+            value: "tool_turns_only",
+            label: "Turns that used tools",
+            description: "Skips turns where the agent only talked, so chat is not reviewed.",
+          },
+          {
+            value: "every_turn",
+            label: "Every turn",
+            description: "Reviews every completed turn, including plain answers.",
+          },
+          {
+            value: "every_n",
+            label: "Every N turns",
+            description: "Reviews one turn in N; cheaper and coarser.",
+          },
+        ],
+        onChange: (next) => state.save("active_cadence", next),
       }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "`tool_turns_only` skips turns where the agent only talked.",
-      ),
+      values.active_cadence === "every_n"
+        ? h(NumberField, {
+            label: "Turns per review",
+            hint: "One review every this many turns.",
+            value: values.active_every_n,
+            min: 2,
+            max: 50,
+            onChange: (next) => state.save("active_every_n", next),
+          })
+        : null,
     ),
     h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Turns per review"),
-      h(NumberInput, {
-        ctx,
-        value: values.active_every_n,
-        min: 1,
-        max: 50,
-        step: 1,
-        onCommit: (next) => save("active_every_n", next),
+      Card,
+      {
+        title: "Completion review",
+        description:
+          "Fires when the agent has edited files and is about to say it is done. It reads a bounded diff of the changed files, not the whole conversation.",
+      },
+      h(Toggle, {
+        label: "Review before the agent claims it is done",
+        hint: "Only turns that edited files. Cheap, because it runs rarely.",
+        checked: values.review_enabled,
+        onChange: (next) => state.save("review_enabled", next),
       }),
-      h("span", { className: "coach-hint" }, "Used when the cadence is `every_n`."),
-    ),
-    h(ToggleField, {
-      ctx,
-      label: "Review",
-      checked: values.review_enabled,
-      onChange: (next) => save("review_enabled", next),
-      hint: "Reviews the diff when the agent is about to claim it is done.",
-    }),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Review authority"),
-      h(ChoiceInput, {
-        ctx,
+      h(Choice, {
+        label: "What the review may do",
         value: values.review_authority,
-        choices: choices.review_authority || [],
-        onChange: (next) => save("review_authority", next),
+        options: [
+          {
+            value: "report",
+            label: "Report only",
+            description: "Posts its findings; the turn finishes.",
+          },
+          {
+            value: "hold_once",
+            label: "Hold once",
+            description: "Can send the agent back to work one time per request to fix a blocker.",
+          },
+        ],
+        onChange: (next) => state.save("review_authority", next),
       }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "`hold_once` may send the agent back to work one time per request.",
-      ),
-    ),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Holds per request"),
-      h(NumberInput, {
-        ctx,
+      h(NumberField, {
+        label: "Holds allowed per request",
+        hint: "One is usually right. More than one turns the gate into an argument.",
         value: values.review_max_holds,
         min: 0,
-        max: 5,
-        step: 1,
-        onCommit: (next) => save("review_max_holds", next),
+        max: 3,
+        onChange: (next) => state.save("review_max_holds", next),
       }),
-      h("span", { className: "coach-hint" }, "Above one, the gate turns into an argument."),
     ),
-    h(ToggleField, {
-      ctx,
-      label: "Decide",
-      checked: values.decide_enabled,
-      onChange: (next) => save("decide_enabled", next),
-      hint: "Exposes `coach_decide` for typed fork resolution.",
-    }),
     h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Decide backend"),
-      h(ChoiceInput, {
-        ctx,
+      Card,
+      {
+        title: "Decisions",
+        description:
+          "A typed tiebreaker for two plausible options. It returns a choice with a confidence, not prose, so the agent can act on it or escalate.",
+      },
+      h(Toggle, {
+        label: "Enable the decide tool",
+        hint: "Adds coach_decide. Nothing is spent until the agent calls it.",
+        checked: values.decide_enabled,
+        onChange: (next) => state.save("decide_enabled", next),
+      }),
+      h(Choice, {
+        label: "Where decisions come from",
         value: values.decide_backend,
-        choices: choices.decide_backend || [],
-        onChange: (next) => save("decide_backend", next),
+        options: [
+          {
+            value: "jev-openrouter",
+            label: "Jev via OpenRouter",
+            description: "Uses the OpenRouter key already in your Hermes config. Input tokens only.",
+          },
+          {
+            value: "jev-direct",
+            label: "Jev via TypeSafe",
+            description: "Calls TypeSafe directly; needs TYPESAFE_API_KEY in ~/.hermes/.env.",
+          },
+          {
+            value: "chat-model",
+            label: "Any chat model",
+            description: "Works with any provider, but the confidence is self-reported and less reliable.",
+          },
+        ],
+        onChange: (next) => state.save("decide_backend", next),
       }),
       h(
-        "span",
-        { className: "coach-hint" },
-        "`jev-openrouter` uses your OpenRouter key; `jev-direct` uses a TypeSafe key.",
+        Field,
+        {
+          label: "Decision model",
+          hint: "For Jev use typesafe/jev-1.14. For a chat model, name the model to call.",
+        },
+        h("input", {
+          style: INPUT,
+          defaultValue: values.decide_model,
+          onBlur: (event) => state.save("decide_model", event.target.value.trim()),
+        }),
       ),
-    ),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Decide model"),
-      h(TextInput, {
-        ctx,
-        value: values.decide_model,
-        placeholder: "typesafe/jev-1.14",
-        onChange: (next) => save("decide_model", next),
+      h(NumberField, {
+        label: "Decisions per turn",
+        hint: "Stops the agent from outsourcing its judgement one call at a time.",
+        value: values.decide_max_calls_per_turn,
+        min: 1,
+        max: 10,
+        onChange: (next) => state.save("decide_max_calls_per_turn", next),
       }),
-      h("span", { className: "coach-hint" }, "The decision model returns verdicts, not prose."),
-    ),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Minimum confidence"),
-      h(NumberInput, {
-        ctx,
+      h(NumberField, {
+        label: "Minimum confidence",
+        hint: "Below this the tool answers escalate instead of picking. Raise it for destructive choices.",
         value: values.decide_min_confidence,
         min: 0,
         max: 1,
         step: 0.05,
-        onCommit: (next) => save("decide_min_confidence", next),
-      }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "Below this the tool answers `escalate` instead of picking.",
-      ),
-    ),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Decide calls per turn"),
-      h(NumberInput, {
-        ctx,
-        value: values.decide_max_calls_per_turn,
-        min: 1,
-        max: 20,
-        step: 1,
-        onCommit: (next) => save("decide_max_calls_per_turn", next),
+        onChange: (next) => state.save("decide_min_confidence", next),
       }),
     ),
     h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Consult calls per turn"),
-      h(NumberInput, {
-        ctx,
+      Card,
+      {
+        title: "Consult",
+        description:
+          "Always available: the agent can ask the coach a question, ask for a plan review before starting, or ask for a review of a finished piece of work.",
+      },
+      h(NumberField, {
+        label: "Consults per turn",
+        hint: "A ceiling so a stuck agent cannot ask the same question in a loop.",
         value: values.consult_max_calls_per_turn,
         min: 1,
-        max: 20,
-        step: 1,
-        onCommit: (next) => save("consult_max_calls_per_turn", next),
+        max: 10,
+        onChange: (next) => state.save("consult_max_calls_per_turn", next),
       }),
     ),
-    state.busy ? h("p", { className: "coach-muted" }, "Saving...") : null,
-  );
+  )
 }
 
 function DeliveryPage(props) {
-  const { ctx } = props;
-  const h = createElement;
-  const state = useConfig(ctx);
-  if (!state.config) {
-    return h(Loading, { h, state });
-  }
-  const values = state.config.values || {};
-  const choices = state.config.choices || {};
-  const save = state.save;
-
+  const { state } = props
+  const values = (state.config && state.config.values) || {}
   return h(
-    PageFrame,
-    { h, state, title: "Delivery" },
+    "div",
+    { style: { display: "grid", gap: 16 } },
     h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Policy"),
-      h(ChoiceInput, {
-        ctx,
+      Card,
+      {
+        title: "How advice reaches the agent",
+        description:
+          "A review can arrive as a card you read now, or as a new turn the agent answers. The first is nearly free; the second costs a full turn.",
+      },
+      h(Choice, {
+        label: "Delivery policy",
         value: values.delivery_policy,
-        choices: choices.delivery_policy || [],
-        onChange: (next) => save("delivery_policy", next),
+        options: [
+          {
+            value: "severity",
+            label: "By severity (recommended)",
+            description:
+              "Blockers start a turn so the agent can fix them; notes and concerns wait for the next turn.",
+          },
+          {
+            value: "ambient",
+            label: "Always ambient",
+            description:
+              "A card now, and the agent sees the note at the start of its next turn. No extra model call.",
+          },
+          {
+            value: "corrective",
+            label: "Always corrective",
+            description: "Every note starts a new turn. Most immediate, and the most expensive.",
+          },
+        ],
+        onChange: (next) => state.save("delivery_policy", next),
       }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "`ambient` holds advice for the next turn; `corrective` starts a new turn now; `severity` sends blockers corrective and the rest ambient.",
-      ),
-    ),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Corrective per request"),
-      h(NumberInput, {
-        ctx,
+      h(NumberField, {
+        label: "Corrective turns per request",
+        hint: "Caps how often advice can start its own turn within one request from you.",
         value: values.delivery_max_corrective_per_request,
         min: 0,
-        max: 10,
-        step: 1,
-        onCommit: (next) => save("delivery_max_corrective_per_request", next),
+        max: 5,
+        onChange: (next) => state.save("delivery_max_corrective_per_request", next),
       }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "Stops advice from turning into a conversation of its own.",
-      ),
-    ),
-    h(ToggleField, {
-      ctx,
-      label: "Show ambient cards",
-      checked: values.delivery_show_cards,
-      onChange: (next) => save("delivery_show_cards", next),
-      hint: "Off means advice reaches the model but you never see it.",
-    }),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Note lifetime (turns)"),
-      h(NumberInput, {
-        ctx,
+      h(Toggle, {
+        label: "Show a card for every note",
+        hint: "Turn this off and ambient advice still reaches the model, but you never see it.",
+        checked: values.delivery_show_cards,
+        onChange: (next) => state.save("delivery_show_cards", next),
+      }),
+      h(NumberField, {
+        label: "Undelivered notes expire after",
+        hint: "Turns. A note nobody delivered is dropped rather than surfacing stale.",
         value: values.delivery_note_ttl_turns,
-        min: 0,
-        max: 50,
-        step: 1,
-        onCommit: (next) => save("delivery_note_ttl_turns", next),
+        min: 1,
+        max: 20,
+        onChange: (next) => state.save("delivery_note_ttl_turns", next),
       }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "Undelivered notes are dropped after this many turns.",
-      ),
     ),
-    state.busy ? h("p", { className: "coach-muted" }, "Saving...") : null,
-  );
+  )
 }
 
 function BudgetPage(props) {
-  const { ctx } = props;
-  const h = createElement;
-  const state = useConfig(ctx);
-  if (!state.config) {
-    return h(Loading, { h, state });
-  }
-  const values = state.config.values || {};
-  const choices = state.config.choices || {};
-  const save = state.save;
-
+  const { state } = props
+  const values = (state.config && state.config.values) || {}
   return h(
-    PageFrame,
-    { h, state, title: "Budget" },
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Session budget (USD)"),
-      h(NumberInput, {
-        ctx,
-        value: values.budget_session_usd,
-        min: 0,
-        max: 1000,
-        step: 0.05,
-        onCommit: (next) => save("budget_session_usd", next),
-      }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "Computed from real provider usage, not estimates of calls.",
-      ),
-    ),
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "When exceeded"),
-      h(ChoiceInput, {
-        ctx,
-        value: values.budget_on_exceed,
-        choices: choices.budget_on_exceed || [],
-        onChange: (next) => save("budget_on_exceed", next),
-      }),
-      h(
-        "span",
-        { className: "coach-hint" },
-        "`warn` keeps going; `soft` stops background reviews but leaves explicit consults; `hard` stops everything.",
-      ),
-    ),
-    state.status
-      ? h(
-          "p",
-          { className: "coach-muted" },
-          `Recorded spend: ${formatUsd(state.status.spend_usd)} across ${
-            state.status.sessions || 0
-          } session(s).`,
-        )
-      : null,
-    state.busy ? h("p", { className: "coach-muted" }, "Saving...") : null,
-  );
+    Card,
+    {
+      title: "Budget",
+      description:
+        "Coach spend is priced from real usage, including cached tokens. This is a ceiling for the whole profile, not a prediction.",
+    },
+    h(NumberField, {
+      label: "Budget per session (USD)",
+      hint: "A review is usually a fraction of a cent; a corrective turn costs more because it is a full turn.",
+      value: values.budget_session_usd,
+      min: 0,
+      max: 100,
+      step: 0.1,
+      onChange: (next) => state.save("budget_session_usd", next),
+    }),
+    h(Choice, {
+      label: "When the budget is reached",
+      value: values.budget_on_exceed,
+      options: [
+        {
+          value: "warn",
+          label: "Warn only",
+          description: "Keeps reviewing and records the overrun.",
+        },
+        {
+          value: "soft",
+          label: "Stop automatic reviews",
+          description: "Turns off Active, Review and Decide; consults you ask for still work.",
+        },
+        {
+          value: "hard",
+          label: "Stop everything",
+          description: "No coach calls at all until the budget is raised.",
+        },
+      ],
+      onChange: (next) => state.save("budget_on_exceed", next),
+    }),
+  )
 }
 
+const STARTER = `# Coach guidance
+
+- Name the file and line for every finding.
+- Do not suggest new dependencies; use what the project already has.
+- Prefer one concrete fix over a list of options.
+- This project targets Python 3.14 and runs on Linux, macOS and Windows.
+`
+
 function GuidancePage(props) {
-  const { ctx } = props;
-  const h = createElement;
-  const state = useConfig(ctx);
-  const [scope, setScope] = useState("global");
-  const [cwd, setCwd] = useState("");
-  const [text, setText] = useState("");
-  const [notice, setNotice] = useState("");
-  const [saving, setSaving] = useState(false);
-  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
+  const { ctx, state } = props
+  const cwd = useValue(host.state.cwd)
+  const [scope, setScope] = useState("project")
+  const [text, setText] = useState("")
+  const [path, setPath] = useState("")
+  const [notice, setNotice] = useState("")
+  const [saving, setSaving] = useState(false)
 
-  const load = async (nextScope, nextCwd) => {
-    setNotice("");
+  const load = async (nextScope) => {
+    setNotice("")
     try {
-      const query =
-        "/guidance?scope=" +
-        encodeURIComponent(nextScope) +
-        "&cwd=" +
-        encodeURIComponent(nextCwd || "");
-      const data = unwrap(await ctx.rest(query));
-      setText(data && typeof data.text === "string" ? data.text : "");
+      const query = `/guidance?scope=${encodeURIComponent(nextScope)}&cwd=${encodeURIComponent(cwd || "")}`
+      const data = unwrap(await ctx.rest(query))
+      setText(data && typeof data.text === "string" ? data.text : "")
+      setPath(data && data.path ? String(data.path) : "")
     } catch (err) {
-      setNotice(messageOf(err));
+      setNotice(messageOf(err))
     }
-  };
-
-  effect(() => {
-    load("global", "");
-  }, []);
-
-  if (!state.config) {
-    return h(Loading, { h, state });
   }
-  const values = state.config.values || {};
+
+  useEffect(() => {
+    load(scope)
+  }, [scope, cwd])
 
   const save = async () => {
-    setSaving(true);
-    setNotice("");
+    setSaving(true)
+    setNotice("")
     try {
       const result = unwrap(
-        await ctx.rest("/guidance", {
-          method: "PUT",
-          body: { scope, cwd, text },
-        }),
-      );
-      setNotice(result && result.message ? result.message : "Saved.");
+        await ctx.rest("/guidance", { method: "PUT", body: { scope, cwd, text } }),
+      )
+      setNotice(result && result.message ? result.message : "Saved.")
+      if (result && result.path) setPath(String(result.path))
     } catch (err) {
-      setNotice(messageOf(err));
+      setNotice(messageOf(err))
     } finally {
-      setSaving(false);
+      setSaving(false)
     }
-  };
+  }
 
-  const maxChars = 8000;
+  const tokens = Math.ceil(text.length / 4)
 
   return h(
-    PageFrame,
-    { h, state, title: "Guidance" },
-    h(ToggleField, {
-      ctx,
-      label: "Send guidance to the coach",
-      checked: values.guidance_enabled,
-      onChange: (next) => state.save("guidance_enabled", next),
-      hint: "Off ignores both files without deleting them.",
-    }),
+    "div",
+    { style: { display: "grid", gap: 16 } },
     h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Scope"),
-      h(ChoiceInput, {
-        ctx,
-        value: scope,
-        choices: ["global", "project"],
-        onChange: (next) => {
-          setScope(next);
-          load(next, cwd);
-        },
-      }),
+      Card,
+      {
+        title: "Guidance",
+        description:
+          "Extra instructions for the coach, sent with every call. Keep it short: whatever is here is paid on every review.",
+      },
       h(
-        "span",
-        { className: "coach-hint" },
-        scope === "global"
-          ? "Global guidance lives in $HERMES_HOME/coach/guidance.md."
-          : "Project guidance is written to COACH.md in a directory recorded from a real session.",
-      ),
-    ),
-    scope === "project"
-      ? h(
-          "div",
-          { className: "coach-field", style: { display: "grid", gap: "4px" } },
-          h("span", { className: "coach-field-label" }, "Project directory"),
-          h(TextInput, {
-            ctx,
-            value: cwd,
-            placeholder: "/path/to/focused/project",
-            onChange: setCwd,
-          }),
+        "div",
+        { style: { display: "flex", gap: 8 } },
+        ["project", "global"].map((value) =>
           h(
             "button",
-            { type: "button", onClick: () => load("project", cwd) },
-            "Load",
+            {
+              key: value,
+              type: "button",
+              style: {
+                ...BUTTON,
+                fontWeight: scope === value ? 700 : 400,
+                borderColor:
+                  scope === value
+                    ? "color-mix(in srgb, currentColor 55%, transparent)"
+                    : "color-mix(in srgb, currentColor 24%, transparent)",
+              },
+              onClick: () => setScope(value),
+            },
+            value === "project" ? "This project" : "All projects",
           ),
-        )
-      : null,
-    h(
-      "div",
-      { className: "coach-field", style: { display: "grid", gap: "4px" } },
-      h("span", { className: "coach-field-label" }, "Guidance text"),
+        ),
+      ),
+      h(
+        "p",
+        { style: MUTED },
+        scope === "project"
+          ? "Saved as COACH.md at the root of the current project, so it travels with the repository and can be reviewed like code."
+          : "Saved in your Hermes profile and applied to every project. Reserve it for things that are always true.",
+      ),
+      path ? h("p", { style: { ...MUTED, fontFamily: "monospace" } }, path) : null,
       h("textarea", {
-        className: "coach-textarea",
+        style: {
+          ...INPUT,
+          minHeight: 220,
+          resize: "vertical",
+          fontFamily: "monospace",
+          fontSize: "0.8125rem",
+        },
+        placeholder: "Project traps, style rules, things the coach should not suggest here.",
         value: text,
-        rows: 12,
-        maxLength: maxChars,
-        style: { fontFamily: "monospace", width: "100%" },
         onChange: (event) => setText(event.target.value),
       }),
       h(
-        "span",
-        { className: "coach-hint" },
-        `${text.length} / ${maxChars} chars - about ${Math.ceil(
-          text.length / 4,
-        )} tokens. Only the first 4000 characters reach the coach prompt.`,
+        "div",
+        { style: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } },
+        h(
+          "button",
+          { type: "button", style: BUTTON, onClick: save, disabled: saving },
+          saving ? "Saving..." : "Save guidance",
+        ),
+        h(
+          "button",
+          { type: "button", style: BUTTON, onClick: () => setText(STARTER) },
+          "Insert a starter",
+        ),
+        h("span", { style: MUTED }, `${text.length} characters, about ${tokens} tokens`),
+        notice ? h("span", { style: { ...MUTED, opacity: 1 } }, notice) : null,
       ),
     ),
     h(
-      "div",
-      { style: { display: "flex", gap: "8px", alignItems: "center" } },
-      h(
-        "button",
-        { type: "button", onClick: save, disabled: saving || text.length > maxChars },
-        saving ? "Saving..." : "Save guidance",
-      ),
-      notice ? h("span", { className: "coach-hint" }, notice) : null,
+      Card,
+      {
+        title: "Send guidance at all",
+        description: "Turning this off ignores both files without deleting them.",
+      },
+      h(Toggle, {
+        label: "Use guidance",
+        checked:
+          (state.config && state.config.values && state.config.values.guidance_enabled) || false,
+        onChange: (next) => state.save("guidance_enabled", next),
+      }),
     ),
-  );
+  )
 }
 
 function StatusPage(props) {
-  const { ctx } = props;
-  const h = createElement;
-  const state = useConfig(ctx);
-  const [granting, setGranting] = useState(false);
-  const [notice, setNotice] = useState("");
-
-  if (!state.config) {
-    return h(Loading, { h, state });
-  }
-  const status = state.status;
-  const granted =
-    status && status.permissions && status.permissions.model_overrides;
+  const { ctx, state } = props
+  const status = state.status || {}
+  const permissions = status.permissions || {}
+  const [granting, setGranting] = useState(false)
+  const [notice, setNotice] = useState("")
 
   const grant = async () => {
-    setGranting(true);
-    setNotice("");
+    setGranting(true)
+    setNotice("")
     try {
-      unwrap(await ctx.rest("/permissions/grant", { method: "POST", body: {} }));
-      setNotice("Model overrides granted.");
-      await state.reload();
+      await ctx.rest("/permissions/grant", { method: "POST", body: {} })
+      setNotice("Model overrides granted.")
+      await state.reload()
     } catch (err) {
-      setNotice(messageOf(err));
+      setNotice(messageOf(err))
     } finally {
-      setGranting(false);
+      setGranting(false)
     }
-  };
+  }
+
+  const rows = [
+    ["Coach model", status.configured ? modelLabel(status.coach_model) : "Not configured"],
+    ["Active review", status.active_enabled ? "On" : "Off"],
+    ["Completion review", status.review_enabled ? "On" : "Off"],
+    ["Decisions", status.decide_enabled ? `On, ${status.decide_backend}` : "Off"],
+    [
+      "Spend, all sessions",
+      `${formatUsd(status.spend_usd)} of ${formatUsd(status.budget_usd)} per session`,
+    ],
+    ["Pending notes", String(status.pending_notes || 0)],
+    ["Sessions with state", String(status.sessions || 0)],
+  ]
 
   return h(
-    PageFrame,
-    { h, state, title: "Status" },
-    h(StatusSummary, { ctx, status }),
+    "div",
+    { style: { display: "grid", gap: 16 } },
     h(
-      "div",
+      Card,
       {
-        className: "coach-permission",
-        style: {
-          display: "grid",
-          gap: "6px",
-          borderTop: "1px solid rgba(127,127,127,0.35)",
-          paddingTop: "10px",
-        },
+        title: "Status",
+        description: status.configured
+          ? "The coach is configured. Each mode only spends when its own trigger fires."
+          : "No coach model is set yet. Choose one on the Models tab; until then the tools answer without calling a model.",
       },
-      h("span", { className: "coach-field-label" }, "Model-override permission"),
+      h(
+        "dl",
+        { style: { display: "grid", gridTemplateColumns: "auto 1fr", gap: "7px 18px", margin: 0 } },
+        rows.map(([label, value]) =>
+          h(
+            "div",
+            { key: label, style: { display: "contents" } },
+            h("dt", { style: { opacity: 0.65 } }, label),
+            h("dd", { style: { margin: 0 } }, value),
+          ),
+        ),
+      ),
+      status.last_error ? h("p", { style: MUTED }, `Last error: ${status.last_error}`) : null,
+    ),
+    h(
+      Card,
+      {
+        title: "Model overrides",
+        description:
+          "Per-mode models need permission to pass their own provider and model. Granting is a one-time switch for this plugin; inheriting the shared model never needs it.",
+      },
       h(
         "p",
-        { className: "coach-hint", style: { margin: 0 } },
-        granted
-          ? "Granted. Per-mode models can call providers other than the primary."
-          : "Not granted. Per-mode models fail at call time until both trust flags are written; inheriting needs no permission.",
+        { style: { ...MUTED, opacity: 1, fontWeight: 600 } },
+        permissions.model_overrides ? "Granted" : "Not granted",
       ),
-      granted
+      permissions.model_overrides
         ? null
         : h(
             "button",
-            { type: "button", onClick: grant, disabled: granting },
-            granting ? "Granting..." : "Grant",
+            { type: "button", style: BUTTON, onClick: grant, disabled: granting },
+            granting ? "Granting..." : "Grant model overrides",
           ),
-      notice ? h("span", { className: "coach-hint" }, notice) : null,
-    ),
-    status && status.last_error
-      ? h(
-          "p",
-          { className: "coach-hint" },
-          `Last coach error: ${status.last_error}`,
-        )
-      : null,
-    h(
-      "p",
-      { className: "coach-hint", style: { margin: 0 } },
-      "Pending advice: deliver or dismiss it from the CLI with /coach pending and /coach send.",
+      notice ? h("p", { style: MUTED }, notice) : null,
     ),
     h(
-      "button",
-      { type: "button", onClick: () => state.reload(), disabled: state.busy },
-      state.busy ? "Refreshing..." : "Refresh",
+      Card,
+      {
+        title: "Clean up",
+        description:
+          "Pending advice can be listed and released from a normal chat with /coach pending and /coach send.",
+      },
+      h(
+        "p",
+        { style: MUTED },
+        "State lives under ~/.hermes/coach, pruned to the twenty newest sessions.",
+      ),
     ),
-  );
+  )
 }
+
+// ---------------------------------------------------------------- register
 
 export function register(ctx) {
   if (!ctx || typeof ctx.registerSettingsPage !== "function") {
-    throw new Error("Coach settings need the Hermes Desktop plugin host.");
+    throw new Error("Coach settings need the Hermes Desktop plugin host.")
   }
-  const h = createElement;
-  const withContext = (Component) => (props) =>
-    h(Component, { ...(props || {}), ctx });
+
+  const page = (Component) =>
+    function CoachPage() {
+      const state = useSettings(ctx)
+      const main = useValue(host.state.model)
+      if (!state.config) {
+        return h(
+          "div",
+          { style: { display: "grid", gap: 10, padding: 8 } },
+          h("p", { style: MUTED }, state.error || "Loading settings..."),
+          h("button", { type: "button", style: BUTTON, onClick: () => state.reload() }, "Reload"),
+        )
+      }
+      const raw = String(main || "")
+      const slash = raw.indexOf("/")
+      const mainModel = raw
+        ? {
+            provider: slash >= 0 ? raw.slice(0, slash) : "",
+            model: slash >= 0 ? raw.slice(slash + 1) : raw,
+          }
+        : null
+      return h(Component, { ctx, state, mainModel })
+    }
 
   ctx.registerSettingsPage({
     id: "coach",
     title: "Coach",
     icon: "sparkle",
-    render: withContext(OverviewPage),
+    render: page(ModelSection),
     children: [
-      { id: "models", title: "Models", render: withContext(ModelsPage) },
-      { id: "modes", title: "Modes", render: withContext(ModesPage) },
-      { id: "delivery", title: "Delivery", render: withContext(DeliveryPage) },
-      { id: "budget", title: "Budget", render: withContext(BudgetPage) },
-      { id: "guidance", title: "Guidance", render: withContext(GuidancePage) },
-      { id: "status", title: "Status", render: withContext(StatusPage) },
+      { id: "behaviour", title: "Reviews", render: page(BehaviourPage) },
+      { id: "delivery", title: "Delivery", render: page(DeliveryPage) },
+      { id: "budget", title: "Budget", render: page(BudgetPage) },
+      { id: "guidance", title: "Guidance", render: page(GuidancePage) },
+      { id: "status", title: "Status", render: page(StatusPage) },
     ],
-  });
+  })
 }
 
-export default { id: "coach", name: "Coach", register };
+export default { id: "coach", name: "Coach", register }

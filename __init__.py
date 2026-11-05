@@ -66,6 +66,9 @@ def register(ctx):
         ("post_tool_call", plugin.on_post_tool_call),
         ("post_llm_call", plugin.on_post_llm_call),
         ("pre_llm_call", plugin.on_pre_llm_call),
+        ("subagent_start", plugin.on_subagent_start),
+        ("subagent_stop", plugin.on_subagent_stop),
+        ("on_session_end", plugin.on_session_end),
     )
     for name, handler in hooks:
         try:
