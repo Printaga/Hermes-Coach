@@ -45,6 +45,13 @@ def test_same_model_as_primary_is_refused():
     coach = Coach(FakeLlm(Result("x")), _settings(), primary_model="x", primary_provider="openrouter")
     assert coach.check() == "same_model"
 
+def test_explicit_override_does_not_bypass_same_model_guard():
+    settings = load_settings({"coach_model": {"provider": "openrouter", "model": "other"},
+                              "review_model": {"provider": "openrouter", "model": "x"}})
+    coach = Coach(FakeLlm(Result("x")), settings, primary_model="x", primary_provider="openrouter")
+    assert coach.check("review") == "same_model"
+    assert coach.check("consult") == ""
+
 def test_provider_error_is_returned_not_raised():
     class Boom:
         def complete(self, *a, **k): raise RuntimeError("503")

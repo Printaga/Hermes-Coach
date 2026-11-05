@@ -17,12 +17,6 @@ from .settings import ModelChoice, Settings
 
 __all__ = ["Coach", "CoachReply"]
 
-_MODE_OVERRIDE_FIELDS: dict[str, str] = {
-    "consult": "consult_model",
-    "active": "active_model",
-    "review": "review_model",
-}
-
 _STRUCTURED_INSTRUCTIONS = (
     "Assess the conversation and return one finding that matches the schema. "
     'Use severity "none" when there is nothing worth reporting.'
@@ -106,9 +100,10 @@ class Coach:
     def check(self, mode: str = "") -> str:
         """Return ``""`` when a call is allowed, else the blocking reason.
 
-        ``mode`` is optional so a caller can ask about the shared model. A
-        mode with its own explicit model override is exempt from the
-        same-model guard: choosing it was deliberate.
+        ``mode`` is optional so a caller can ask about the shared model. The
+        same-model guard applies to every mode, including one with its own
+        override: a coach running the primary model is the blind spot this
+        plugin exists to avoid. ``skip_same_model: false`` is the only escape.
         """
         if not self.settings.is_configured():
             return "unconfigured"
@@ -118,9 +113,6 @@ class Coach:
         if choice is None:
             return "unconfigured"
         if not self.settings.skip_same_model:
-            return ""
-        override_field = _MODE_OVERRIDE_FIELDS.get(mode)
-        if override_field and getattr(self.settings, override_field, None) is not None:
             return ""
         if self.settings.same_as_primary(
             choice, self.primary_model, self.primary_provider
