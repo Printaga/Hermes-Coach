@@ -32,7 +32,15 @@ def _safe_paths(root: Path, paths: Sequence[str]) -> list[str]:
         if not text:
             continue
         candidate = Path(text)
-        if candidate.is_absolute() or ".." in candidate.parts:
+        if candidate.is_absolute():
+            # The host records absolute paths; accept one only when it resolves
+            # inside the project, and pass it to git as a relative path.
+            try:
+                safe.append(candidate.resolve().relative_to(base).as_posix())
+            except (OSError, ValueError):
+                continue
+            continue
+        if ".." in candidate.parts:
             continue
         try:
             (base / candidate).resolve().relative_to(base)

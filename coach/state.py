@@ -15,6 +15,7 @@ import os
 import tempfile
 import time
 import urllib.parse
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,8 @@ class SessionState:
     spend_usd: float = 0.0
     calls: dict[str, int] = field(default_factory=dict)
     last_error: str = ""
+    last_user_message: str = ""
+    last_advice: dict[str, Any] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.time)
 
 
@@ -142,6 +145,12 @@ class Store:
             spend_usd=_as_float(data.get("spend_usd")),
             calls=_calls(data.get("calls")),
             last_error=_as_str(data.get("last_error")),
+            last_user_message=_as_str(data.get("last_user_message")),
+            last_advice=(
+                dict(data["last_advice"])
+                if isinstance(data.get("last_advice"), Mapping)
+                else {}
+            ),
             updated_at=_as_float(data.get("updated_at"), 0.0),
         )
 

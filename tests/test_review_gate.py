@@ -158,4 +158,20 @@ def test_review_now_logs_one_line(tmp_path):
     p = _p(tmp_path, llm=StructuredLlm(FINDING))
     p.review_now(session_id="s", turn_id="t1", request="r", claim="c", evidence="e")
     lines = (tmp_path / "logs" / "s.jsonl").read_text().splitlines()
-    assert len(lines) == 1 and '"severity": "blocker"' in lines[0]
+    assert len(lines) == 1
+    assert '"severity": "blocker"' in lines[0]
+    assert '"body": "The copy happens after the delete."' in lines[0]
+
+
+def test_review_uses_the_last_user_message_as_request(tmp_path):
+    p = _p(tmp_path)
+    p.on_post_llm_call(
+        session_id="s", turn_id="t0", user_message="Add a retry cap",
+        assistant_response="ok", conversation_history=[], model="m",
+    )
+    seen = {}
+    p.collect_evidence = lambda cwd, paths: "diff --git a/a.py"
+    p.review_now = lambda **kw: seen.update(kw) or None
+    p.on_pre_verify(session_id="s", turn_id="t1", final_response="done",
+                    changed_paths=["a.py"], cwd=str(tmp_path))
+    assert seen["request"] == "Add a retry cap"

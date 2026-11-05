@@ -96,6 +96,7 @@ _MODE_KEYS = {
 _HELP = (
     "Coach commands:\n"
     "  /coach status                    configuration, modes, spend\n"
+    "  /coach last                      the last advice the coach gave\n"
     "  /coach active on|off             per-turn Active review\n"
     "  /coach review on|off             pre-completion Review gate\n"
     "  /coach decide on|off             coach_decide tool\n"
@@ -121,7 +122,9 @@ _REVIEW_SYSTEM = (
 )
 ASK_DESCRIPTION = (
     "Ask the coach for one independent second opinion about the current work. "
-    "Returns JSON with advice, or an error explaining why it is unavailable."
+    "Returns JSON with advice, or an error explaining why it is unavailable. "
+    "Relay the advice's substance in your next visible reply, attributed to the "
+    "coach, so the user does not have to expand the tool result to read it."
 )
 
 DECIDE_SCHEMA = {
@@ -483,9 +486,10 @@ class CoachPlugin:
             "paused": self._paused,
         }
 
-    def command(self, raw: str) -> str:
+    def command(self, raw: str, **kw: Any) -> str:
         """Run one /coach subcommand; unknown input prints the help."""
         self.refresh_settings()
+        session_id = str(kw.get("session_id") or "current")
         text = str(raw or "").strip()
         if text.startswith("/coach"):
             text = text[len("/coach") :].strip()
@@ -495,7 +499,9 @@ class CoachPlugin:
         name, args = parts[0].lower(), parts[1:]
         try:
             if name == "status":
-                return self._status_text()
+                return self._status_text(session_id)
+            if name == "last":
+                return self._last_advice_text(session_id)
             if name in {"active", "review", "decide"}:
                 return self._toggle(f"{name}_enabled", name, args)
             if name == "model":
@@ -505,9 +511,9 @@ class CoachPlugin:
             if name == "guidance":
                 return self._guidance_text()
             if name == "pending":
-                return self._pending_text()
+                return self._pending_text(session_id)
             if name == "send":
-                return self._send_pending()
+                return self._send_pending(session_id)
             if name == "pause":
                 return self._toggle_pause()
             if name == "grant":
@@ -583,9 +589,9 @@ class CoachPlugin:
             return f"{key} = {_model_label(current)}"
         return f"{key} = {current!r}"
 
-    def _status_text(self) -> str:
+    def _status_text(self, session_id: str = "current") -> str:
         settings = self.settings
-        state = self.store.load("current")
+        state = self.store.load(session_id)
         lines: list[str] = []
         if settings.is_configured():
             lines.append("Coach configured.")
@@ -635,22 +641,48 @@ class CoachPlugin:
             lines.append(body or "(empty)")
         return "\n".join(lines)
 
-    def _pending_text(self) -> str:
-        state = self.store.load("current")
+    def _last_advice_text(self, session_id: str = "current") -> str:
+        state = self.store.load(session_id)
+        advice = state.last_advice if isinstance(state.last_advice, Mapping) else {}
+        text = str(advice.get("text") or "").strip()
+        if not text:
+            return "No coach advice recorded in this session yet."
+        question = str(advice.get("question") or "").strip()
+        meta = " / ".join(
+            part
+            for part in (
+                str(advice.get("intent") or ""),
+                str(advice.get("model") or ""),
+            )
+            if part
+        )
+        lines = []
+        if question:
+            lines.append(f"Question: {question}")
+        lines.append(text)
+        if meta:
+            lines.append(f"({meta})")
+        return "\n".join(lines)
+
+    def _pending_text(self, session_id: str = "current") -> str:
+        state = self.store.load(session_id)
         notes = [note for note in state.pending if isinstance(note, Mapping)]
         if not notes:
             return "No pending coach notes."
         lines = [f"{len(notes)} pending coach note(s):"]
         for note in notes:
+            body = str(note.get("body") or "").strip()
+            snippet = f" — {body[:160]}" if body else ""
             lines.append(
                 f"- [{note.get('severity') or 'note'}] "
-                f"{note.get('title') or 'note'} "
+                f"{note.get('title') or 'note'}"
+                f"{snippet} "
                 f"(expires turn {_as_turn(note.get('expires_at_turn'))})"
             )
         return "\n".join(lines)
 
-    def _send_pending(self) -> str:
-        state = self.store.load("current")
+    def _send_pending(self, session_id: str = "current") -> str:
+        state = self.store.load(session_id)
         notes = [note for note in state.pending if isinstance(note, Mapping)]
         if not notes:
             return "No pending coach notes."
@@ -812,6 +844,17 @@ class CoachPlugin:
         session_id = str(data.get("session_id") or "current")
         turn_id = str(data.get("turn_id") or "current")
         tools = self._turn_tools.pop((session_id, turn_id), [])
+        if not self.settings.active_enabled and not self.settings.review_enabled:
+            return
+        try:
+            seen = self.store.load(session_id)
+            message = str(data.get("user_message") or data.get("user") or "").strip()
+            if message:
+                seen.last_user_message = message[:4000]
+                seen.updated_at = self.clock()
+                self.store.save(seen)
+        except Exception:
+            pass
         if not self.settings.active_enabled:
             return
         turn = {
@@ -946,6 +989,9 @@ class CoachPlugin:
                 "turn_id": turn_id,
                 "severity": finding.severity if finding is not None else "none",
                 "title": finding.title if finding is not None else "",
+                "body": finding.body if finding is not None else "",
+                "evidence": finding.evidence if finding is not None else "",
+                "fix": finding.fix if finding is not None else "",
                 "input_tokens": int(getattr(reply.usage, "input_tokens", 0) or 0),
                 "output_tokens": int(getattr(reply.usage, "output_tokens", 0) or 0),
                 "cost_usd": reply.cost_usd,
@@ -997,7 +1043,7 @@ class CoachPlugin:
         finding = self.review_now(
             session_id=session_id,
             turn_id=turn_id,
-            request=_request_text(data),
+            request=_request_text(data) or state.last_user_message,
             claim=str(data.get("final_response") or ""),
             evidence=self.collect_evidence(cwd, changed),
             cwd=cwd,
@@ -1173,6 +1219,13 @@ class CoachPlugin:
             assistant=reply.text,
             tools=[],
         )
+        state.last_advice = {
+            "question": question,
+            "text": reply.text,
+            "intent": intent,
+            "provider": reply.provider,
+            "model": reply.model,
+        }
         state.updated_at = self.clock()
         self.store.save(state)
         return {

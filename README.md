@@ -85,6 +85,7 @@ and the child-session refusal; the agent does not need to send them.
 | Command | Effect |
 |---|---|
 | `/coach status` | model, modes, spend, pending notes |
+| `/coach last` | the last advice the coach gave in this session |
 | `/coach active on\|off` | per-turn review |
 | `/coach review on\|off` | completion review |
 | `/coach decide on\|off` | the decide tool |
@@ -135,6 +136,12 @@ set.
 State lives in `$HERMES_HOME/coach/`: one JSON file per session (atomic,
 `0600`), a JSONL review log, and the global guidance file. Sessions are pruned
 to the newest twenty.
+
+Where to read the coach's output: consult advice is the `coach_ask` tool result
+(the agent is asked to relay it), `/coach last` reprints the most recent one,
+review findings are cards plus a line per review in
+`$HERMES_HOME/coach/logs/<session>.jsonl` with severity, title, body, evidence
+and fix, and `/coach pending` lists undelivered notes with their body.
 
 ## Troubleshooting
 

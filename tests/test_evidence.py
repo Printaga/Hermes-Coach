@@ -44,3 +44,20 @@ def test_parent_traversal_is_refused(tmp_path):
         return subprocess.CompletedProcess(argv, 128, "", "")
 
     assert collect(str(tmp_path), ["../secret.txt"], run=fake_run) == ""
+
+
+def test_absolute_path_inside_the_project_is_relativized(tmp_path):
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    def fake_run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 128, "", "not a repo")
+    text = collect(str(tmp_path), [str(target)], run=fake_run)
+    assert "x = 1" in text
+
+
+def test_absolute_path_outside_the_project_is_refused(tmp_path):
+    outside = tmp_path.parent / "secret.txt"
+    outside.write_text("nope")
+    def fake_run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 128, "", "")
+    assert collect(str(tmp_path), [str(outside)], run=fake_run) == ""
