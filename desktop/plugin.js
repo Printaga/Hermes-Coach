@@ -6,8 +6,7 @@
  */
 
 import { host } from "@hermes/plugin-sdk"
-import { useEffect, useState } from "react"
-import { jsx, jsxs } from "react/jsx-runtime"
+import { createElement, useEffect, useState } from "react"
 
 const MODEL_ROWS = [
   [
@@ -192,7 +191,7 @@ function Loading(props) {
 
 function ToggleField(props) {
   const { ctx, label, checked, onChange, hint } = props;
-  const h = jsx;
+  const h = createElement;
   return h(
     "label",
     { className: "coach-toggle", style: { display: "grid", gap: "4px" } },
@@ -212,7 +211,7 @@ function ToggleField(props) {
 
 function TextInput(props) {
   const { ctx, value, onChange, placeholder } = props;
-  const h = jsx;
+  const h = createElement;
   return h("input", {
     type: "text",
     className: "coach-input",
@@ -224,7 +223,7 @@ function TextInput(props) {
 
 function NumberInput(props) {
   const { ctx, value, min, max, step, onCommit } = props;
-  const h = jsx;
+  const h = createElement;
   const [draft, setDraft] = useState(value == null ? "" : String(value));
   const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
 
@@ -261,7 +260,7 @@ function NumberInput(props) {
 
 function ChoiceInput(props) {
   const { ctx, value, choices, onChange } = props;
-  const h = jsx;
+  const h = createElement;
   const current = value == null ? "" : String(value);
   return h(
     "select",
@@ -278,7 +277,7 @@ function ChoiceInput(props) {
 
 function ModelInput(props) {
   const { ctx, value, models, inherit, onChange } = props;
-  const h = jsx;
+  const h = createElement;
   const current = modelKey(value);
   const known = new Set(models.map((item) => modelKey(item)));
   const options = [
@@ -316,7 +315,7 @@ function ModelInput(props) {
 
 function StatusSummary(props) {
   const { ctx, status } = props;
-  const h = jsx;
+  const h = createElement;
   if (!status) {
     return h("p", { className: "coach-muted" }, "Loading status...");
   }
@@ -357,7 +356,7 @@ function StatusSummary(props) {
 
 function OverviewPage(props) {
   const { ctx } = props;
-  const h = jsx;
+  const h = createElement;
   const state = useConfig(ctx);
   const status = state.status;
   return h(
@@ -405,7 +404,7 @@ function OverviewPage(props) {
 
 function ModelsPage(props) {
   const { ctx } = props;
-  const h = jsx;
+  const h = createElement;
   const state = useConfig(ctx);
   const [catalog, setCatalog] = useState([]);
   const [catalogError, setCatalogError] = useState("");
@@ -492,7 +491,7 @@ function ModelsPage(props) {
 
 function ModesPage(props) {
   const { ctx } = props;
-  const h = jsx;
+  const h = createElement;
   const state = useConfig(ctx);
   if (!state.config) {
     return h(Loading, { h, state });
@@ -663,7 +662,7 @@ function ModesPage(props) {
 
 function DeliveryPage(props) {
   const { ctx } = props;
-  const h = jsx;
+  const h = createElement;
   const state = useConfig(ctx);
   if (!state.config) {
     return h(Loading, { h, state });
@@ -740,7 +739,7 @@ function DeliveryPage(props) {
 
 function BudgetPage(props) {
   const { ctx } = props;
-  const h = jsx;
+  const h = createElement;
   const state = useConfig(ctx);
   if (!state.config) {
     return h(Loading, { h, state });
@@ -801,7 +800,7 @@ function BudgetPage(props) {
 
 function GuidancePage(props) {
   const { ctx } = props;
-  const h = jsx;
+  const h = createElement;
   const state = useConfig(ctx);
   const [scope, setScope] = useState("global");
   const [cwd, setCwd] = useState("");
@@ -938,7 +937,7 @@ function GuidancePage(props) {
 
 function StatusPage(props) {
   const { ctx } = props;
-  const h = jsx;
+  const h = createElement;
   const state = useConfig(ctx);
   const [granting, setGranting] = useState(false);
   const [notice, setNotice] = useState("");
@@ -1020,7 +1019,7 @@ export function register(ctx) {
   if (!ctx || typeof ctx.registerSettingsPage !== "function") {
     throw new Error("Coach settings need the Hermes Desktop plugin host.");
   }
-  const h = jsx;
+  const h = createElement;
   const withContext = (Component) => (props) =>
     h(Component, { ...(props || {}), ctx });
 
