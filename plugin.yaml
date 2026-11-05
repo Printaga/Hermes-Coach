@@ -168,6 +168,10 @@ config_schema:
     type: bool
     default: true
     description: "Refuse a coach model identical to the primary."
+  allow_in_subagents:
+    type: bool
+    default: false
+    description: "Allow `coach_ask` inside subagent and delegate sessions. Off by default so a child session cannot spend the coach budget or loop on its own advice."
   debug_log_decisions:
     type: bool
     default: false

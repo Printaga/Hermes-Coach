@@ -59,6 +59,7 @@ DEFAULTS: dict[str, Any] = {
     "ledger_note_max_chars": 1000,
     "ledger_max_tokens": 3500,
     "skip_same_model": True,
+    "allow_in_subagents": False,
     "debug_log_decisions": False,
 }
 
@@ -184,6 +185,7 @@ class Settings:
     ledger_note_max_chars: int
     ledger_max_tokens: int
     skip_same_model: bool
+    allow_in_subagents: bool
     debug_log_decisions: bool
 
     def model_for(self, mode: str) -> ModelChoice | None:
@@ -300,6 +302,9 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
         ),
         skip_same_model=_as_bool(
             data.get("skip_same_model"), DEFAULTS["skip_same_model"]
+        ),
+        allow_in_subagents=_as_bool(
+            data.get("allow_in_subagents"), DEFAULTS["allow_in_subagents"]
         ),
         debug_log_decisions=_as_bool(
             data.get("debug_log_decisions"), DEFAULTS["debug_log_decisions"]
