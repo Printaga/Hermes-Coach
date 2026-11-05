@@ -1,9 +1,8 @@
 """Hermes coach plugin entry point.
 
-Registers ``coach_ask``, ``coach_decide`` and the coach hooks.
-Later tasks add the remaining hook handlers and the ``/coach`` command;
-registration always fails open so an older host or a duplicate registration
-cannot break the plugin loader.
+Registers ``coach_ask``, ``coach_decide``, the ``/coach`` command and the
+coach hooks. Registration always fails open so an older host or a duplicate
+registration cannot break the plugin loader.
 """
 
 from __future__ import annotations
@@ -43,6 +42,19 @@ def register(ctx):
                 )
             except Exception:
                 log.exception("coach: could not register %s", name)
+
+    register_command = getattr(ctx, "register_command", None)
+    if register_command is None:
+        log.warning("coach: host has no register_command; /coach unavailable")
+    else:
+        try:
+            register_command(
+                "coach",
+                plugin.command,
+                description="Coach settings and status",
+            )
+        except Exception:
+            log.exception("coach: could not register /coach command")
 
     register_hook = getattr(ctx, "register_hook", None)
     if register_hook is None:
