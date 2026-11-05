@@ -13,7 +13,7 @@ class FakeWorker:
     def __init__(self):
         self.submitted = []
 
-    def submit(self, session_id):
+    def submit(self, session_id, turn_id=""):
         self.submitted.append(session_id)
         return True
 
@@ -183,7 +183,7 @@ def test_worker_coalesces_to_the_newest_queued_session():
     release = threading.Event()
     seen = []
 
-    def run(session_id):
+    def run(session_id, turn_id):
         seen.append(session_id)
         if session_id == "first":
             started.set()
@@ -204,7 +204,7 @@ def test_worker_coalesces_to_the_newest_queued_session():
 
 
 def test_worker_swallows_errors_and_refuses_work_after_stop():
-    def run(session_id):
+    def run(session_id, turn_id):
         raise RuntimeError("boom")
 
     worker = Worker(run)
@@ -212,3 +212,32 @@ def test_worker_swallows_errors_and_refuses_work_after_stop():
     assert worker.drain(2.0) is True
     worker.stop()
     assert worker.submit("s") is False
+
+
+def test_worker_passes_the_turn_id():
+    seen = []
+    worker = Worker(lambda session_id, turn_id: seen.append((session_id, turn_id)))
+    try:
+        assert worker.submit("s", "t1") is True
+        assert worker.drain(2.0) is True
+        assert seen == [("s", "t1")]
+    finally:
+        worker.stop()
+
+
+def test_hold_does_not_clobber_review_spend(tmp_path):
+    blocker = {
+        "severity": "blocker",
+        "title": "Deletes first",
+        "body": "Copy happens after the delete.",
+        "evidence": "a.py:1",
+        "fix": "Copy first.",
+    }
+    p = _p(tmp_path, llm=StructuredLlm(blocker), review_authority="hold_once")
+    p.collect_evidence = lambda cwd, paths: "diff --git a/a.py"
+    out = p.on_pre_verify(
+        session_id="s", turn_id="t1", final_response="done",
+        changed_paths=["a.py"], cwd=str(tmp_path),
+    )
+    assert out and out["action"] == "continue"
+    assert p.store.load("s").spend_usd == 0.25

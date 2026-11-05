@@ -8,18 +8,20 @@ always yields a fresh state instead of an exception.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
-import re
 import tempfile
 import time
+import urllib.parse
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 __all__ = ["SessionState", "Store"]
 
-_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+_MAX_NAME_CHARS = 80
 
 
 @dataclass
@@ -39,9 +41,18 @@ class SessionState:
 
 
 def _safe_name(session_id: str) -> str:
-    """Map a session id to one filename component on every platform."""
-    name = _UNSAFE_NAME.sub("_", str(session_id)).strip(".")
-    return name or "session"
+    """Map a session id to one collision-free filename component.
+
+    Percent-encoding keeps the id reversible; the hash suffix stops two long
+    ids from truncating to the same file (and stops case-insensitive
+    filesystems from folding ``A`` and ``a`` together).
+    """
+    raw = str(session_id)
+    digest = hashlib.sha1(raw.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    quoted = urllib.parse.quote(raw, safe="")
+    if len(quoted) > _MAX_NAME_CHARS:
+        quoted = quoted[:_MAX_NAME_CHARS]
+    return f"{quoted}-{digest}" if quoted else f"session-{digest}"
 
 
 def _as_str(value: Any) -> str:
@@ -66,14 +77,17 @@ def _as_int(value: Any) -> int:
 def _as_float(value: Any, default: float = 0.0) -> float:
     if isinstance(value, bool):
         return default
+    number: float | None = None
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        number = float(value)
+    elif isinstance(value, str):
         try:
-            return float(value.strip())
+            number = float(value.strip())
         except ValueError:
             return default
-    return default
+    if number is None or not math.isfinite(number):
+        return default
+    return number
 
 
 def _dict_items(value: Any) -> list[dict[str, Any]]:
@@ -103,19 +117,23 @@ class Store:
             return []
         return [path for path in self.root.glob("*.json") if path.is_file()]
 
-    def load(self, session_id: str) -> SessionState:
-        """Return the stored state, or a fresh one; never raises."""
+    def _read(self, path: Path, fallback_id: str) -> SessionState:
+        """Parse one file; a corrupt or missing one is a fresh state."""
         try:
-            with self._path(session_id).open("r", encoding="utf-8") as handle:
+            with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
-            return SessionState(session_id=session_id)
-        except (OSError, ValueError, TypeError):
-            return SessionState(session_id=session_id, last_error="state reset")
+            return SessionState(session_id=fallback_id)
+        except Exception:  # RecursionError, ValueError, OSError, TypeError
+            return SessionState(
+                session_id=fallback_id, last_error="state reset", updated_at=0.0
+            )
         if not isinstance(data, dict):
-            return SessionState(session_id=session_id, last_error="state reset")
+            return SessionState(
+                session_id=fallback_id, last_error="state reset", updated_at=0.0
+            )
         return SessionState(
-            session_id=session_id,
+            session_id=_as_str(data.get("session_id")) or fallback_id,
             ledger=_dict_items(data.get("ledger")),
             note=_as_str(data.get("note")),
             pending=_dict_items(data.get("pending")),
@@ -124,12 +142,21 @@ class Store:
             spend_usd=_as_float(data.get("spend_usd")),
             calls=_calls(data.get("calls")),
             last_error=_as_str(data.get("last_error")),
-            updated_at=_as_float(data.get("updated_at"), time.time()),
+            updated_at=_as_float(data.get("updated_at"), 0.0),
         )
+
+    def load(self, session_id: str) -> SessionState:
+        """Return the stored state, or a fresh one; never raises."""
+        return self._read(self._path(session_id), session_id)
 
     def save(self, state: SessionState) -> None:
         """Write the state atomically as a private file."""
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(self.root, 0o700)  # mode= applies on creation only
+        except OSError:
+            pass
+        state.updated_at = time.time()
         path = self._path(state.session_id)
         descriptor, temporary = tempfile.mkstemp(
             dir=self.root, prefix=f".{path.name}.", suffix=".tmp"
@@ -148,11 +175,14 @@ class Store:
             raise
 
     def prune(self) -> None:
-        """Delete the oldest sessions beyond the cap."""
-        entries = [
-            (self.load(path.stem).updated_at, path.name, path)
-            for path in self._state_paths()
-        ]
+        """Delete the oldest sessions beyond the cap, ordered by file mtime."""
+        entries = []
+        for path in self._state_paths():
+            try:
+                stamp = path.stat().st_mtime
+            except OSError:
+                stamp = 0.0
+            entries.append((stamp, path.name, path))
         overflow = len(entries) - self.max_sessions
         if overflow <= 0:
             return
@@ -169,8 +199,12 @@ class Store:
 
     def spend_total(self) -> float:
         """Sum recorded spend across every session on disk."""
-        return sum(self.load(path.stem).spend_usd for path in self._state_paths())
+        return sum(
+            self._read(path, path.stem).spend_usd for path in self._state_paths()
+        )
 
     def sessions_on_disk(self) -> list[str]:
-        """Session names with a state file, oldest-independent stable order."""
-        return sorted(path.stem for path in self._state_paths())
+        """Original session ids with a state file, in a stable order."""
+        return sorted(
+            self._read(path, path.stem).session_id for path in self._state_paths()
+        )

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import re
 import time
 from collections.abc import Mapping
@@ -407,10 +408,10 @@ class CoachPlugin:
             primary_model=primary_model,
             primary_provider=primary_provider,
             cost_fn=cost_fn,
-            clock=clock,
         )
         self._child_sessions: set[str] = set()
-        self._queued: set[str] = set()
+        self._queued: dict[tuple[str, str], None] = {}
+        self._queued_lock = threading.Lock()
         self._turn_tools: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._paused = False
 
@@ -437,7 +438,7 @@ class CoachPlugin:
         try:
             self.store.prune()
         except Exception:
-            pass
+            log.warning("coach: session-end prune failed", exc_info=True)
 
     def status(self) -> dict[str, Any]:
         """Report configuration, modes, and this session's spend."""
@@ -634,13 +635,16 @@ class CoachPlugin:
         if self.inject is None:
             return "No injection channel available; notes stay pending."
         sent = 0
+        remaining: list[dict[str, Any]] = []
         for note in notes:
             text = str(note.get("text") or "").strip()
             if text and self._inject(text):
                 sent += 1
+            else:
+                remaining.append(dict(note))
         if not sent:
             return "Could not deliver pending notes; they stay pending."
-        state.pending = []
+        state.pending = remaining
         state.updated_at = self.clock()
         self.store.save(state)
         return f"Delivered {sent} pending coach note(s)."
@@ -799,13 +803,18 @@ class CoachPlugin:
             state = self.store.load(session_id)
             _record_turn(state, turn)
             worker = getattr(self, "worker", None)
-            if (
-                session_id not in self._queued
-                and worker is not None
-                and self.should_review(state, turn, self.settings)
-                and worker.submit(session_id)
-            ):
-                self._queued.add(session_id)
+            due = worker is not None and self.should_review(state, turn, self.settings)
+            if due:
+                key = (session_id, turn_id)
+                with self._queued_lock:
+                    for stale in [
+                        queued
+                        for queued in self._queued
+                        if queued[0] == session_id and queued[1] != turn_id
+                    ]:
+                        del self._queued[stale]
+                    if key not in self._queued and worker.submit(session_id, turn_id):
+                        self._queued[key] = None
             state.updated_at = self.clock()
             self.store.save(state)
         except Exception:
@@ -896,7 +905,8 @@ class CoachPlugin:
             except Exception:
                 pass
         finally:
-            self._queued.discard(sid)
+            with self._queued_lock:
+                self._queued.pop((sid, tid), None)
 
     def _log_review(self, session_id: str, turn_id: str, reply: Any) -> None:
         """Append one JSONL line per attempted review; never raise."""
@@ -970,7 +980,10 @@ class CoachPlugin:
             finding.severity == "blocker"
             and self.settings.review_authority == "hold_once"
         ):
-            state.calls[holds_key] = used + 1
+            # review_now saved its own copy with the spend added; reload so the
+            # hold counter does not overwrite that update.
+            state = self.store.load(session_id)
+            state.calls[holds_key] = state.calls.get(holds_key, used) + 1
             state.updated_at = self.clock()
             self.store.save(state)
             return {"action": "continue", "message": _hold_message(finding)}
@@ -1094,6 +1107,7 @@ class CoachPlugin:
 
         state.calls[turn_id] = used + 1
         state.updated_at = self.clock()
+        self.store.save(state)  # count the attempt even if the call fails
         prompt = question
         context = str(args.get("context") or "").strip()
         if context:
@@ -1191,6 +1205,8 @@ class CoachPlugin:
         if used >= self.settings.decide_max_calls_per_turn:
             return _error("call_cap")
         state.calls[key] = used + 1
+        state.updated_at = self.clock()
+        self.store.save(state)  # count the attempt even if the call fails
 
         backend = self.settings.decide_backend
         if backend == "jev-openrouter":

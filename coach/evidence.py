@@ -48,7 +48,7 @@ def _git(
     argv: list[str],
 ) -> subprocess.CompletedProcess | None:
     try:
-        return run(
+        result = run(
             argv,
             cwd=str(root),
             capture_output=True,
@@ -58,6 +58,14 @@ def _git(
         )
     except (OSError, subprocess.SubprocessError):
         return None
+    return result if hasattr(result, "returncode") else None
+
+
+def _stdout(result: object) -> str:
+    value = getattr(result, "stdout", "")
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value or "")
 
 
 def _heads(
@@ -90,7 +98,12 @@ def collect(
     runner = run or subprocess.run
     reader = read or _read_text
 
-    status = _git(runner, root, ["git", "status", "--porcelain", "--", *safe])
+    # -z keeps paths unquoted and unescaped (no C-style octal for non-ASCII).
+    status = _git(
+        runner,
+        root,
+        ["git", "-c", "core.quotePath=false", "status", "--porcelain", "-z", "--", *safe],
+    )
     diff = _git(runner, root, ["git", "diff", "HEAD", "--", *safe])
     if (
         status is None
@@ -100,12 +113,12 @@ def collect(
     ):
         text = _heads(root, safe, reader)
     else:
-        text = str(diff.stdout or "")
+        text = _stdout(diff)
         untracked: list[str] = []
-        for line in str(status.stdout or "").splitlines():
-            if not line.startswith("??"):
+        for entry in _stdout(status).split("\0"):
+            if not entry.startswith("?? "):
                 continue
-            rel = line[3:].strip().strip('"')
+            rel = entry[3:]
             if rel and rel in safe:
                 untracked.append(rel)
         if untracked:

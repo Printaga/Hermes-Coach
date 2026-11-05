@@ -219,15 +219,27 @@ def _read_guidance(path: Path) -> str:
         return ""
 
 
-def _write_guidance(path: Path, text: str, *, create_parent: bool) -> str:
+def _write_guidance(
+    path: Path, text: str, *, create_parent: bool, root: Path | None = None
+) -> str:
     if path.is_symlink():
         raise HTTPException(status_code=400, detail="guidance_file_is_symlink")
+    if root is not None:
+        try:
+            if path.parent.resolve() != Path(root).resolve():
+                raise HTTPException(status_code=400, detail="project_mismatch")
+        except OSError:
+            raise HTTPException(status_code=400, detail="cwd_missing") from None
     if not path.parent.is_dir():
         if not create_parent:
             raise HTTPException(status_code=400, detail="cwd_missing")
         path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        path.write_text(text, encoding="utf-8")
+        # O_NOFOLLOW closes the check-then-write race on the final component.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
     except OSError as exc:
         raise HTTPException(
             status_code=400, detail=f"guidance_write_failed: {type(exc).__name__}"
@@ -349,14 +361,14 @@ def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[st
 
     state_config = getattr(request.app.state, "config", None)
     if isinstance(state_config, dict):
-        settings = _mapping_section(_mapping_section(_mapping_section(
+        coach = _mapping_section(_mapping_section(_mapping_section(
             state_config, "plugins"), "entries"), "coach")
-        settings.setdefault("settings", {}).update(clean)
+        _mapping_section(coach, "settings").update(clean)
     else:
         config = _load_host_config()
-        section = _mapping_section(_mapping_section(_mapping_section(
+        coach = _mapping_section(_mapping_section(_mapping_section(
             config, "plugins"), "entries"), "coach")
-        section.setdefault("settings", {}).update(clean)
+        _mapping_section(coach, "settings").update(clean)
         if not _save_host_config(config):
             raise HTTPException(status_code=500, detail="config_write_failed")
     return get_config(request)
@@ -394,7 +406,9 @@ def put_guidance(
         )
     home = _home(request)
     path, project = _guidance_target(home, name, str(body.get("cwd") or ""))
-    message = _write_guidance(path, text, create_parent=name == "global")
+    message = _write_guidance(
+        path, text, create_parent=name == "global", root=project
+    )
     return {
         **_guidance_payload(
             name, str(project) if project is not None else "", path, text
@@ -412,7 +426,8 @@ def grant_permissions(request: Request) -> dict[str, Any]:
     else:
         config = _load_host_config()
         _apply_grant(config)
-        _save_host_config(config)
+        if not _save_host_config(config):
+            raise HTTPException(status_code=500, detail="config_write_failed")
     return _status_payload(request)
 
 

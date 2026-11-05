@@ -10,6 +10,7 @@ exception.
 from __future__ import annotations
 
 import json
+import math
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -53,9 +54,12 @@ def _error(reason: str, cost_usd: float = 0.0) -> Decision:
 
 
 def _inner(value: Any) -> Mapping[str, Any]:
-    """Return the first question's entry in a Jev answers/verdicts block."""
+    """Return the answer keyed by the question we sent, else the first one."""
     if not isinstance(value, Mapping):
         return {}
+    chosen = value.get(_QUESTION_KEY)
+    if isinstance(chosen, Mapping):
+        return chosen
     for item in value.values():
         if isinstance(item, Mapping):
             return item
@@ -64,9 +68,10 @@ def _inner(value: Any) -> Mapping[str, Any]:
 
 def _float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return number if math.isfinite(number) else default
 
 
 def _probabilities(*sources: Mapping[str, Any]) -> dict[str, float]:
@@ -133,9 +138,11 @@ def _parse(
             cost,
         )
 
-    gate = str(verdict.get("gate") or "act").strip().lower()
+    confidence = min(1.0, max(0.0, confidence))
+    gate = str(verdict.get("gate") or "").strip().lower()
     if gate not in {"act", "escalate"}:
-        gate = "act"
+        # An unrecognised gate withholds action rather than granting it.
+        gate = "escalate"
     if confidence < min_confidence:
         gate = "escalate"
     rationale = str(
@@ -209,7 +216,7 @@ def _decide_chat(
             f"model chose {choice or '(nothing)'}, which is not one of the options",
             cost,
         )
-    confidence = _float(parsed.get("confidence"))
+    confidence = min(1.0, max(0.0, _float(parsed.get("confidence"))))
     gate = "escalate" if confidence < min_confidence else "act"
     rationale = str(parsed.get("rationale") or "").strip() or (
         f"{choice} at {confidence:.2f} confidence"
@@ -232,13 +239,18 @@ def decide(
 ) -> Decision:
     """Resolve one fork; every failure is an error decision, never a raise."""
     text = str(question or "").strip()
-    choices = [str(option).strip() for option in options or []]
-    if not text or len(choices) < 2:
-        return _error("a decision needs a question and at least two options")
+    choices: list[str] = []
+    for option in options or []:
+        value = str(option or "").strip()
+        if value and value not in choices:
+            choices.append(value)
+    if not text or not 2 <= len(choices) <= 6:
+        return _error("a decision needs a question and 2-6 distinct options")
+    threshold = min(1.0, max(0.0, _float(min_confidence, 0.6)))
     context = state if isinstance(state, Mapping) else {}
 
     if backend == "chat-model":
-        return _decide_chat(text, choices, context, min_confidence, chat)
+        return _decide_chat(text, choices, context, threshold, chat)
 
     url = base_url.strip() or _ENDPOINTS.get(backend, "")
     if not url:
@@ -251,4 +263,7 @@ def decide(
         )
     except Exception as exc:  # fail-open by contract
         return _error(f"{backend} call failed: {type(exc).__name__}: {exc}")
-    return _parse(payload, choices, min_confidence)
+    try:
+        return _parse(payload, choices, threshold)
+    except Exception as exc:  # parsing must not escape the fail-open contract
+        return _error(f"{backend} response could not be read: {type(exc).__name__}")

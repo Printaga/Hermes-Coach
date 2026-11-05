@@ -50,6 +50,10 @@ const start = settings.indexOf("DEFAULTS")
 const end = settings.indexOf("\n}", start)
 const block = settings.slice(start, end)
 const keys = [...block.matchAll(/^\s{4}"([a-z_]+)":/gm)].map((match) => match[1])
+if (keys.length === 0) {
+  console.error("could not read DEFAULTS from coach/settings.py")
+  process.exit(1)
+}
 // Tuning constants that stay in config.yaml on purpose (docs in README).
 const CONFIG_ONLY = new Set([
   "decide_typesafe_api_key",
@@ -70,12 +74,13 @@ if (missing.length) {
 
 const body = source
   .split("\n")
-  .filter((line) => !line.startsWith("import "))
+  .filter((line) => !/^\s*import\s/.test(line))
   .join("\n")
 
 const stub = `
 const createElement = (type, props, ...children) => ({ type, props, children });
 const useState = (initial) => [initial, () => {}];
+const useRef = (initial) => ({ current: initial });
 const useEffect = () => {};
 const useValue = () => "";
 const host = { state: { model: "" }, request: async () => ({ providers: [{ slug: "p", models: ["m"] }] }) };

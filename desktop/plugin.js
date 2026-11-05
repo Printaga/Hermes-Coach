@@ -7,7 +7,7 @@
  */
 
 import { host, useValue } from "@hermes/plugin-sdk"
-import { createElement, useEffect, useState } from "react"
+import { createElement, useEffect, useRef, useState } from "react"
 
 const h = createElement
 
@@ -124,6 +124,8 @@ function useSettings(ctx) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+  const alive = useRef(true)
+  const chain = useRef(Promise.resolve())
 
   const reload = async () => {
     try {
@@ -131,33 +133,47 @@ function useSettings(ctx) {
         ctx.rest("/config"),
         ctx.rest("/status"),
       ])
+      if (!alive.current) return
       setConfig(unwrap(nextConfig))
       setStatus(unwrap(nextStatus))
       setError("")
     } catch (err) {
-      setError(messageOf(err))
+      if (alive.current) setError(messageOf(err))
     }
   }
 
   useEffect(() => {
+    alive.current = true
     reload()
+    return () => {
+      alive.current = false
+    }
   }, [])
 
-  const save = async (key, value) => {
-    setBusy(true)
-    setError("")
+  const write = async (key, value) => {
+    if (alive.current) {
+      setBusy(true)
+      setError("")
+    }
     try {
       const next = await ctx.rest("/config", {
         method: "PUT",
         body: { values: { [key]: value } },
       })
+      if (!alive.current) return
       setConfig(unwrap(next))
       setStatus(unwrap(await ctx.rest("/status")))
     } catch (err) {
-      setError(messageOf(err))
+      if (alive.current) setError(messageOf(err))
     } finally {
-      setBusy(false)
+      if (alive.current) setBusy(false)
     }
+  }
+
+  // One PUT at a time: overlapping saves could land out of order.
+  const save = (key, value) => {
+    chain.current = chain.current.then(() => write(key, value)).catch(() => {})
+    return chain.current
   }
 
   return { config, status, error, busy, reload, save }
@@ -214,6 +230,7 @@ function Toggle(props) {
 
 function Choice(props) {
   const selected = props.options.find((option) => option.value === props.value)
+  const known = Boolean(selected)
   return h(
     Field,
     { label: props.label, hint: selected && selected.description ? selected.description : props.hint },
@@ -221,13 +238,39 @@ function Choice(props) {
       "select",
       {
         style: INPUT,
-        value: props.value,
+        value: known ? props.value : "",
         onChange: (event) => props.onChange(event.target.value),
       },
+      known ? null : h("option", { value: "" }, "Choose..."),
       props.options.map((option) =>
         h("option", { key: option.value, value: option.value }, option.label),
       ),
     ),
+  )
+}
+
+function TextField(props) {
+  const [draft, setDraft] = useState(String(props.value ?? ""))
+  useEffect(() => {
+    setDraft(String(props.value ?? ""))
+  }, [props.value])
+  const commit = () => {
+    const next = String(draft).trim()
+    if (next !== String(props.value ?? "")) props.onChange(next)
+  }
+  return h(
+    Field,
+    { label: props.label, hint: props.hint },
+    h("input", {
+      style: INPUT,
+      value: draft,
+      placeholder: props.placeholder,
+      onChange: (event) => setDraft(event.target.value),
+      onBlur: commit,
+      onKeyDown: (event) => {
+        if (event.key === "Enter") commit()
+      },
+    }),
   )
 }
 
@@ -237,6 +280,10 @@ function NumberField(props) {
     setDraft(String(props.value ?? ""))
   }, [props.value])
   const commit = () => {
+    if (!String(draft).trim()) {
+      setDraft(String(props.value ?? ""))
+      return
+    }
     const parsed = Number(draft)
     if (!Number.isFinite(parsed)) {
       setDraft(String(props.value ?? ""))
@@ -550,18 +597,12 @@ function BehaviourPage(props) {
         ],
         onChange: (next) => state.save("decide_backend", next),
       }),
-      h(
-        Field,
-        {
-          label: "Decision model",
-          hint: "For Jev use typesafe/jev-1.14. For a chat model, name the model to call.",
-        },
-        h("input", {
-          style: INPUT,
-          defaultValue: values.decide_model,
-          onBlur: (event) => state.save("decide_model", event.target.value.trim()),
-        }),
-      ),
+      h(TextField, {
+        label: "Decision model",
+        hint: "For Jev use typesafe/jev-1.14. For a chat model, name the model to call.",
+        value: values.decide_model,
+        onChange: (next) => state.save("decide_model", next),
+      }),
       h(NumberField, {
         label: "Decisions per turn",
         hint: "Stops the agent from outsourcing its judgement one call at a time.",
@@ -722,16 +763,23 @@ function GuidancePage(props) {
   const [path, setPath] = useState("")
   const [notice, setNotice] = useState("")
   const [saving, setSaving] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const seq = useRef(0)
 
   const load = async (nextScope) => {
+    const id = ++seq.current
     setNotice("")
+    setLoading(true)
     try {
       const query = `/guidance?scope=${encodeURIComponent(nextScope)}&cwd=${encodeURIComponent(cwd || "")}`
       const data = unwrap(await ctx.rest(query))
+      if (seq.current !== id) return  // a newer scope won
       setText(data && typeof data.text === "string" ? data.text : "")
       setPath(data && data.path ? String(data.path) : "")
     } catch (err) {
-      setNotice(messageOf(err))
+      if (seq.current === id) setNotice(messageOf(err))
+    } finally {
+      if (seq.current === id) setLoading(false)
     }
   }
 
@@ -740,6 +788,7 @@ function GuidancePage(props) {
   }, [scope, cwd])
 
   const save = async () => {
+    if (loading) return
     setSaving(true)
     setNotice("")
     try {
@@ -815,8 +864,8 @@ function GuidancePage(props) {
         { style: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } },
         h(
           "button",
-          { type: "button", style: BUTTON, onClick: save, disabled: saving },
-          saving ? "Saving..." : "Save guidance",
+          { type: "button", style: BUTTON, onClick: save, disabled: saving || loading },
+          saving ? "Saving..." : loading ? "Loading..." : "Save guidance",
         ),
         h(
           "button",
@@ -956,6 +1005,15 @@ export function register(ctx) {
           { style: { display: "grid", gap: 10, padding: 8 } },
           h("p", { style: MUTED }, state.error || "Loading settings..."),
           h("button", { type: "button", style: BUTTON, onClick: () => state.reload() }, "Reload"),
+        )
+      }
+      if (state.error) {
+        return h(
+          "div",
+          { style: { display: "grid", gap: 10 } },
+          h("p", { style: { ...MUTED, opacity: 1, fontWeight: 600 } }, state.error),
+          h("button", { type: "button", style: BUTTON, onClick: () => state.reload() }, "Retry"),
+          h(Component, { ctx, state, mainModel: null }),
         )
       }
       const raw = String(main || "")

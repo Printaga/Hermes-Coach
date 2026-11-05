@@ -12,7 +12,7 @@ def test_untracked_files_are_included(tmp_path):
         calls.append(argv)
         if argv[:2] == ["git", "diff"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
-        return subprocess.CompletedProcess(argv, 0, "?? new.py\n", "")
+        return subprocess.CompletedProcess(argv, 0, "?? new.py\0", "")
 
     text = collect(str(tmp_path), ["new.py"], run=fake_run)
     assert "(new file)" in text and "print('hi')" in text

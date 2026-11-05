@@ -1,4 +1,30 @@
+# Virtualenvs
 .venv/
+venv/
+env/
+
+# Bytecode
 __pycache__/
-*.pyc
+*.py[cod]
+
+# Test and build output
 .pytest_cache/
+build/
+dist/
+*.egg-info/
+.eggs/
+.coverage*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Tool scratch
+.freebuff/
+
+# Generated review output
+/review.json

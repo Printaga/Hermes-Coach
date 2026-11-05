@@ -13,7 +13,8 @@ def test_roundtrip_and_defaults(tmp_path):
 
 def test_atomic_write_leaves_no_tmp(tmp_path):
     store = Store(tmp_path); s = store.load("s1"); store.save(s)
-    assert [p.name for p in tmp_path.iterdir()] == ["s1.json"]
+    assert len(list(tmp_path.iterdir())) == 1
+    assert store.sessions_on_disk() == ["s1"]
 
 def test_prune_keeps_newest_twenty(tmp_path):
     store = Store(tmp_path, max_sessions=20)
@@ -24,6 +25,7 @@ def test_prune_keeps_newest_twenty(tmp_path):
     assert "s00" not in store.sessions_on_disk()
 
 def test_corrupt_file_is_reset_not_raised(tmp_path):
-    (tmp_path / "bad.json").write_text("{nope")
-    s = Store(tmp_path).load("bad")
+    store = Store(tmp_path)
+    store._path("bad").write_text("{nope")
+    s = store.load("bad")
     assert s.ledger == [] and s.last_error

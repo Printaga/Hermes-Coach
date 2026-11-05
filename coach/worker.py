@@ -7,20 +7,23 @@ waits for the host's turn; the hook path hands the work off and returns.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
 
 __all__ = ["Worker"]
 
+log = logging.getLogger(__name__)
+
 
 class Worker:
     """Runs at most one review at a time; newer requests replace queued ones."""
 
-    def __init__(self, run: Callable[[str], None]) -> None:
+    def __init__(self, run: Callable[[str, str], None]) -> None:
         self._run = run
         self._condition = threading.Condition()
-        self._pending: str | None = None
+        self._pending: tuple[str, str] | None = None
         self._running = False
         self._stopped = False
         self._thread = threading.Thread(
@@ -28,15 +31,15 @@ class Worker:
         )
         self._thread.start()
 
-    def submit(self, session_id: str) -> bool:
-        """Queue one session for review, replacing any waiting session."""
+    def submit(self, session_id: str, turn_id: str = "") -> bool:
+        """Queue one turn for review, replacing any waiting turn."""
         session = str(session_id or "").strip()
         if not session:
             return False
         with self._condition:
             if self._stopped:
                 return False
-            self._pending = session
+            self._pending = (session, str(turn_id or "").strip())
             self._condition.notify()
             return True
 
@@ -58,14 +61,15 @@ class Worker:
                 self._condition.wait(remaining)
             return True
 
-    def stop(self) -> None:
-        """Stop after the in-flight review, dropping anything queued."""
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Stop after the in-flight review; True when the thread has exited."""
         with self._condition:
             self._stopped = True
             self._pending = None
             self._condition.notify_all()
         if self._thread is not threading.current_thread():
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
 
     def _loop(self) -> None:
         while True:
@@ -74,13 +78,13 @@ class Worker:
                     self._condition.wait()
                 if self._stopped:
                     return
-                session = self._pending
+                session, turn = self._pending
                 self._pending = None
                 self._running = True
             try:
-                self._run(session)
+                self._run(session, turn)
             except Exception:  # fail-open: a bad review never kills the worker
-                pass
+                log.warning("coach: review of %s/%s failed", session, turn, exc_info=True)
             finally:
                 with self._condition:
                     self._running = False

@@ -67,6 +67,11 @@ def _attr(value: object) -> str:
     )
 
 
+def _text(value: object) -> str:
+    """Escape the block's closing tag in model-supplied text."""
+    return str(value or "").replace("</coach-note>", "&lt;/coach-note&gt;")
+
+
 def _lines(*parts: str) -> str:
     return "\n".join(part for part in parts if part)
 
@@ -80,10 +85,10 @@ def format_ambient(finding: Finding, turn_id: str) -> str:
             f'<coach-note turn="{_attr(turn_id)}" '
             f'severity="{_attr(finding.severity)}" source="coach">'
         ),
-        f"Coach review found a {finding.severity}: {finding.title}",
-        finding.body,
-        evidence,
-        fix,
+        f"Coach review found a {finding.severity}: {_text(finding.title)}",
+        _text(finding.body),
+        _text(evidence),
+        _text(fix),
         "Weigh this against the user's current request; the user's instruction wins.",
         "</coach-note>",
     )
@@ -94,10 +99,10 @@ def format_corrective(finding: Finding) -> str:
     evidence = f"Evidence: {finding.evidence}" if finding.evidence else ""
     fix = f"Suggested fix: {finding.fix}" if finding.fix else ""
     return _lines(
-        f"Coach review found a {finding.severity}: {finding.title}",
-        finding.body,
-        evidence,
-        fix,
+        f"Coach review found a {finding.severity}: {_text(finding.title)}",
+        _text(finding.body),
+        _text(evidence),
+        _text(fix),
         (
             "Address this before continuing. This note came from an independent "
             "review, not from the user."

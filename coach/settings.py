@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 __all__ = ["DEFAULTS", "ModelChoice", "Settings", "load_settings"]
@@ -109,13 +110,21 @@ def _as_float(value: Any, default: float) -> float:
     if isinstance(value, bool):
         return default
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        number = float(value)
+    elif isinstance(value, str):
         try:
-            return float(value.strip())
+            number = float(value.strip())
         except ValueError:
             return default
-    return default
+    else:
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _as_text(value: Any, default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    return value.strip() or default
 
 
 def _as_choice(value: Any, key: str, default: str) -> str:
@@ -132,8 +141,12 @@ def _as_model(value: Any) -> ModelChoice | None:
         return value
     if not isinstance(value, Mapping):
         return None
-    provider = str(value.get("provider") or "").strip()
-    model = str(value.get("model") or "").strip()
+    raw_provider = value.get("provider")
+    raw_model = value.get("model")
+    if not isinstance(raw_provider, str) or not isinstance(raw_model, str):
+        return None
+    provider = raw_provider.strip()
+    model = raw_model.strip()
     if not provider or not model:
         return None
     return ModelChoice(provider=provider, model=model)
@@ -211,10 +224,27 @@ class Settings:
         )
 
 
+_MINIMUMS: dict[str, float] = {
+    "max_reply_tokens": 80,
+    "active_every_n": 2,
+    "review_max_holds": 0,
+    "decide_max_calls_per_turn": 1,
+    "consult_max_calls_per_turn": 1,
+    "delivery_max_corrective_per_request": 0,
+    "delivery_note_ttl_turns": 0,
+    "budget_session_usd": 0.0,
+    "worker_timeout_s": 5,
+    "ledger_max_tool_result_chars": 50,
+    "ledger_max_recent_turns": 1,
+    "ledger_note_max_chars": 100,
+    "ledger_max_tokens": 500,
+}
+
+
 def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
     """Build settings from raw config, falling back on any bad value."""
     data = raw if isinstance(raw, Mapping) else {}
-    return Settings(
+    settings = Settings(
         coach_model=_as_model(data.get("coach_model")),
         active_model=_as_model(data.get("active_model")),
         review_model=_as_model(data.get("review_model")),
@@ -246,8 +276,7 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
         decide_backend=_as_choice(
             data.get("decide_backend"), "decide_backend", DEFAULTS["decide_backend"]
         ),
-        decide_model=str(data.get("decide_model") or DEFAULTS["decide_model"]).strip()
-        or DEFAULTS["decide_model"],
+        decide_model=_as_text(data.get("decide_model"), DEFAULTS["decide_model"]),
         decide_min_confidence=_as_confidence(data.get("decide_min_confidence")),
         decide_max_calls_per_turn=_as_int(
             data.get("decide_max_calls_per_turn"),
@@ -257,11 +286,9 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
             data.get("consult_max_calls_per_turn"),
             DEFAULTS["consult_max_calls_per_turn"],
         ),
-        decide_typesafe_api_key=str(
-            data.get("decide_typesafe_api_key")
-            if data.get("decide_typesafe_api_key") is not None
-            else DEFAULTS["decide_typesafe_api_key"]
-        ).strip(),
+        decide_typesafe_api_key=_as_text(
+            data.get("decide_typesafe_api_key"), DEFAULTS["decide_typesafe_api_key"]
+        ),
         delivery_policy=_as_choice(
             data.get("delivery_policy"), "delivery_policy", DEFAULTS["delivery_policy"]
         ),
@@ -310,3 +337,9 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
             data.get("debug_log_decisions"), DEFAULTS["debug_log_decisions"]
         ),
     )
+    low = {
+        key: minimum
+        for key, minimum in _MINIMUMS.items()
+        if getattr(settings, key) < minimum
+    }
+    return replace(settings, **low) if low else settings

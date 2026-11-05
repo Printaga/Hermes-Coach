@@ -15,6 +15,8 @@ from .state import SessionState
 __all__ = ["append_turn", "build_messages", "estimate_tokens", "tool_card"]
 
 _ASSISTANT_CHARS = 600
+_USER_CHARS = 4000
+_MAX_TURNS = 60
 
 
 def append_turn(
@@ -29,11 +31,13 @@ def append_turn(
     state.ledger.append(
         {
             "turn_id": turn_id,
-            "user": user,
+            "user": str(user or "")[:_USER_CHARS],
             "assistant": assistant,
             "tools": list(tools),
         }
     )
+    if len(state.ledger) > _MAX_TURNS:
+        del state.ledger[: len(state.ledger) - _MAX_TURNS]
 
 
 def tool_card(
@@ -142,7 +146,14 @@ def build_messages(
                 }
             )
 
-    budget = max(0, int(max_tokens)) * 4
+    note_text = (
+        f"Session note (the coach's own interpretation):\n{state.note}"
+        if state.note
+        else ""
+    )
+    fixed = len(str(system or "")) + len(str(guidance or "")) + len(note_text)
+    fixed += len(str(question or ""))
+    budget = max(0, int(max_tokens) * 4 - fixed)
 
     def render() -> str:
         return "\n".join(line["text"] for line in lines if not line["dropped"])
@@ -158,11 +169,12 @@ def build_messages(
                 line["dropped"] = True
                 ledger_text = render()
 
+    if len(ledger_text) > budget:  # last resort: user history alone is oversized
+        ledger_text = ledger_text[:budget].rstrip()
+
     system_parts = [str(system or ""), str(guidance or "")]
-    if state.note:
-        system_parts.append(
-            f"Session note (the coach's own interpretation):\n{state.note}"
-        )
+    if note_text:
+        system_parts.append(note_text)
     messages: list[dict[str, str]] = [
         {
             "role": "system",

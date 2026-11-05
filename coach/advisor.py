@@ -66,16 +66,21 @@ def _split_messages(
         text = _content_text(message.get("content"))
         if not text:
             continue
-        if str(message.get("role") or "").strip().lower() == "system":
+        role = str(message.get("role") or "user").strip().lower()
+        if role == "system":
             system_parts.append(text)
+        elif role == "user":
+            body_parts.append(text)  # the ledger already labels user turns
         else:
-            body_parts.append(text)
+            body_parts.append(f"{role}: {text}")
     return "\n\n".join(system_parts), "\n\n".join(body_parts)
 
 
 def _differs(reported: str, requested: str) -> bool:
-    """True when the host reported a different provider or model."""
-    return bool(reported) and reported.strip().lower() != requested.strip().lower()
+    """True when the host did not confirm the provider or model we asked for."""
+    if not requested.strip():
+        return False
+    return reported.strip().lower() != requested.strip().lower()
 
 
 class Coach:
@@ -89,14 +94,12 @@ class Coach:
         primary_model: str = "",
         primary_provider: str = "",
         cost_fn: Callable[[str, Any, str], float] | None = None,
-        clock: Callable[[], float] = time.time,
     ) -> None:
         self.llm = llm
         self.settings = settings
         self.primary_model = primary_model
         self.primary_provider = primary_provider
         self.cost_fn = cost_fn
-        self.clock = clock
 
     def check(self, mode: str = "") -> str:
         """Return ``""`` when a call is allowed, else the blocking reason.
@@ -135,7 +138,7 @@ class Coach:
         reason = self.check(mode)
         if reason:
             return CoachReply(error=reason)
-        choice = self.settings.model_for(mode)
+        choice = self.settings.model_for(mode) if mode else self.settings.coach_model
         if choice is None:
             return CoachReply(error="unconfigured")
         model, provider = choice.model, choice.provider
