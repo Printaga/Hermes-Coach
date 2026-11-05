@@ -33,3 +33,20 @@ def test_guidance_rejects_unregistered_path(tmp_path):
         "/guidance", json={"scope": "project", "cwd": "/etc", "text": "x"}
     )
     assert r.status_code == 400
+
+
+def test_settings_save_roundtrip(tmp_path):
+    client = TestClient(app_for_tests(home=tmp_path))
+    r = client.put("/config", json={"values": {
+        "active_enabled": True,
+        "coach_model": {"provider": "p", "model": "m"},
+    }})
+    assert r.status_code == 200
+    body = client.get("/config").json()
+    assert body["values"]["active_enabled"] is True
+    assert body["configured"] is True
+
+
+def test_settings_reject_unknown_key(tmp_path):
+    client = TestClient(app_for_tests(home=tmp_path))
+    assert client.put("/config", json={"values": {"nope": 1}}).status_code == 400

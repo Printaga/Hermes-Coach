@@ -5,6 +5,10 @@
  * `host.request`, and `registerSettingsPage` on the plugin context.
  */
 
+import { host } from "@hermes/plugin-sdk"
+import { useEffect, useState } from "react"
+import { jsx, jsxs } from "react/jsx-runtime"
+
 const MODEL_ROWS = [
   [
     "coach_model",
@@ -85,9 +89,9 @@ function flattenModels(input, provider) {
   }
   if (typeof input !== "object") return out;
   const ownProvider = String(
-    input.provider || input.provider_id || input.providerId || parent,
+    input.provider || input.provider_id || input.providerId || input.slug || parent,
   );
-  const children = input.models || input.children || input.options;
+  const children = input.providers || input.models || input.children || input.options;
   if (Array.isArray(children)) {
     children.forEach((child) => out.push(...flattenModels(child, ownProvider)));
     return out;
@@ -116,17 +120,17 @@ function dedupeModels(models) {
 }
 
 function useConfig(ctx) {
-  const [config, setConfig] = ctx.useValue(null);
-  const [status, setStatus] = ctx.useValue(null);
-  const [error, setError] = ctx.useValue("");
-  const [busy, setBusy] = ctx.useValue(false);
-  const effect = typeof ctx.useEffect === "function" ? ctx.useEffect : NOOP_EFFECT;
+  const [config, setConfig] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
 
   const reload = async () => {
     try {
       const [nextConfig, nextStatus] = await Promise.all([
-        ctx.rest.get("/config"),
-        ctx.rest.get("/status"),
+        ctx.rest("/config"),
+        ctx.rest("/status"),
       ]);
       setConfig(unwrap(nextConfig));
       setStatus(unwrap(nextStatus));
@@ -140,13 +144,10 @@ function useConfig(ctx) {
     setBusy(true);
     setError("");
     try {
-      if (typeof ctx.setConfig === "function") {
-        await ctx.setConfig(key, value);
-      } else if (ctx.config && typeof ctx.config.set === "function") {
-        await ctx.config.set(key, value);
-      } else {
-        throw new Error("This host does not expose a config writer.");
-      }
+      await ctx.rest("/config", {
+        method: "PUT",
+        body: { values: { [key]: value } },
+      });
       await reload();
     } catch (err) {
       setError(messageOf(err));
@@ -191,7 +192,7 @@ function Loading(props) {
 
 function ToggleField(props) {
   const { ctx, label, checked, onChange, hint } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   return h(
     "label",
     { className: "coach-toggle", style: { display: "grid", gap: "4px" } },
@@ -211,7 +212,7 @@ function ToggleField(props) {
 
 function TextInput(props) {
   const { ctx, value, onChange, placeholder } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   return h("input", {
     type: "text",
     className: "coach-input",
@@ -223,9 +224,9 @@ function TextInput(props) {
 
 function NumberInput(props) {
   const { ctx, value, min, max, step, onCommit } = props;
-  const h = ctx.jsx;
-  const [draft, setDraft] = ctx.useValue(value == null ? "" : String(value));
-  const effect = typeof ctx.useEffect === "function" ? ctx.useEffect : NOOP_EFFECT;
+  const h = jsx;
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
 
   effect(() => {
     setDraft(value == null ? "" : String(value));
@@ -260,7 +261,7 @@ function NumberInput(props) {
 
 function ChoiceInput(props) {
   const { ctx, value, choices, onChange } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const current = value == null ? "" : String(value);
   return h(
     "select",
@@ -277,7 +278,7 @@ function ChoiceInput(props) {
 
 function ModelInput(props) {
   const { ctx, value, models, inherit, onChange } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const current = modelKey(value);
   const known = new Set(models.map((item) => modelKey(item)));
   const options = [
@@ -315,7 +316,7 @@ function ModelInput(props) {
 
 function StatusSummary(props) {
   const { ctx, status } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   if (!status) {
     return h("p", { className: "coach-muted" }, "Loading status...");
   }
@@ -356,7 +357,7 @@ function StatusSummary(props) {
 
 function OverviewPage(props) {
   const { ctx } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const state = useConfig(ctx);
   const status = state.status;
   return h(
@@ -404,20 +405,20 @@ function OverviewPage(props) {
 
 function ModelsPage(props) {
   const { ctx } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const state = useConfig(ctx);
-  const [catalog, setCatalog] = ctx.useValue([]);
-  const [catalogError, setCatalogError] = ctx.useValue("");
-  const effect = typeof ctx.useEffect === "function" ? ctx.useEffect : NOOP_EFFECT;
+  const [catalog, setCatalog] = useState([]);
+  const [catalogError, setCatalogError] = useState("");
+  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
 
   effect(() => {
     let alive = true;
-    const host = ctx.host;
-    if (!host || typeof host.request !== "function") {
+    const api = host;
+    if (!api || typeof api.request !== "function") {
       setCatalogError("This host does not expose the model catalog.");
       return undefined;
     }
-    Promise.resolve(host.request("model.options"))
+    Promise.resolve(api.request("model.options"))
       .then((result) => {
         if (alive) setCatalog(dedupeModels(flattenModels(unwrap(result))));
       })
@@ -491,7 +492,7 @@ function ModelsPage(props) {
 
 function ModesPage(props) {
   const { ctx } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const state = useConfig(ctx);
   if (!state.config) {
     return h(Loading, { h, state });
@@ -662,7 +663,7 @@ function ModesPage(props) {
 
 function DeliveryPage(props) {
   const { ctx } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const state = useConfig(ctx);
   if (!state.config) {
     return h(Loading, { h, state });
@@ -739,7 +740,7 @@ function DeliveryPage(props) {
 
 function BudgetPage(props) {
   const { ctx } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const state = useConfig(ctx);
   if (!state.config) {
     return h(Loading, { h, state });
@@ -800,14 +801,14 @@ function BudgetPage(props) {
 
 function GuidancePage(props) {
   const { ctx } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const state = useConfig(ctx);
-  const [scope, setScope] = ctx.useValue("global");
-  const [cwd, setCwd] = ctx.useValue("");
-  const [text, setText] = ctx.useValue("");
-  const [notice, setNotice] = ctx.useValue("");
-  const [saving, setSaving] = ctx.useValue(false);
-  const effect = typeof ctx.useEffect === "function" ? ctx.useEffect : NOOP_EFFECT;
+  const [scope, setScope] = useState("global");
+  const [cwd, setCwd] = useState("");
+  const [text, setText] = useState("");
+  const [notice, setNotice] = useState("");
+  const [saving, setSaving] = useState(false);
+  const effect = typeof useEffect === "function" ? useEffect : NOOP_EFFECT;
 
   const load = async (nextScope, nextCwd) => {
     setNotice("");
@@ -817,7 +818,7 @@ function GuidancePage(props) {
         encodeURIComponent(nextScope) +
         "&cwd=" +
         encodeURIComponent(nextCwd || "");
-      const data = unwrap(await ctx.rest.get(query));
+      const data = unwrap(await ctx.rest(query));
       setText(data && typeof data.text === "string" ? data.text : "");
     } catch (err) {
       setNotice(messageOf(err));
@@ -838,10 +839,9 @@ function GuidancePage(props) {
     setNotice("");
     try {
       const result = unwrap(
-        await ctx.rest.put("/guidance", {
-          scope,
-          cwd,
-          text,
+        await ctx.rest("/guidance", {
+          method: "PUT",
+          body: { scope, cwd, text },
         }),
       );
       setNotice(result && result.message ? result.message : "Saved.");
@@ -938,10 +938,10 @@ function GuidancePage(props) {
 
 function StatusPage(props) {
   const { ctx } = props;
-  const h = ctx.jsx;
+  const h = jsx;
   const state = useConfig(ctx);
-  const [granting, setGranting] = ctx.useValue(false);
-  const [notice, setNotice] = ctx.useValue("");
+  const [granting, setGranting] = useState(false);
+  const [notice, setNotice] = useState("");
 
   if (!state.config) {
     return h(Loading, { h, state });
@@ -954,7 +954,7 @@ function StatusPage(props) {
     setGranting(true);
     setNotice("");
     try {
-      unwrap(await ctx.rest.post("/permissions/grant", {}));
+      unwrap(await ctx.rest("/permissions/grant", { method: "POST", body: {} }));
       setNotice("Model overrides granted.");
       await state.reload();
     } catch (err) {
@@ -1020,7 +1020,7 @@ export function register(ctx) {
   if (!ctx || typeof ctx.registerSettingsPage !== "function") {
     throw new Error("Coach settings need the Hermes Desktop plugin host.");
   }
-  const h = ctx.jsx;
+  const h = jsx;
   const withContext = (Component) => (props) =>
     h(Component, { ...(props || {}), ctx });
 
@@ -1040,4 +1040,4 @@ export function register(ctx) {
   });
 }
 
-export default register;
+export default { id: "coach", name: "Coach", register };

@@ -331,6 +331,37 @@ def get_config(request: Request) -> dict[str, Any]:
     }
 
 
+@router.put("/config")
+def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Save settings values for the keys declared in the manifest."""
+    body = payload if isinstance(payload, Mapping) else {}
+    incoming = body.get("values")
+    if not isinstance(incoming, Mapping):
+        raise HTTPException(status_code=400, detail="values_required")
+    clean: dict[str, Any] = {}
+    for key, value in incoming.items():
+        name = str(key)
+        if name not in DEFAULTS or name == _SECRET_KEY:
+            raise HTTPException(status_code=400, detail=f"unknown_setting: {name}")
+        clean[name] = value
+    if not clean:
+        raise HTTPException(status_code=400, detail="values_required")
+
+    state_config = getattr(request.app.state, "config", None)
+    if isinstance(state_config, dict):
+        settings = _mapping_section(_mapping_section(_mapping_section(
+            state_config, "plugins"), "entries"), "coach")
+        settings.setdefault("settings", {}).update(clean)
+    else:
+        config = _load_host_config()
+        section = _mapping_section(_mapping_section(_mapping_section(
+            config, "plugins"), "entries"), "coach")
+        section.setdefault("settings", {}).update(clean)
+        if not _save_host_config(config):
+            raise HTTPException(status_code=500, detail="config_write_failed")
+    return get_config(request)
+
+
 @router.get("/guidance")
 def get_guidance(
     request: Request,
