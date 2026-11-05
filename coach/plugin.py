@@ -1,9 +1,10 @@
-"""The coach_ask tool, its guards, and plugin construction.
+"""The coach_ask tool, its guards, delivery, and plugin construction.
 
 Every path through :meth:`CoachPlugin.tool_ask` returns a JSON string. Bad
 input, an unconfigured coach, a child session, an exhausted budget or a
 provider failure are all reported as ``{"ok": false, "error": ...}`` rather
-than raised into the host.
+than raised into the host. Findings reach the user through a card, a pending
+ambient note, or a corrective message, according to the delivery policy.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .advisor import Coach
+from .delivery import format_ambient, format_card, format_corrective, route
+from .findings import Finding
 from .guidance import Guidance
 from .ledger import append_turn, build_messages
 from .settings import DEFAULTS, ModelChoice, Settings, load_settings
@@ -110,6 +113,13 @@ def _child_id(data: Mapping[str, Any]) -> str:
     return ""
 
 
+def _as_turn(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 class CoachPlugin:
     """Stateful plugin instance: one consultation tool plus its guards."""
 
@@ -178,6 +188,93 @@ class CoachPlugin:
             "budget_on_exceed": self.settings.budget_on_exceed,
             "allow_in_subagents": self.settings.allow_in_subagents,
         }
+
+    def deliver(
+        self, finding: Finding | None, *, session_id: str, turn_id: str
+    ) -> None:
+        """Route one finding to a card, a pending note, or an injection."""
+        if finding is None:
+            return
+        state = self.store.load(session_id)
+        decision = route(
+            finding,
+            self.settings,
+            surface=self._surface_kind(),
+            holds_used=state.holds,
+        )
+        if decision == "drop":
+            return
+        if self.settings.delivery_show_cards:
+            self._post(format_card(finding))
+        if decision == "corrective" and self._inject(format_corrective(finding)):
+            state.holds += 1
+            state.updated_at = self.clock()
+            self.store.save(state)
+            return
+
+        ttl = max(0, int(self.settings.delivery_note_ttl_turns))
+        state.pending = [
+            note
+            for note in state.pending
+            if isinstance(note, Mapping)
+            and _as_turn(note.get("expires_at_turn")) >= state.note_seq
+        ]
+        state.pending.append(
+            {
+                "turn_id": str(turn_id or ""),
+                "expires_at_turn": int(state.note_seq) + ttl,
+                "text": format_ambient(finding, turn_id),
+                "severity": finding.severity,
+                "title": finding.title,
+                "body": finding.body,
+                "evidence": finding.evidence,
+                "fix": finding.fix,
+            }
+        )
+        state.updated_at = self.clock()
+        self.store.save(state)
+
+    def on_pre_llm_call(
+        self, payload: Mapping[str, Any] | None = None, **kw: Any
+    ) -> dict[str, str] | None:
+        """Return pending ambient notes once, dropping notes past their TTL."""
+        data = _payload(payload, kw)
+        session_id = str(data.get("session_id") or "current")
+        state = self.store.load(session_id)
+        state.note_seq = _as_turn(state.note_seq) + 1
+
+        delivered: list[str] = []
+        for note in state.pending:
+            if not isinstance(note, Mapping):
+                continue
+            if _as_turn(note.get("expires_at_turn")) < state.note_seq:
+                continue
+            text = str(note.get("text") or "").strip()
+            if text:
+                delivered.append(text)
+        state.pending = []
+        state.updated_at = self.clock()
+        self.store.save(state)
+
+        if not delivered:
+            return None
+        return {"context": "\n".join(delivered)}
+
+    def _post(self, text: str) -> None:
+        if self.post is None:
+            return
+        try:
+            self.post(text)
+        except Exception:
+            pass
+
+    def _inject(self, text: str) -> bool:
+        if self.inject is None:
+            return False
+        try:
+            return self.inject(text) is not False
+        except Exception:
+            return False
 
     def tool_ask(self, args: dict) -> str:
         """Answer one consultation as a JSON string; never raise."""
