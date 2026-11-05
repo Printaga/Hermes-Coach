@@ -29,3 +29,12 @@ def test_corrupt_file_is_reset_not_raised(tmp_path):
     store._path("bad").write_text("{nope")
     s = store.load("bad")
     assert s.ledger == [] and s.last_error
+
+
+def test_save_sweeps_old_sessions(tmp_path):
+    store = Store(tmp_path, max_sessions=2)
+    for index in range(3):
+        store.save(store.load(f"s{index}"))
+    for _ in range(22):
+        store.save(store.load("s2"))
+    assert len(store.sessions_on_disk()) <= 2

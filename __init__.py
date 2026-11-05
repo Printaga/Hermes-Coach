@@ -75,3 +75,10 @@ def register(ctx):
             register_hook(name, handler)
         except Exception:
             log.exception("coach: could not register %s", name)
+
+    on_unload = getattr(ctx, "on_unload", None)
+    if callable(on_unload):
+        try:
+            on_unload(plugin.shutdown)
+        except Exception:
+            log.exception("coach: could not register on_unload")

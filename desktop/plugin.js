@@ -899,11 +899,15 @@ function StatusPage(props) {
   const [granting, setGranting] = useState(false)
   const [notice, setNotice] = useState("")
   const [recent, setRecent] = useState([])
+  const [scope, setScope] = useState("chat")
+  const focused = useValue(host.state.focusedSessionId)
+  const sessionParam =
+    scope === "chat" && focused ? `&session=${encodeURIComponent(focused)}` : ""
 
   useEffect(() => {
     let alive = true
     ctx
-      .rest("/recent?limit=8")
+      .rest(`/recent?limit=8${sessionParam}`)
       .then((result) => {
         if (alive) setRecent((unwrap(result) || {}).reviews || [])
       })
@@ -911,7 +915,7 @@ function StatusPage(props) {
     return () => {
       alive = false
     }
-  }, [])
+  }, [sessionParam])
 
   const grant = async () => {
     setGranting(true)
@@ -972,8 +976,37 @@ function StatusPage(props) {
         description:
           "The last findings the coach logged for this profile, newest first. Consult advice is in the conversation and in /coach last.",
       },
+      h(
+        "div",
+        { style: { display: "flex", gap: 8 } },
+        ["chat", "all"].map((value) =>
+          h(
+            "button",
+            {
+              key: value,
+              type: "button",
+              style: {
+                ...BUTTON,
+                fontWeight: scope === value ? 700 : 400,
+                borderColor:
+                  scope === value
+                    ? "color-mix(in srgb, currentColor 55%, transparent)"
+                    : "color-mix(in srgb, currentColor 24%, transparent)",
+              },
+              onClick: () => setScope(value),
+            },
+            value === "chat" ? "This chat" : "All sessions",
+          ),
+        ),
+      ),
       recent.length === 0
-        ? h("p", { style: MUTED }, "No reviews logged yet.")
+        ? h(
+            "p",
+            { style: MUTED },
+            scope === "chat"
+              ? "No findings for this chat yet."
+              : "No reviews logged yet.",
+          )
         : recent.map((row) =>
             h(
               "div",

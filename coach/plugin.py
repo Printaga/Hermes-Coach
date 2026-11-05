@@ -352,7 +352,12 @@ def _log_name(session_id: str) -> str:
     return name or "session"
 
 
+_ADVICE_KEEP = 5
 _LOG_KEEP = 200
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 _LOG_TRIM_BYTES = 128 * 1024
 
 
@@ -439,6 +444,15 @@ class CoachPlugin:
         self._turn_tools: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._paused = False
 
+    def shutdown(self) -> None:
+        """Stop the review worker when the host unloads the plugin."""
+        worker = getattr(self, "worker", None)
+        try:
+            if worker is not None:
+                worker.stop(timeout=1.0)
+        except Exception:
+            pass
+
     def refresh_settings(self) -> None:
         """Re-read settings so a page change applies without a plugin reload.
 
@@ -520,7 +534,7 @@ class CoachPlugin:
             if name == "status":
                 return self._status_text(session_id)
             if name == "last":
-                return self._last_advice_text(session_id)
+                return self._last_advice_text(session_id, args)
             if name == "log":
                 return self._log_text(session_id, args)
             if name in {"active", "review", "decide"}:
@@ -644,11 +658,32 @@ class CoachPlugin:
             f"({settings.budget_on_exceed})"
         )
         lines.append(f"Pending: {len(state.pending)} note(s)")
+        last_event = self._last_event_text(session_id)
+        if last_event:
+            lines.append(last_event)
         if self._paused:
             lines.append("Paused: yes")
         if state.last_error:
             lines.append(f"Last error: {state.last_error}")
         return "\n".join(lines)
+
+    def _last_event_text(self, session_id: str = "current") -> str:
+        """One line summarising the newest logged event, for status."""
+        path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
+        try:
+            line = path.read_text(encoding="utf-8", errors="replace").splitlines()[-1]
+            row = json.loads(line)
+        except (OSError, IndexError, ValueError):
+            return ""
+        if str(row.get("kind") or "") == "decide":
+            return (
+                f"Last decision: {row.get('decision')} "
+                f"({row.get('gate')}, {row.get('confidence')})"
+            )
+        return (
+            f"Last review: [{row.get('severity') or 'none'}] "
+            f"{row.get('title') or 'no finding'}"
+        )
 
     def _guidance_text(self) -> str:
         cwd = str(self.cwd() or "")
@@ -662,36 +697,105 @@ class CoachPlugin:
             lines.append(body or "(empty)")
         return "\n".join(lines)
 
-    def _last_advice_text(self, session_id: str = "current") -> str:
+    def _state_with(self, session_id: str, has) -> tuple[Any, str]:
+        """Load the session state, else the newest session that has content.
+
+        The command layer and a tool can be handed different session ids by the
+        host; a read-only command should still find the coach's output.
+        """
         state = self.store.load(session_id)
-        advice = state.last_advice if isinstance(state.last_advice, Mapping) else {}
-        text = str(advice.get("text") or "").strip()
-        if not text:
-            return "No coach advice recorded in this session yet."
-        question = str(advice.get("question") or "").strip()
-        meta = " / ".join(
-            part
-            for part in (
-                str(advice.get("intent") or ""),
-                str(advice.get("model") or ""),
-            )
-            if part
+        if has(state):
+            return state, ""
+        try:
+            for other in self.store.sessions_by_recency():
+                if other == session_id:
+                    continue
+                candidate = self.store.load(other)
+                if has(candidate):
+                    return candidate, f"session {other[:12]}"
+        except Exception:
+            pass
+        return state, ""
+
+    def _last_advice_text(
+        self, session_id: str = "current", args: list[str] | None = None
+    ) -> str:
+        try:
+            count = max(1, min(5, int((args or ["1"])[0])))
+        except (TypeError, ValueError):
+            count = 1
+        state, label = self._state_with(
+            session_id, lambda st: bool(st.advice or st.last_advice)
         )
-        lines = []
-        if question:
-            lines.append(f"Question: {question}")
-        lines.append(text)
-        if meta:
-            lines.append(f"({meta})")
-        return "\n".join(lines)
+        rows = [row for row in state.advice if isinstance(row, Mapping)]
+        if not rows and isinstance(state.last_advice, Mapping) and state.last_advice:
+            rows = [state.last_advice]
+        if not rows:
+            decision = state.last_decision if isinstance(state.last_decision, Mapping) else {}
+            if decision.get("decision"):
+                return self._format_decision(decision)
+            return "No coach advice recorded in this session yet."
+        if count == 1:
+            row = rows[-1]
+            lines = []
+            question = str(row.get("question") or "").strip()
+            if question:
+                lines.append(f"Question: {question}")
+            lines.append(str(row.get("text") or ""))
+            meta = " / ".join(
+                part
+                for part in (str(row.get("intent") or ""), str(row.get("model") or ""))
+                if part
+            )
+            if meta:
+                lines.append(f"({meta})")
+            if label:
+                lines.append(f"(from {label})")
+            return "\n".join(lines)
+        out = [f"Last {min(count, len(rows))} advice entries (newest first):"]
+        for index, row in enumerate(reversed(rows[-count:]), 1):
+            question = str(row.get("question") or "").strip()[:120]
+            text = str(row.get("text") or "").strip()[:160]
+            intent = str(row.get("intent") or "")
+            out.append(f"{index}. [{intent}] {question}")
+            if text:
+                out.append(f"   {text}")
+        if label:
+            out.append(f"(from {label})")
+        return "\n".join(out)
+
+    @staticmethod
+    def _format_decision(decision: Mapping[str, Any]) -> str:
+        return "\n".join(
+            [
+                f"Last decision: {decision.get('decision')} "
+                f"({decision.get('gate')}, confidence {decision.get('confidence')})",
+                f"Question: {decision.get('question') or '(not recorded)'}",
+                str(decision.get("rationale") or ""),
+            ]
+        )
 
     def _log_text(self, session_id: str = "current", args: list[str] | None = None) -> str:
-        """Print the last few review findings for this session."""
+        """Print the last few logged events (reviews and decisions)."""
         try:
             count = max(1, min(20, int((args or ["5"])[0])))
         except (TypeError, ValueError):
             count = 5
         path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
+        label = ""
+        if not path.exists():
+            try:
+                candidates = sorted(
+                    (self.store.root.parent / "logs").glob("*.jsonl"),
+                    key=lambda item: item.stat().st_mtime,
+                    reverse=True,
+                )
+            except OSError:
+                candidates = []
+            if not candidates:
+                return "No coach reviews logged for this session yet."
+            path = candidates[0]
+            label = f" (from session {path.stem[:12]})"
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -704,14 +808,25 @@ class CoachPlugin:
                 continue
         if not rows:
             return "No coach reviews logged for this session yet."
-        out = [f"Last {len(rows)} coach review(s):"]
+        out = [f"Last {len(rows)} coach event(s){label}:"]
         for row in rows:
-            out.append(
-                f"- [{row.get('severity') or 'none'}] {row.get('title') or 'no finding'}"
-            )
-            body = str(row.get("body") or "").strip()
-            if body:
-                out.append(f"  {body[:200]}")
+            kind = str(row.get("kind") or "review")
+            if kind == "decide":
+                out.append(
+                    f"- [decide] {row.get('decision')} "
+                    f"({row.get('gate')}, {row.get('confidence')})"
+                )
+                rationale = str(row.get("rationale") or "").strip()
+                if rationale:
+                    out.append(f"  {rationale[:200]}")
+            else:
+                out.append(
+                    f"- [{row.get('severity') or 'none'}] "
+                    f"{row.get('title') or 'no finding'}"
+                )
+                body = str(row.get("body") or "").strip()
+                if body:
+                    out.append(f"  {body[:200]}")
             if row.get("error"):
                 out.append(f"  error: {row['error']}")
         return "\n".join(out)
@@ -1037,6 +1152,7 @@ class CoachPlugin:
             root = self.store.root.parent / "logs"
             root.mkdir(parents=True, exist_ok=True, mode=0o700)
             record = {
+                "kind": "review",
                 "session_id": session_id,
                 "turn_id": turn_id,
                 "severity": finding.severity if finding is not None else "none",
@@ -1050,7 +1166,33 @@ class CoachPlugin:
                 "provider": reply.provider,
                 "model": reply.model,
                 "error": reply.error,
-                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "at": _now_iso(),
+            }
+            path = root / f"{_log_name(session_id)}.jsonl"
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            _trim_log(path)
+        except Exception:
+            pass
+
+    def _log_decision(
+        self, session_id: str, turn_id: str, decision: Any, backend: str
+    ) -> None:
+        """Append one JSONL line per decision; never raise."""
+        try:
+            root = self.store.root.parent / "logs"
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            record = {
+                "kind": "decide",
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "decision": decision.decision,
+                "confidence": decision.confidence,
+                "gate": decision.gate,
+                "rationale": decision.rationale,
+                "cost_usd": decision.cost_usd,
+                "backend": backend,
+                "at": _now_iso(),
             }
             path = root / f"{_log_name(session_id)}.jsonl"
             with path.open("a", encoding="utf-8") as handle:
@@ -1273,13 +1415,16 @@ class CoachPlugin:
             assistant=reply.text,
             tools=[],
         )
-        state.last_advice = {
+        entry = {
             "question": question,
             "text": reply.text,
             "intent": intent,
             "provider": reply.provider,
             "model": reply.model,
+            "at": _now_iso(),
         }
+        state.advice = [*state.advice, entry][-_ADVICE_KEEP:]
+        state.last_advice = entry
         state.updated_at = self.clock()
         self.store.save(state)
         return {
@@ -1375,7 +1520,17 @@ class CoachPlugin:
             return _error(decision.rationale, spend_usd=state.spend_usd)
 
         state.last_error = ""
+        state.last_decision = {
+            "question": question,
+            "decision": decision.decision,
+            "confidence": decision.confidence,
+            "gate": decision.gate,
+            "rationale": decision.rationale,
+            "backend": backend,
+            "at": _now_iso(),
+        }
         self.store.save(state)
+        self._log_decision(session_id, turn_id, decision, backend)
         return {
             "ok": True,
             "decision": decision.decision,

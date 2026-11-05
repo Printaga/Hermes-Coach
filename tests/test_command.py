@@ -83,3 +83,44 @@ def test_review_log_is_trimmed(tmp_path):
     path.write_text("".join("x" * 120 + "\n" for _ in range(2000)), encoding="utf-8")
     _trim_log(path, keep=10)
     assert len(path.read_text().splitlines()) == 10
+
+
+def test_last_can_list_several_entries(tmp_path):
+    p = _p(tmp_path)
+    p.tool_ask({"question": "first question"}, session_id="s1")
+    p.tool_ask({"question": "second question"}, session_id="s1")
+    out = p.command("last", session_id="s1")
+    assert "second question" in out and "first question" not in out
+    out = p.command("last 2", session_id="s1")
+    assert "second question" in out and "first question" in out
+
+
+def test_last_falls_back_to_another_session(tmp_path):
+    p = _p(tmp_path)
+    p.tool_ask({"question": "only question"}, session_id="s1")
+    out = p.command("last", session_id="unknown-session")
+    assert "only question" in out and "(from session" in out
+
+
+def test_decisions_are_logged_and_listed(tmp_path):
+    from types import SimpleNamespace
+
+    p = _p(tmp_path)
+    p._log_decision(
+        "s1", "t1",
+        SimpleNamespace(decision="client.py", confidence=0.9, gate="act",
+                        rationale="client owns the loop", cost_usd=0.0),
+        "jev-openrouter",
+    )
+    out = p.command("log", session_id="s1")
+    assert "[decide] client.py" in out and "client owns the loop" in out
+    assert "Last decision: client.py" in p.command("status", session_id="s1")
+
+
+def test_shutdown_stops_the_worker(tmp_path):
+    from coach.worker import Worker
+
+    p = _p(tmp_path)
+    p.worker = Worker(lambda session_id, turn_id: None)
+    p.shutdown()
+    assert p.worker.submit("s", "t") is False

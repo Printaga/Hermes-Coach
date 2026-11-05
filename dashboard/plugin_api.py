@@ -375,8 +375,13 @@ def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[st
 
 
 @router.get("/recent")
-def get_recent(request: Request, limit: int = Query(10, ge=1, le=50)) -> dict[str, Any]:
+def get_recent(
+    request: Request,
+    limit: int = Query(10, ge=1, le=50),
+    session: str = Query("", description="Comma-separated session ids to keep"),
+) -> dict[str, Any]:
     """Return the newest review findings across sessions, newest first."""
+    wanted = {part.strip() for part in str(session or "").split(",") if part.strip()}
     root = _home(request) / "coach" / "logs"
     rows: list[dict[str, Any]] = []
     try:
@@ -396,6 +401,8 @@ def get_recent(request: Request, limit: int = Query(10, ge=1, le=50)) -> dict[st
             except ValueError:
                 continue
             if not isinstance(record, dict):
+                continue
+            if wanted and str(record.get("session_id") or "") not in wanted:
                 continue
             record["session"] = str(record.get("session_id") or "")[:12]
             rows.append(record)

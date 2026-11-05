@@ -119,4 +119,5 @@ def format_card(finding: Finding) -> str:
         finding.body,
         evidence,
         fix,
+        "Logged: /coach log · Status → Recent reviews",
     )

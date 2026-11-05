@@ -40,6 +40,8 @@ class SessionState:
     last_error: str = ""
     last_user_message: str = ""
     last_advice: dict[str, Any] = field(default_factory=dict)
+    advice: list[dict[str, Any]] = field(default_factory=list)
+    last_decision: dict[str, Any] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.time)
 
 
@@ -111,6 +113,7 @@ class Store:
     def __init__(self, root: Path, max_sessions: int = 20) -> None:
         self.root = Path(root)
         self.max_sessions = max_sessions
+        self._saves = 0
 
     def _path(self, session_id: str) -> Path:
         return self.root / f"{_safe_name(session_id)}.json"
@@ -151,6 +154,12 @@ class Store:
                 if isinstance(data.get("last_advice"), Mapping)
                 else {}
             ),
+            advice=_dict_items(data.get("advice")),
+            last_decision=(
+                dict(data["last_decision"])
+                if isinstance(data.get("last_decision"), Mapping)
+                else {}
+            ),
             updated_at=_as_float(data.get("updated_at"), 0.0),
         )
 
@@ -176,6 +185,15 @@ class Store:
                 json.dump(asdict(state), handle, ensure_ascii=False)
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, path)
+            self._saves += 1
+            # Pruning on session end never fires for a crash or a killed
+            # process; sweep occasionally so the cap also holds in practice.
+            if self._saves % 25 == 0:
+                try:
+                    if len(self._state_paths()) > self.max_sessions:
+                        self.prune()
+                except OSError:
+                    pass
         except BaseException:
             try:
                 tmp_path.unlink()
@@ -211,6 +229,17 @@ class Store:
         return sum(
             self._read(path, path.stem).spend_usd for path in self._state_paths()
         )
+
+    def sessions_by_recency(self) -> list[str]:
+        """Session ids ordered by file mtime, newest first."""
+        rows = []
+        for path in self._state_paths():
+            try:
+                rows.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        rows.sort(key=lambda item: item[0], reverse=True)
+        return [self._read(path, path.stem).session_id for _, path in rows]
 
     def sessions_on_disk(self) -> list[str]:
         """Original session ids with a state file, in a stable order."""

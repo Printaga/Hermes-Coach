@@ -63,3 +63,19 @@ def test_recent_returns_newest_first(tmp_path):
     client = TestClient(app_for_tests(home=tmp_path))
     rows = client.get("/recent").json()["reviews"]
     assert [row["title"] for row in rows] == ["new", "old"]
+
+
+def test_recent_can_filter_one_session(tmp_path):
+    logs = tmp_path / "coach" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "a.jsonl").write_text(
+        '{"at":"2026-01-01T00:00:00+00:00","title":"one","session_id":"s1"}\n',
+        encoding="utf-8",
+    )
+    (logs / "b.jsonl").write_text(
+        '{"at":"2026-02-01T00:00:00+00:00","title":"two","session_id":"s2"}\n',
+        encoding="utf-8",
+    )
+    client = TestClient(app_for_tests(home=tmp_path))
+    rows = client.get("/recent", params={"session": "s1"}).json()["reviews"]
+    assert [row["title"] for row in rows] == ["one"]
