@@ -42,7 +42,13 @@ def register(ctx):
         log.warning("coach: host has no register_hook; ambient delivery unavailable")
         return
 
-    try:
-        register_hook("pre_llm_call", plugin.on_pre_llm_call)
-    except Exception:
-        log.exception("coach: could not register pre_llm_call")
+    hooks = (
+        ("post_tool_call", plugin.on_post_tool_call),
+        ("post_llm_call", plugin.on_post_llm_call),
+        ("pre_llm_call", plugin.on_pre_llm_call),
+    )
+    for name, handler in hooks:
+        try:
+            register_hook(name, handler)
+        except Exception:
+            log.exception("coach: could not register %s", name)

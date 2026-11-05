@@ -9,8 +9,10 @@ ambient note, or a corrective message, according to the delivery policy.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,9 +22,10 @@ from .advisor import Coach
 from .delivery import format_ambient, format_card, format_corrective, route
 from .findings import Finding
 from .guidance import Guidance
-from .ledger import append_turn, build_messages
+from .ledger import append_turn, build_messages, tool_card
 from .settings import DEFAULTS, ModelChoice, Settings, load_settings
 from .state import Store
+from .worker import Worker
 
 __all__ = ["ASK_DESCRIPTION", "ASK_SCHEMA", "CoachPlugin", "build_plugin"]
 
@@ -61,6 +64,7 @@ ASK_SCHEMA = {
 
 _QUESTION_MAX = 4000
 _INTENTS = {"advice", "plan", "review"}
+_LOG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _CHILD_SURFACES = {"subagent", "delegate"}
 _CHILD_KEYS = (
     "session_id",
@@ -120,6 +124,86 @@ def _as_turn(value: Any) -> int:
         return 0
 
 
+def _tool_arg(args: Mapping[str, Any]) -> str:
+    for key in ("path", "file", "file_path", "command", "query", "pattern", "url"):
+        text = str(args.get(key) or "").strip()
+        if text:
+            return text[:120]
+    for value in args.values():
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:120]
+    return ""
+
+
+def _result_text(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    if result is None:
+        return ""
+    try:
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(result)
+
+
+def _turn_digest(turn: Mapping[str, Any]) -> str:
+    parts = [
+        str(turn.get("turn_id") or ""),
+        str(turn.get("user") or ""),
+        str(turn.get("assistant") or ""),
+    ]
+    tools = turn.get("tools")
+    if isinstance(tools, list):
+        for card in tools:
+            if isinstance(card, Mapping):
+                parts.append(
+                    f"{card.get('name')}|{card.get('arg')}|{card.get('status')}"
+                )
+    return hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _turns_since_review(state: Any) -> int:
+    count = 0
+    for record in reversed(state.ledger):
+        if not isinstance(record, Mapping):
+            continue
+        if record.get("reviewed"):
+            return count
+        count += 1
+    return count
+
+
+def _last_reviewed_digest(state: Any) -> str:
+    for record in reversed(state.ledger):
+        if (
+            isinstance(record, Mapping)
+            and record.get("reviewed")
+            and record.get("digest")
+        ):
+            return str(record["digest"])
+    return ""
+
+
+def _record_turn(state: Any, turn: dict[str, Any]) -> None:
+    last = state.ledger[-1] if state.ledger else None
+    if isinstance(last, dict) and str(last.get("turn_id")) == turn["turn_id"]:
+        last.update(turn)
+    else:
+        state.ledger.append(turn)
+
+
+def _find_turn(state: Any, turn_id: str) -> dict[str, Any] | None:
+    for record in reversed(state.ledger):
+        if isinstance(record, dict) and str(record.get("turn_id")) == turn_id:
+            return record
+    return None
+
+
+def _log_name(session_id: str) -> str:
+    name = _LOG_UNSAFE.sub("_", str(session_id)).strip(".")
+    return name or "session"
+
+
 class CoachPlugin:
     """Stateful plugin instance: one consultation tool plus its guards."""
 
@@ -159,6 +243,8 @@ class CoachPlugin:
             clock=clock,
         )
         self._child_sessions: set[str] = set()
+        self._queued: set[str] = set()
+        self._turn_tools: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     def on_subagent_start(
         self, payload: Mapping[str, Any] | None = None, **kw: Any
@@ -259,6 +345,182 @@ class CoachPlugin:
         if not delivered:
             return None
         return {"context": "\n".join(delivered)}
+
+    def on_post_tool_call(
+        self, payload: Mapping[str, Any] | None = None, **kw: Any
+    ) -> None:
+        """Buffer one tool card for the turn Active may review."""
+        if not self.settings.active_enabled:
+            return
+        data = _payload(payload, kw)
+        session_id = str(data.get("session_id") or "current")
+        turn_id = str(data.get("turn_id") or "current")
+        args = data.get("args")
+        if not isinstance(args, Mapping):
+            args = {}
+        text = _result_text(data.get("result"))
+        status = str(data.get("status") or ("error" if data.get("error") else "ok"))
+        card = tool_card(
+            str(data.get("tool_name") or data.get("name") or "tool"),
+            _tool_arg(args),
+            status,
+            len(text),
+            text,
+            max_chars=self.settings.ledger_max_tool_result_chars,
+        )
+        self._turn_tools.setdefault((session_id, turn_id), []).append(card)
+        try:
+            state = self.store.load(session_id)
+            tool_key = f"tools:{turn_id}"
+            state.calls[tool_key] = state.calls.get(tool_key, 0) + 1
+            state.updated_at = self.clock()
+            self.store.save(state)
+        except Exception:
+            pass
+
+    def on_post_llm_call(
+        self, payload: Mapping[str, Any] | None = None, **kw: Any
+    ) -> None:
+        """Snapshot a finished turn and queue one Active review when due."""
+        data = _payload(payload, kw)
+        session_id = str(data.get("session_id") or "current")
+        turn_id = str(data.get("turn_id") or "current")
+        tools = self._turn_tools.pop((session_id, turn_id), [])
+        if not self.settings.active_enabled:
+            return
+        turn = {
+            "turn_id": turn_id,
+            "user": str(data.get("user_message") or data.get("user") or ""),
+            "assistant": str(
+                data.get("assistant_response") or data.get("assistant") or ""
+            ),
+            "tools": tools,
+        }
+        turn["digest"] = _turn_digest(turn)
+        try:
+            state = self.store.load(session_id)
+            _record_turn(state, turn)
+            worker = getattr(self, "worker", None)
+            if (
+                session_id not in self._queued
+                and worker is not None
+                and self.should_review(state, turn, self.settings)
+                and worker.submit(session_id)
+            ):
+                self._queued.add(session_id)
+            state.updated_at = self.clock()
+            self.store.save(state)
+        except Exception:
+            pass
+
+    def should_review(
+        self,
+        state: Any,
+        turn: Mapping[str, Any],
+        settings: Settings,
+    ) -> bool:
+        """Decide whether one finished turn earns an Active review."""
+        if not settings.active_enabled:
+            return False
+        if self.coach.check("active"):
+            return False
+        if (
+            settings.budget_on_exceed in {"soft", "hard"}
+            and state.spend_usd >= settings.budget_session_usd
+        ):
+            return False
+        cadence = settings.active_cadence
+        tools = turn.get("tools") if isinstance(turn, Mapping) else None
+        if cadence == "tool_turns_only" and not tools:
+            return False
+        if cadence == "every_n":
+            every = max(1, int(settings.active_every_n))
+            if _turns_since_review(state) < every:
+                return False
+        digest = _turn_digest(turn)
+        if digest and digest == _last_reviewed_digest(state):
+            return False
+        return True
+
+    def run_review(self, session_id: str, turn_id: str) -> None:
+        """Run one Active review; every outcome is swallowed and recorded."""
+        sid = str(session_id or "current")
+        tid = str(turn_id or "current")
+        state = None
+        try:
+            state = self.store.load(sid)
+            turn = _find_turn(state, tid)
+            if turn is None:
+                return
+            if (
+                self.settings.budget_on_exceed in {"soft", "hard"}
+                and state.spend_usd >= self.settings.budget_session_usd
+            ):
+                return
+            digest = str(turn.get("digest") or _turn_digest(turn))
+            cwd = str(turn.get("cwd") or os.getcwd())
+            guidance = (
+                self.guidance.system_block(cwd)
+                if self.settings.guidance_enabled
+                else ""
+            )
+            messages = build_messages(
+                system=_SYSTEM,
+                guidance=guidance,
+                state=state,
+                question=None,
+                max_tokens=self.settings.ledger_max_tokens,
+                tool_result_chars=self.settings.ledger_max_tool_result_chars,
+                recent_turns=self.settings.ledger_max_recent_turns,
+            )
+            reply = self.coach.ask(
+                messages,
+                mode="active",
+                structured=True,
+                timeout=float(self.settings.worker_timeout_s),
+            )
+            state.spend_usd = round(state.spend_usd + reply.cost_usd, 9)
+            turn["reviewed"] = True
+            turn["digest"] = digest
+            state.last_error = reply.error
+            state.updated_at = self.clock()
+            self.store.save(state)
+            self._log_review(sid, tid, reply)
+            if not reply.error:
+                self.deliver(reply.finding, session_id=sid, turn_id=tid)
+        except Exception:
+            try:
+                if state is not None:
+                    state.updated_at = self.clock()
+                    self.store.save(state)
+            except Exception:
+                pass
+        finally:
+            self._queued.discard(sid)
+
+    def _log_review(self, session_id: str, turn_id: str, reply: Any) -> None:
+        """Append one JSONL line per attempted review; never raise."""
+        finding = reply.finding
+        try:
+            root = self.store.root.parent / "logs"
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            record = {
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "severity": finding.severity if finding is not None else "none",
+                "title": finding.title if finding is not None else "",
+                "input_tokens": int(getattr(reply.usage, "input_tokens", 0) or 0),
+                "output_tokens": int(getattr(reply.usage, "output_tokens", 0) or 0),
+                "cost_usd": reply.cost_usd,
+                "provider": reply.provider,
+                "model": reply.model,
+                "error": reply.error,
+            }
+            path = root / f"{_log_name(session_id)}.jsonl"
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def _post(self, text: str) -> None:
         if self.post is None:
@@ -401,7 +663,7 @@ def build_plugin(ctx: Any) -> CoachPlugin:
             raw[key] = default
 
     root = _default_root()
-    return CoachPlugin(
+    plugin = CoachPlugin(
         llm=ctx.llm,
         store=Store(root / "sessions"),
         settings=load_settings(raw),
@@ -418,4 +680,6 @@ def build_plugin(ctx: Any) -> CoachPlugin:
         guidance=Guidance(root),
         set_setting=getattr(ctx, "set_config", None),
     )
+    plugin.worker = Worker(plugin.run_review)
+    return plugin
 
