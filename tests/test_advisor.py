@@ -1,0 +1,52 @@
+# tests/test_advisor.py
+from coach.advisor import Coach
+from coach.settings import load_settings
+
+class Usage:
+    input_tokens = 1000; output_tokens = 100
+    cache_read_tokens = 0; cache_write_tokens = 0
+
+class Result:
+    def __init__(self, text, provider="openrouter", model="x", parsed=None):
+        self.text, self.provider, self.model, self.parsed = text, provider, model, parsed
+        self.usage, self.audit = Usage(), {}
+        self.content_type = "json" if parsed else "text"
+
+class FakeLlm:
+    def __init__(self, result): self.result = result; self.calls = []
+    def complete(self, messages, **kw):
+        self.calls.append(kw); return self.result
+    def complete_structured(self, **kw):
+        self.calls.append(kw); return self.result
+
+def _settings(**kw):
+    base = {"coach_model": {"provider": "openrouter", "model": "x"}}
+    base.update(kw); return load_settings(base)
+
+def test_unconfigured_reports_and_makes_no_call():
+    llm = FakeLlm(Result("hi"))
+    r = Coach(llm, load_settings({})).ask([{"role": "user", "content": "q"}], mode="consult")
+    assert r.error == "unconfigured" and llm.calls == []
+
+def test_passes_model_and_provider_and_prices_the_call():
+    llm = FakeLlm(Result("advice"))
+    coach = Coach(llm, _settings(), cost_fn=lambda model, usage, provider: 0.0042)
+    r = coach.ask([{"role": "user", "content": "q"}], mode="consult")
+    assert r.text == "advice" and r.cost_usd == 0.0042
+    assert llm.calls[0]["model"] == "x" and llm.calls[0]["provider"] == "openrouter"
+
+def test_fallback_to_primary_is_discarded():
+    llm = FakeLlm(Result("advice", provider="openrouter", model="primary"))
+    coach = Coach(llm, _settings(), primary_model="primary", primary_provider="openrouter")
+    r = coach.ask([{"role": "user", "content": "q"}], mode="consult")
+    assert r.error == "fallback_mismatch" and r.text == ""
+
+def test_same_model_as_primary_is_refused():
+    coach = Coach(FakeLlm(Result("x")), _settings(), primary_model="x", primary_provider="openrouter")
+    assert coach.check() == "same_model"
+
+def test_provider_error_is_returned_not_raised():
+    class Boom:
+        def complete(self, *a, **k): raise RuntimeError("503")
+    r = Coach(Boom(), _settings()).ask([{"role": "user", "content": "q"}], mode="consult")
+    assert r.error.startswith("provider_error") and r.text == ""
