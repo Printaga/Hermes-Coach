@@ -27,8 +27,13 @@ Every mode uses one shared model unless you give it its own.
 
 ## Install
 
+Prerequisites: a Hermes build with the plugin APIs this uses (`ctx.llm`,
+`ctx.inject_message`, `ctx.register_hook`, `ctx.register_tool`) and a provider
+already authenticated in Hermes.
+
 ```bash
-ln -sfn /path/to/Hermes-Coach ~/.hermes/plugins/coach
+cd /path/to/Hermes-Coach
+ln -sfn "$PWD" ~/.hermes/plugins/coach
 hermes plugins enable coach
 hermes plugins doctor .
 ```
@@ -36,7 +41,16 @@ hermes plugins doctor .
 `doctor` should end with `OK` and `registrations: 2 tool(s), 7 hook(s)`.
 
 The Desktop half is opt-in. Enable it in Settings → Plugins → Coach, then use
-⌘K → **Reload desktop plugins** if the page does not appear.
+⌘K → **Reload desktop plugins** if the page does not appear. Because the plugin
+is installed as a symlink, saving `desktop/plugin.js` in this checkout
+hot-reloads the page.
+
+To remove it:
+
+```bash
+hermes plugins disable coach
+rm ~/.hermes/plugins/coach
+```
 
 ## First run
 
@@ -53,6 +67,19 @@ one.
 
 CLI equivalent for step 1: `/coach model`.
 
+## Agent tools
+
+The agent gets two tools; no skill or instruction file is required, because the
+tool descriptions carry their own guidance.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `coach_ask` | `question` (required, ≤4000 chars), `intent` (`advice`, `plan`, `review`), `context` | advice text, or `{"ok": false, "error": …}` |
+| `coach_decide` | `question` (required), `options` (2–6 strings), `state` (object) | `{decision, confidence, probabilities, gate, rationale}` |
+
+`turn_id` and `session_id` are optional host hints used for the per-turn caps
+and the child-session refusal; the agent does not need to send them.
+
 ## CLI
 
 | Command | Effect |
@@ -67,6 +94,8 @@ CLI equivalent for step 1: `/coach model`.
 | `/coach pending`, `/coach send` | list held advice, release it now |
 | `/coach pause` | pause background reviews for this session |
 | `/coach grant` | write the model-override permission |
+
+Unknown input prints the full help.
 
 ## Settings
 
@@ -97,8 +126,11 @@ unrecognised answer also escalates.
 The coach has no tools: it cannot read files or run commands. The plugin
 assembles what it sees — a bounded turn ledger, the diff of the files the agent
 changed for a completion review, and your guidance files. Calls go through
-Hermes' own model routing, so credentials stay in Hermes. Spend is priced from
-real usage and capped by the session budget.
+Hermes' own model routing, so credentials stay in Hermes.
+
+One review is one model call. The ledger is capped at 3500 tokens and replies at
+400 by default; session spend is priced from real usage against the budget you
+set.
 
 State lives in `$HERMES_HOME/coach/`: one JSON file per session (atomic,
 `0600`), a JSONL review log, and the global guidance file. Sessions are pruned
@@ -123,12 +155,22 @@ ignores turns that made no tool calls.
 
 **Completion review never fires.** It only runs on turns that edited files.
 
+**The gate keeps sending the agent back.** Lower "Holds allowed per request";
+one per request is the intended setting.
+
+**Reviews stopped on their own.** The session budget was reached. The default
+`soft` stop disables the automatic modes but leaves consults working.
+
 ## Limitations
 
 - Verified on Linux; macOS and Windows are untested, though the code avoids
   shell-specific calls and ships a PowerShell test runner.
 - Messaging surfaces (Telegram, Discord, …) never receive corrective turns;
   advice stays ambient there.
+- Ambient advice arrives one turn late by design, and a note whose turns expire
+  is dropped rather than delivered stale.
+- In very long sessions older turns collapse to one line per tool call in the
+  ledger. User messages are kept; tool detail is what thins out.
 - The completion gate reviews a diff, not a plan, a document, or a chat answer.
 - One coach at a time: no panel and no vote.
 - Not published to the Hermes plugin catalog; install from a checkout.

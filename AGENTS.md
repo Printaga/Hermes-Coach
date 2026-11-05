@@ -18,6 +18,15 @@ There is no package install and no linter or typecheck configured. Tests run
 through `uv run --python <Hermes venv> --with pytest`, so nothing is added to
 the runtime environment.
 
+## Requirements
+
+- `uv` on PATH: every test run goes through it.
+- `node` on PATH: the desktop page check.
+- The Hermes venv interpreter, default
+  `/home/lenovo/.hermes/hermes-agent/.venv/bin/python`; override with
+  `COACH_PYTHON`.
+- `fastapi` only in `dashboard/plugin_api.py`; the host provides it.
+
 ## Structure
 
 - `plugin.yaml` — manifest and the tools/hooks the host registers. No `config_schema`.
@@ -27,7 +36,9 @@ the runtime environment.
 - `dashboard/plugin_api.py` — `/config`, `/status`, `/guidance`,
   `/permissions/grant` for the settings page.
 - `desktop/plugin.js` — the settings page: plain ESM, no build step.
-- `tests/` — one file per module, fakes instead of a live host.
+- `tests/` — one file per module, fakes instead of a live host. It has no
+  `__init__.py`; cross-test imports use the namespace form
+  `from tests.test_plugin_ask import Llm`.
 - `docs/superpowers/` — approved design and implementation plan.
 
 ## Conventions
@@ -68,8 +79,10 @@ the runtime environment.
   (`plugins.entries.coach.llm.allow_*`), the global hook timeout, or anything
   that writes the user's `config.yaml` without their click.
 - Never commit `.env`, `review.json`, `~/.hermes/coach/`, or the generated
-  `~/.hermes/desktop-plugins/coach/plugin.js` copy. Edit `desktop/plugin.js`
-  here; the shell syncs it.
+  `~/.hermes/desktop-plugins/coach/` copy. Edit `desktop/plugin.js` here. A
+  symlinked package re-syncs on any byte difference and hot-reloads; a
+  copied-in package only re-copies when the source mtime is newer, so reload
+  desktop plugins after editing.
 - No runtime dependencies: stdlib plus modules the host already ships.
 - Do not weaken the same-model refusal, the budget stop, or the child-session
   refusal without updating the design doc.
