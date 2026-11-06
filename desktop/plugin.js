@@ -1112,4 +1112,6 @@ export function register(ctx) {
   })
 }
 
+export { flattenModels, groupModels };
+
 export default { id: "coach", name: "Coach", register }

@@ -72,6 +72,21 @@ if (missing.length) {
   process.exit(1)
 }
 
+const requiredSnippets = [
+  'host.request("model.options")',
+  '"Search models or providers"',
+  '"This chat"',
+  '"All sessions"',
+  'method: "PUT"',
+  '"/permissions/grant"',
+  "providerName",
+]
+const missingSnippets = requiredSnippets.filter((snippet) => !source.includes(snippet))
+if (missingSnippets.length) {
+  console.error(`desktop page is missing required integrations: ${missingSnippets.join(", ")}`)
+  process.exit(1)
+}
+
 const body = source
   .split("\n")
   .filter((line) => !/^\s*import\s/.test(line))
@@ -91,6 +106,36 @@ const file = join(dir, "plugin.mjs")
 writeFileSync(file, stub + body)
 
 const mod = await import(pathToFileURL(file).href)
+if (typeof mod.flattenModels !== "function" || typeof mod.groupModels !== "function") {
+  console.error("desktop page must export flattenModels and groupModels for testing")
+  process.exit(1)
+}
+const fixture = mod.flattenModels({
+  providers: [
+    { slug: "openrouter", name: "OpenRouter", models: ["a/b", { model: "c" }, ""] },
+    { slug: "", name: "", models: ["solo"] },
+    null,
+  ],
+})
+if (
+  fixture.length !== 3 ||
+  fixture[0].provider !== "openrouter" ||
+  fixture[0].providerName !== "OpenRouter" ||
+  fixture[0].model !== "a/b" ||
+  fixture[2].providerName !== "Other"
+) {
+  console.error("desktop model catalog mapping lost provider rows")
+  process.exit(1)
+}
+const openGroups = mod.groupModels(fixture, "OPEN")
+if (openGroups.length !== 1 || openGroups[0].items.length !== 2) {
+  console.error("desktop model search must be case-insensitive across providers and models")
+  process.exit(1)
+}
+if (mod.groupModels(fixture, "no-such-model").length !== 0) {
+  console.error("desktop model search must return no groups without matches")
+  process.exit(1)
+}
 const plugin = mod.default
 if (!plugin || plugin.id !== "coach" || typeof plugin.register !== "function") {
   console.error("desktop page default export is not { id: 'coach', register }")

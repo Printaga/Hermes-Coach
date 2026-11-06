@@ -1267,12 +1267,15 @@ class CoachPlugin:
             return None
 
         cwd = str(data.get("cwd") or self.cwd())
+        evidence = self.collect_evidence(cwd, changed)
+        if not evidence.strip():
+            return None
         finding = self.review_now(
             session_id=session_id,
             turn_id=turn_id,
             request=_request_text(data) or state.last_user_message,
             claim=str(data.get("final_response") or ""),
-            evidence=self.collect_evidence(cwd, changed),
+            evidence=evidence,
             cwd=cwd,
         )
         if finding is None:
