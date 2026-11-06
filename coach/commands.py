@@ -186,13 +186,19 @@ class CommandsMixin:
             if isinstance(value, ModelChoice)
             else value
         )
-        if self.set_setting is not None:
-            result = self.set_setting(key, stored)
-            if result is False:
-                return False
         raw = _raw_settings(self.settings)
         raw[key] = stored
-        self.settings = load_settings(raw)
+        # Store what the loader would use, not what was typed: the dashboard
+        # already does, and two writers must not disagree about a value.
+        canonical = load_settings(raw)
+        saved = getattr(canonical, key, value)
+        if isinstance(saved, ModelChoice):
+            saved = {"provider": saved.provider, "model": saved.model}
+        if self.set_setting is not None:
+            result = self.set_setting(key, saved)
+            if result is False:
+                return False
+        self.settings = canonical
         self.coach.settings = self.settings
         return True
 

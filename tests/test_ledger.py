@@ -76,3 +76,18 @@ def test_record_turn_bounds_text_and_keeps_earlier_tool_cards():
     assert [c["name"] for c in record["tools"]] == ["read_file"]
     assert record["tools"][0]["arg"] == "a.py"
     assert record["user"] == "u2"  # the later call replaces the text
+
+
+def test_record_turn_keeps_cards_from_every_model_call():
+    from coach.plugin import _record_turn
+    from coach.state import SessionState
+
+    state = SessionState(session_id="s")
+    first = {"name": "read_file", "arg": "a.py", "status": "ok", "preview": ""}
+    second = {"name": "write_file", "arg": "b.py", "status": "ok", "preview": ""}
+    _record_turn(state, {"turn_id": "t", "user": "u", "assistant": "a",
+                         "tools": [first], "cwd": "/repo"})
+    _record_turn(state, {"turn_id": "t", "user": "u", "assistant": "done",
+                         "tools": [second], "cwd": "/repo"})
+    names = [card["name"] for card in state.ledger[-1]["tools"]]
+    assert names == ["read_file", "write_file"]

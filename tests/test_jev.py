@@ -140,3 +140,9 @@ def test_unknown_gate_escalates():
     d = decide(backend="jev-openrouter", question="q", options=["a", "b"],
                state={}, api_key="k", http=lambda r, **k: Resp(body))
     assert d.gate == "escalate"
+
+
+def test_redirects_are_refused():
+    from coach.jev import _NoRedirect
+
+    assert _NoRedirect().redirect_request(None, None, 302, "", {}, "https://x") is None

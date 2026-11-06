@@ -290,3 +290,17 @@ def test_a_loopback_host_with_a_foreign_origin_is_refused(tmp_path):
         headers={"Origin": "https://evil.example"},
     )
     assert denied.status_code == 403
+
+
+def test_config_shows_the_effective_value_not_the_raw_one(tmp_path):
+    app = app_for_tests(home=tmp_path)
+    app.state.config = {
+        "plugins": {
+            "entries": {
+                "coach": {"settings": {"active_every_n": 0, "budget_session_usd": 99999}}
+            }
+        }
+    }
+    body = TestClient(app, base_url="http://127.0.0.1").get("/config").json()
+    assert body["values"]["active_every_n"] == 2
+    assert body["values"]["budget_session_usd"] == 1000.0

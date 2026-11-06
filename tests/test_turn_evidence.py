@@ -387,3 +387,31 @@ def test_the_filter_override_reaches_the_git_argv(tmp_path):
 
     collect(str(root), ["README"], run=fake_run)
     assert any("filter.evil.clean=" in " ".join(argv) for argv in seen)
+
+
+def test_new_files_are_seen_from_a_subdirectory(tmp_path):
+    root = _repo(tmp_path)
+    (root / "README").write_text("hi\n")
+    _commit(root, "initial")
+    sub = root / "pkg"
+    sub.mkdir()
+    (sub / "new.py").write_text("x = 1\n")
+
+    text = collect(str(sub), ["new.py"])
+
+    assert "new.py" in text
+    assert "--- new files ---" in text
+
+
+def test_the_file_list_announces_its_cap():
+    from coach.evidence import _file_list
+
+    rows = "\n".join(f"A\tf{i}.py" for i in range(205))
+    out = _file_list(
+        lambda *a, **k: None,
+        __import__("pathlib").Path("."),
+        ["f0.py"],
+        remaining=lambda: 0.0,
+        range_names=rows,
+    )
+    assert "[+5 more files]" in out

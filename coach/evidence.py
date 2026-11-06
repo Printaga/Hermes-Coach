@@ -194,6 +194,21 @@ def _diff(
     return _stdout(result)
 
 
+def _show_prefix(
+    root: Path, runner: Callable[..., object], timeout: float
+) -> str:
+    """The cwd's path inside the repo, with a trailing slash (or "")."""
+    result = _git(
+        runner,
+        root,
+        [*_HARDENED, "rev-parse", "--show-prefix"],
+        timeout=timeout,
+    )
+    if result is None or result.returncode != 0:
+        return ""
+    return _stdout(result).strip()
+
+
 def _heads(
     root: Path,
     paths: Sequence[str],
@@ -239,9 +254,10 @@ def _file_list(
     rows: list[str] = []
     seen: set[str] = set()
 
+    extra = 0
+
     def add(output: str) -> None:
-        if len(rows) >= _MAX_LISTED_FILES:
-            return
+        nonlocal extra
         for line in output.splitlines():
             parts = line.split("\t")
             if len(parts) < 2:
@@ -250,9 +266,10 @@ def _file_list(
             if not path or path in seen:
                 continue
             seen.add(path)
-            rows.append(f"{status} {path}")
             if len(rows) >= _MAX_LISTED_FILES:
-                return
+                extra += 1
+                continue
+            rows.append(f"{status} {path}")
 
     if range_names:
         add(range_names)
@@ -264,6 +281,8 @@ def _file_list(
         if rel not in seen and len(rows) < _MAX_LISTED_FILES:
             seen.add(rel)
             rows.append(f"?? {rel}")
+    if extra:
+        rows.append(f"[+{extra} more files]")
     return "\n".join(rows)
 
 
@@ -431,6 +450,8 @@ def _gather(
     if status is None or status.returncode != 0:
         return None
 
+    prefix = _show_prefix(root, runner, min(_GIT_TIMEOUT, remaining()))
+
     uncommitted = _diff(
         runner, root, "HEAD", safe, timeout=min(_GIT_TIMEOUT, remaining())
     )
@@ -440,6 +461,11 @@ def _gather(
         if not entry.startswith("?? "):
             continue
         rel = entry[3:].removesuffix("/")
+        # git prints repo-root-relative paths; the host reports cwd-relative
+        # ones. Without the prefix strip a session started in a subdirectory
+        # lost every new file it created.
+        if prefix and rel.startswith(prefix):
+            rel = rel[len(prefix):]
         if rel and rel in safe_set:
             untracked.append(rel)
     new_files = _heads(root, _safe_paths(root, untracked), reader) if untracked else ""

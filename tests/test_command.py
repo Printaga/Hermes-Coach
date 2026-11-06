@@ -137,3 +137,21 @@ def test_model_set_stores_a_plain_mapping(tmp_path):
     out = p.command("model consult opencode-go/glm-5.3")
     assert "consult" in out.lower()
     assert saved["consult_model"] == {"provider": "opencode-go", "model": "glm-5.3"}
+
+
+def test_set_stores_the_canonical_value(tmp_path):
+    from coach.plugin import CoachPlugin
+    from coach.settings import load_settings
+    from coach.state import Store
+    from tests.support import ConsultLlm
+
+    saved = {}
+    plugin = CoachPlugin(
+        llm=ConsultLlm(),
+        store=Store(tmp_path),
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+        set_setting=lambda key, value: saved.setdefault(key, value) is not None,
+    )
+    out = plugin.command("set budget_session_usd 99999")
+    assert "1000" in out
+    assert saved["budget_session_usd"] == 1000.0

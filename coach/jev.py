@@ -113,9 +113,23 @@ def _post(
         },
         method="POST",
     )
-    opener = http or urllib.request.urlopen
+    opener = http or _open_without_redirects
     with opener(request, timeout=_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: urllib replays Authorization to the new host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_no_redirect_opener = urllib.request.build_opener(_NoRedirect)
+
+
+def _open_without_redirects(request, timeout=_TIMEOUT):
+    return _no_redirect_opener.open(request, timeout=timeout)
 
 
 def _parse(

@@ -400,12 +400,15 @@ def get_config(request: Request) -> dict[str, Any]:
     """Current values, defaults, and enum choices for the settings form."""
     config = _plugin_config(request)
     raw = _coach_settings(config)
+    # The effective values, not the raw file: the page must show what the
+    # runtime will use, or a save silently rewrites an out-of-range value.
+    effective = load_settings(raw)
     values: dict[str, Any] = {}
     for key, default in DEFAULTS.items():
         if key == _SECRET_KEY:
             values[key] = ""
         else:
-            values[key] = _json_value(raw.get(key, default))
+            values[key] = _json_value(getattr(effective, key, default))
     return {
         "values": values,
         "defaults": {

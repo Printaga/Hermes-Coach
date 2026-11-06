@@ -31,6 +31,7 @@ from .findings import Finding
 from .guidance import Guidance
 from .jev import decide
 from .ledger import (
+    _CARDS_PER_TURN_MAX,
     _MAX_TURNS,
     append_turn,
     bound_turn,
@@ -329,10 +330,14 @@ def _record_turn(state: Any, turn: dict[str, Any]) -> None:
     last = state.ledger[-1] if state.ledger else None
     bounded = bound_turn(turn)
     if isinstance(last, dict) and str(last.get("turn_id")) == turn["turn_id"]:
-        if not bounded.get("tools") and last.get("tools"):
-            # A turn spans several model calls, and only the ones that call
-            # tools buffer cards. The final call has none, so merging it must
-            # not erase the evidence the earlier calls recorded.
+        earlier = last.get("tools")
+        incoming = bounded.get("tools")
+        if isinstance(earlier, list) and isinstance(incoming, list):
+            # A turn spans several model calls; keep every batch's cards, not
+            # just the last one, and keep the newest when over the cap.
+            merged = [*earlier, *incoming][-_CARDS_PER_TURN_MAX:]
+            bounded["tools"] = merged
+        elif earlier and not incoming:
             bounded.pop("tools", None)
         last.update(bounded)
     else:
