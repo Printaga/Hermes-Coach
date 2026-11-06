@@ -61,7 +61,12 @@ separate surface over the same config and state.
 ## Design invariants
 
 - **No transcript replay.** The coach sees a compiled ledger, capped by tokens,
-  with user messages kept and tool detail thinned first.
+  with tool detail thinned first and user messages dropped only as a last
+  resort.
+- **The gate reviews the whole turn.** Commits made before a completion claim
+  and the worktree both reach the review, and each prompt states what its
+  reviewer can see, so a blind spot never resurfaces as a finding about work
+  the reviewer simply could not read.
 - **No tools for the coach.** The plugin gathers evidence; the model only reads
   it. Text wrapped in note tags cannot close its own block.
 - **Fail-open everywhere.** A timeout, provider error, or malformed answer

@@ -35,16 +35,19 @@ flowchart LR
 
 | Gate | Command | What it proves |
 |---|---|---|
-| Python suite | `./scripts/test.sh` | 91 tests across settings, state, ledger, findings, advisor, jev, delivery, evidence, plugin hooks, command, dashboard API |
-| Desktop page | `node scripts/check-desktop-page.mjs` | The page exports `{id, register}`, avoids context APIs the host does not provide, builds elements with `createElement`, covers every setting, and registers all tabs |
+| Python suite | `./scripts/test.sh` | 276 tests across settings, state, ledger, findings, advisor, jev, delivery, evidence, turn scoping, plugin hooks, command, dashboard API |
+| Desktop page | `node scripts/check-desktop-page.mjs` | The page exports `{id, register}`, avoids context APIs the host does not provide, builds elements with `createElement`, covers every setting, registers all tabs, and renders each one against a route-aware stub |
 | Host contract | `hermes plugins doctor .` | Manifest, import, registration: `2 tool(s), 7 hook(s)` |
 | Live dispatch | `hermes -z '…'` | The real dispatcher accepts the tool's return shape |
 
-`scripts/test.sh` runs both gates and reports the first failure, so a pytest
-failure cannot hide a page regression. `COACH_PYTHON` overrides the interpreter,
-`SKIP_DESKTOP_CHECK=1` skips the node gate. Tests run through
-`uv run --python <hermes venv> --with pytest`, which keeps the runtime
-environment untouched.
+`scripts/test.sh` runs both gates even when the first fails, and exits with the
+first non-zero status, so a pytest failure cannot hide a page regression.
+`COACH_PYTHON` overrides the interpreter (default `python3`), and
+`SKIP_DESKTOP_CHECK=1` skips the node gate with a visible warning. Tests run
+through `uv run --python "$PYTHON" --with <pinned deps>` — pytest, pyyaml,
+fastapi and httpx at fixed versions — so results are reproducible and the
+runtime environment stays untouched. `scripts/test.ps1` mirrors the same two
+gates on Windows and folds both into one exit status.
 
 ## Why the page gate exists
 

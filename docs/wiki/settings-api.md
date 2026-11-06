@@ -14,6 +14,7 @@ gateway through `app_for_tests()`.
 | `PUT` | `/config` | Save one or more schema keys; rejects unknown keys and the secret |
 | `GET` | `/guidance` | Read one file (`scope=global\|project`, `cwd`) |
 | `PUT` | `/guidance` | Replace one file after validating its target |
+| `GET` | `/recent` | Newest log findings across up to 20 sessions, optionally filtered by `session`; reads only each file's tail |
 | `POST` | `/permissions/grant` | Set `allow_provider_override` and `allow_model_override`, return new status |
 
 ```mermaid
@@ -44,7 +45,11 @@ user's `config.yaml`. Production falls through to `_load_host_config()` /
 - **Project guidance is scoped.** A project path must already be recorded in
   `$HERMES_HOME/coach/seen_cwds`; the parent is resolved and compared, and the
   file is opened with `O_NOFOLLOW`. A symlink swap between check and write fails
-  instead of writing through it.
+  instead of writing through it. Reads apply the same guard — a planted
+  `COACH.md` symlink returns empty rather than the file it points at.
+- **Log reads are bounded.** `/recent` keeps a `deque(maxlen=limit)` per file
+  instead of loading whole logs, so a year of findings cannot turn one page
+  refresh into an out-of-memory read.
 - **Grant is a real write.** The permission route mutates the config entry and
   surfaces a failed persist; it does not report success it did not achieve.
 - **Status is derived, never stored.** Spend and pending counts are summed from

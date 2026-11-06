@@ -56,13 +56,16 @@ per-turn call counters, holds used, spend, the last error, and `updated_at`.
 |---|---|
 | Percent-encoded file name + 8-char SHA-1 suffix | Session ids contain `/` and differ only by case on some filesystems; a lossy sanitiser made two sessions share one file |
 | `os.replace` from a same-directory temp file, mode `0600` | A crash mid-write never leaves a half-parsed state |
-| Corrupt or missing file ⇒ fresh state with `last_error` | A broken file must not break a turn |
-| `prune()` ordered by file mtime | Content timestamps are attacker- or bug-controlled; the filesystem is not |
+| Corrupt file ⇒ fresh state with `last_error="state reset"` | A broken file must not break a turn |
+| Unreadable file (permissions, I/O) ⇒ fresh state naming the error | The store is fail-open, but `last_error` says `state unreadable: <Error>` instead of pretending the history never existed |
+| `prune()` ordered by file mtime, and sweeps stale `.*.tmp` | Content timestamps are attacker- or bug-controlled; the filesystem is not, and a crash between `mkstemp` and `os.replace` would otherwise leak files no glob sees |
 | Cap of 20 sessions | Bounded disk use without a compaction pass |
-| `sessions_on_disk()` returns stored ids | Callers see the real session id, not the encoded file stem |
+| `sessions_on_disk()`/`sessions_by_recency()` skip unreadable files | Callers see the stored session id, never the encoded file stem |
 
 `save()` also stamps `updated_at` and re-applies `0700` to an existing root,
-because `mode=` only affects directory creation.
+because `mode=` only affects directory creation; a failure to do so is logged
+rather than silently swallowed, and cleanup after a failed write never masks the
+original error.
 
 ## Related pages
 

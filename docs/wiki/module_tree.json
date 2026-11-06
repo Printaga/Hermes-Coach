@@ -39,7 +39,11 @@
       "coach/state.py::Store.prune",
       "coach/state.py::Store.forget",
       "coach/state.py::Store.spend_total",
-      "coach/state.py::Store.sessions_on_disk"
+      "coach/state.py::Store.sessions_on_disk",
+      "coach/state.py::Store._read_quiet",
+      "coach/state.py::Store._sweep_tmp_files",
+      "coach/state.py::Store.has",
+      "coach/state.py::Store.sessions_by_recency"
     ],
     "path": "coach/settings.py"
   },
@@ -58,7 +62,10 @@
       "coach/evidence.py::_git",
       "coach/evidence.py::_stdout",
       "coach/evidence.py::_heads",
-      "coach/evidence.py::collect"
+      "coach/evidence.py::collect",
+      "coach/evidence.py::_diff",
+      "coach/evidence.py::_range_usable",
+      "coach/evidence.py::head"
     ],
     "path": "coach/delivery.py"
   },
@@ -93,7 +100,8 @@
       "desktop/plugin.js::StatusPage",
       "desktop/plugin.js::grant",
       "desktop/plugin.js::register",
-      "desktop/plugin.js::page"
+      "desktop/plugin.js::page",
+      "desktop/plugin.js::orderedReload"
     ],
     "path": "desktop/plugin.js"
   },
@@ -191,7 +199,22 @@
       "coach/worker.py::Worker.submit",
       "coach/worker.py::Worker.drain",
       "coach/worker.py::Worker.stop",
-      "coach/worker.py::Worker._loop"
+      "coach/worker.py::Worker._loop",
+      "coach/plugin.py::CoachPlugin._format_decision",
+      "coach/plugin.py::CoachPlugin._last_advice_text",
+      "coach/plugin.py::CoachPlugin._last_event_text",
+      "coach/plugin.py::CoachPlugin._log_decision",
+      "coach/plugin.py::CoachPlugin._log_text",
+      "coach/plugin.py::CoachPlugin._remember_primary",
+      "coach/plugin.py::CoachPlugin._snapshot_turn_base",
+      "coach/plugin.py::CoachPlugin._state_with",
+      "coach/plugin.py::CoachPlugin.head_commit",
+      "coach/plugin.py::CoachPlugin.refresh_settings",
+      "coach/plugin.py::CoachPlugin.shutdown",
+      "coach/plugin.py::_now_iso",
+      "coach/plugin.py::_prune_calls",
+      "coach/plugin.py::_trim_log",
+      "coach/plugin.py::_with_host_ids"
     ],
     "path": "__init__.py"
   },
@@ -246,7 +269,8 @@
       "dashboard/plugin_api.py::get_guidance",
       "dashboard/plugin_api.py::put_guidance",
       "dashboard/plugin_api.py::grant_permissions",
-      "dashboard/plugin_api.py::app_for_tests"
+      "dashboard/plugin_api.py::app_for_tests",
+      "dashboard/plugin_api.py::get_recent"
     ],
     "path": "dashboard/plugin_api.py"
   }

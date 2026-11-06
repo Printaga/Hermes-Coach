@@ -6,6 +6,8 @@ change it without breaking the host contract.
 
 ## Commands
 
+Run every command from the repository root.
+
 - Everything: `./scripts/test.sh` (pytest plus the desktop page check)
 - One file: `./scripts/test.sh tests/test_ledger.py`
 - Page only: `node scripts/check-desktop-page.mjs`
@@ -15,17 +17,17 @@ change it without breaking the host contract.
   `SKIP_DESKTOP_CHECK=1` skips the node gate.
 
 There is no package install and no linter or typecheck configured. Tests run
-through `uv run --python <Hermes venv> --with pytest`, so nothing is added to
+through `uv run --python "$PYTHON" --with <pinned deps>`, so nothing is added to
 the runtime environment.
 
 ## Requirements
 
-- `uv` on PATH: every test run goes through it.
+- `uv` on PATH: every test run goes through it, and it supplies pytest,
+  pyyaml, fastapi and httpx at pinned versions.
 - `node` on PATH: the desktop page check.
-- The Hermes venv interpreter, default
-  `/home/lenovo/.hermes/hermes-agent/.venv/bin/python`; override with
-  `COACH_PYTHON`.
-- `fastapi` only in `dashboard/plugin_api.py`; the host provides it.
+- Any `python3` on PATH; set `COACH_PYTHON` to pin a specific interpreter
+  (for example the Hermes venv).
+- `fastapi` only in `dashboard/plugin_api.py`; the host provides it at runtime.
 
 ## Structure
 

@@ -18,10 +18,13 @@ flowchart LR
   A --> H[register_command coach]
 ```
 
-Every registration step is wrapped: a host without `register_tool`, a duplicate
-name, or a failed import logs and returns instead of breaking the loader.
-Package imports are relative and happen inside `register`, because Hermes loads
-the plugin under a synthetic package name.
+The import, the build, and each registration are wrapped independently. A host
+without `register_tool`, a duplicate name, or a renamed handler attribute logs
+and continues with the rest, and a failed import returns before touching the
+host. `on_unload` cleanup is still registered when the host has no hook surface,
+so the worker thread never outlives the plugin. Package imports are relative and
+happen inside `register`, because Hermes loads the plugin under a synthetic
+package name.
 
 ## Hook flow
 
@@ -42,8 +45,10 @@ sequenceDiagram
   C-->>W: finding + cost
   W->>D: route and deliver
   H->>P: pre_llm_call
+  P->>P: snapshot HEAD once per turn
   P-->>H: pending notes as context
   H->>P: pre_verify
+  P->>P: collect base..HEAD + worktree
   P->>C: ask mode=review, 20 s
   P-->>H: continue with a blocker, or nothing
 ```
@@ -52,8 +57,8 @@ sequenceDiagram
 |---|---|---|
 | `post_tool_call` | Buffer a compact tool card for the current turn | Ignore |
 | `post_llm_call` | Snapshot the turn, check cadence/budget/digest, queue a review | Return immediately |
-| `pre_llm_call` | Hand over ambient notes once, drop expired ones | Return `None` |
-| `pre_verify` | Review the diff and optionally hold completion | Fail open |
+| `pre_llm_call` | Hand over ambient notes once, drop expired ones, snapshot the turn's base commit | Return `None` |
+| `pre_verify` | Review the turn's diff and optionally hold completion | Fail open |
 | `subagent_start/stop` | Track child sessions so their tools are refused | Ignore |
 | `on_session_end` | Prune old session files | Log and continue |
 
@@ -70,7 +75,15 @@ sequenceDiagram
 - **Holds reload state.** `review_now` saves spend; the hold path reloads before
   writing the hold counter so the spend is not overwritten.
 - **Call caps are per turn.** Consult and Decide each count their own calls, and
-  the attempt is saved even when the model call fails.
+  the attempt is saved even when the model call fails. The dispatcher's
+  `session_id`/`task_id` override anything the model put in the tool arguments,
+  so a call cannot rotate ids to dodge a cap or read another session's state.
+- **State writes are serialised.** One re-entrant lock guards every
+  load-mutate-save, and paths that cross a model call reload afterwards, so the
+  review worker cannot overwrite concurrent spend, holds, or pending notes.
+- **Duplicate reviews are suppressed by content.** The digest covers the turn's
+  user message and answer, never its id, so an identical turn cannot earn a
+  second review just by arriving under a new id.
 - **Child sessions are refused** unless `allow_in_subagents` is on, so a fan-out
   cannot multiply coach spend silently.
 - **The same model is refused.** A coach on the primary model would review its

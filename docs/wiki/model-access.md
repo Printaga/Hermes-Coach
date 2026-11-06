@@ -29,7 +29,7 @@ sequenceDiagram
 |---|---|
 | `check(mode)` | `unconfigured` with no shared model; `same_model` when the resolved pair equals the primary (unless `skip_same_model` is off) |
 | Provider failure | `provider_error: <ExceptionType>`; the turn continues |
-| Fallback | If the host reports a different provider or model than requested, the reply is discarded as `fallback_mismatch`, so a silent fallback cannot make the coach review the primary model's work |
+| Fallback | If the host reports a different provider or model than requested — including an empty pair — the reply is discarded as `fallback_mismatch`, so a silent fallback cannot make the coach review the primary model's work |
 | Pricing | Injected `cost_fn` in tests; otherwise `agent.usage_pricing.estimate_usage_cost`, guarded to `0.0` |
 | Deadline | Caller-supplied: 45 s for Active/Consult, 20 s under the Review hook (the host bounds hooks at 30 s) |
 
@@ -60,7 +60,11 @@ flowchart LR
 - A choice below `decide_min_confidence` also escalates, even if the model said
   `act`.
 - Every failure path returns `gate="error"` with a one-line reason, including a
-  malformed response body and an empty API key.
+  malformed response body and an empty API key. A single string passed as
+  `options`, a non-iterable, an absent `base_url`, or a state mapping that cannot
+  be serialised (a cycle) degrades to an error decision instead of raising.
+- The chat-model backend needs a `parsed` mapping from the call; prose, a
+  malformed choice, or a missing client is an error decision too.
 
 ## Related pages
 

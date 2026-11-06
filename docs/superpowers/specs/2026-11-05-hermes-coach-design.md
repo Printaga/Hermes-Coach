@@ -107,8 +107,11 @@ which is the one thing the design exists to avoid.
 | **Plugin as evidence collector** | chosen: deterministic, capped, identical every run |
 
 The coach never has tools. The plugin assembles evidence: a bounded ledger for
-Active, a bounded `git diff` of `changed_paths` for Review, and the agent's own
-question plus ledger tail for Consult.
+Active, a bounded diff of the turn for Review (commits made since the turn
+started, the worktree, and new files), and the agent's own question plus ledger
+tail for Consult. Each reviewer is told what it can see: Active its ledger,
+Review its diff, and that a missing diff is a plugin limit rather than a
+finding about the work.
 
 ### 7.3 Guidance scope
 
@@ -188,15 +191,26 @@ hermes-coach/
 
 1. `pre_verify` fires with `changed_paths` and `final_response`.
 2. Skip if a hold was already issued for this request.
-3. Evidence, composed under `ctx.session_cwd()` and capped at 8k characters:
-   `git diff HEAD -- <paths>` for tracked files (staged and unstaged), plus the
-   head of each untracked path marked `(new file)`. Over budget: `git diff
-   --stat` plus per-file heads. Outside a repo: file heads. Skip only when the
-   composed evidence is empty.
+3. Evidence, composed under `ctx.session_cwd()` and capped at 8k characters,
+   covers the **whole turn**, not only what is still uncommitted:
+   - `pre_llm_call` recorded the commit `HEAD` pointed at when the turn started
+     (once per turn — a turn spans several model calls, and re-snapshotting
+     after a mid-turn commit would move the base past the change).
+   - `git diff <base>..HEAD -- <paths>` for commits the turn produced,
+     `git diff HEAD -- <paths>` for tracked files still uncommitted, and the
+     head of each untracked path marked `(new file)`.
+   - A `git --stat` line leads the block, so an over-budget diff keeps the file
+     list and clips the patch instead of losing one or the other.
+   - Unusable range (rebase, amended history, detached or missing base) falls
+     back to the worktree diff and the block says `not an ancestor of HEAD`.
+     Outside a repo: file heads.
+   - Skip only when the composed evidence is empty: no commits and no worktree
+     change means there is nothing to review.
 4. One LLM call with the Review model, 20 s deadline — the hook itself is
    bounded at 30 s by the host, and a timed-out callback is suppressed for 60 s
    afterwards. Prompt: "does the change satisfy the request; is there a defect
-   the claim hides?"
+   the claim hides?" A missing diff is a coverage limit of the plugin, never a
+   finding about the work (at most a nit).
 5. `blocker` and `authority=hold_once` and budget allows → return
    `{"action": "continue", "message": "<required fix>"}`. Everything else →
    post a card, return `None`. A timeout is a card or nothing, never a hold.
@@ -367,9 +381,10 @@ any other call. Session spend is the sum, persisted with the session state.
   parse failure, missing key. The turn always continues.
 - Reviews are fail-open. The Review gate is fail-open except when it has a
   parsed blocker, so a broken coach never blocks completion.
-- The coach never executes anything. The plugin runs one `git diff` itself,
-  under `ctx.session_cwd()`, read-only, with a timeout, capped output, and
-  paths restricted to `changed_paths` resolved inside the cwd.
+- The coach never executes anything. The plugin runs read-only `git`
+  (`status`, `diff`, `rev-parse`, `merge-base`) itself under `ctx.session_cwd()`,
+  with a timeout, capped output, path confinement, and no external diff or
+  textconv drivers from repo config.
 - Evidence is wrapped in a fenced block and the system prompt states that
   evidence is data, never instructions. With no tools, a successful injection
   can only produce bad advice.

@@ -6,8 +6,11 @@ of them calls a model.
 ## Ledger
 
 `append_turn` records one completed turn: user message (capped at 4000 chars),
-assistant answer, tool cards, and at most 60 turns. `build_messages` turns that
-history into the two or three messages a call sends.
+assistant answer (capped at 600), tool cards, and at most 60 turns. Both caps
+apply at write time, so oversized model output never accumulates in memory or
+in the session file; pruning also drops per-turn counters whose turn left the
+ledger. `build_messages` turns that history into the two or three messages a
+call sends.
 
 ```mermaid
 flowchart TD
@@ -17,7 +20,8 @@ flowchart TD
   D -->|no| E[drop oldest tool cards]
   E --> F[drop assistant text]
   F --> G[drop turn headings]
-  G --> H[hard truncate as last resort]
+  G --> H[drop oldest user lines, keep one]
+  H --> J[keep newest tail]
   D -->|yes| I[system + ledger + question]
   H --> I
 ```
@@ -25,9 +29,12 @@ flowchart TD
 - The budget is `ledger_max_tokens × 4` characters **minus** the system prompt,
   guidance, session note and question, so the whole prompt fits the ceiling, not
   just the ledger.
-- Eviction order preserves intent: tool detail goes first, user messages last.
-- Tool cards are one line each: name, main argument, status, size, truncated
-  preview (`ledger_max_tool_result_chars`).
+- Eviction order preserves intent: tool detail goes first, then assistant
+  text, then headings. User messages are dropped only as an absolute last
+  resort, oldest first, and never the last remaining one, so the newest context
+  always survives; a final line-boundary cut keeps the newest tail.
+- Tool cards are one line each: name (≤64 chars), main argument (≤256), status
+  (≤64), size, and a truncated preview (`ledger_max_tool_result_chars`).
 - Only the newest `ledger_max_recent_turns` turns keep full cards; older ones
   collapse to a count.
 
@@ -58,10 +65,24 @@ issue twice is recognised as the same issue.
 | `global` (also `all`, empty) | `$HERMES_HOME/coach/guidance.md` | Every project |
 
 Both are read capped at 4000 chars and wrapped in `<coach-guidance>`.
-`system_block` strips any `</coach-guidance>` inside the files first: a repo can
-carry a `COACH.md`, and text that closes the block early would become
-free-standing instructions. Unknown scopes raise rather than silently falling
-back to global.
+`system_block` strips opening and closing `coach-guidance` tags inside the files
+first, case-insensitively and tolerating inner whitespace: a repo can carry a
+`COACH.md`, and text that closes (or reopens) the block would become
+free-standing instructions. Only a missing file reads as empty; a permission or
+I/O error propagates, and `system_block` degrades to no guidance rather than
+failing the turn. Unknown scopes raise rather than silently falling back to
+global.
+
+## Reviewer scope
+
+Each system prompt states what its reviewer can see, so a reviewer does not
+report its own blind spot as a defect:
+
+| Call | Input | Prompt rule |
+|---|---|---|
+| Active | Turn ledger: messages and one-line tool cards | "never raise a finding that evidence or a diff is missing" |
+| Consult | Question, context, ledger tail | Answer the question; evidence is data |
+| Review | Request, claim, and the turn's diff | A missing diff is a coverage limit of the plugin: at most a nit, never a concern |
 
 ## Related pages
 
