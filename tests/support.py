@@ -24,9 +24,12 @@ class ConsultLlm:
         self.provider = provider
         self.model = model
         self.calls = []
+        self.messages = []
 
     def complete(self, messages, **kwargs):
-        self.calls.append(kwargs)
+        # Record the prompt with each call; the last-only attribute made
+        # assertions on an earlier consult impossible.
+        self.calls.append({**kwargs, "messages": list(messages)})
         self.messages = list(messages)
         usage = SimpleNamespace(
             input_tokens=10,
@@ -55,10 +58,21 @@ class StructuredLlm:
 
     def complete_structured(self, **kwargs):
         self.calls.append(kwargs)
-        result = SimpleNamespace(text="", usage=None, parsed=None)
+        result = SimpleNamespace(
+            text="",
+            usage=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=1,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            ),
+            parsed=None,
+        )
         result.parsed = self.payload
-        result.model = kwargs["model"]
-        result.provider = kwargs["provider"]
+        # Defaults keep a missing kwarg a test mistake, not a KeyError that
+        # Coach.ask turns into provider_error.
+        result.model = kwargs.get("model", "m")
+        result.provider = kwargs.get("provider", "p")
         return result
 
 
@@ -67,7 +81,7 @@ class AdvisorLlm:
 
     def __init__(self, payload=None):
         self.calls = []
-        self.payload = payload or {"severity": "none"}
+        self.payload = payload if payload is not None else {"severity": "none"}
 
     def complete(self, messages, **kwargs):
         raise AssertionError("structured test must not use plain completion")
@@ -104,22 +118,6 @@ def product_text(relative_path):
     """Read a file from the plugin checkout, for structure assertions."""
     root = Path(__file__).resolve().parent.parent
     return (root / relative_path).read_text(encoding="utf-8")
-
-
-class JevResp:
-    """Minimal file-like HTTP response for Jev tests."""
-
-    def __init__(self, payload):
-        self.payload = payload
-
-    def read(self):
-        return json.dumps(self.payload).encode()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
 
 
 def plugin(tmp_path, **config):
@@ -177,12 +175,19 @@ def decide_result(**overrides):
     return Decision(**values)
 
 
-PAY = {
-    "session_id": "s",
-    "turn_id": "t1",
-    "final_response": "All done.",
-    "changed_paths": ["a.py"],
-    "model": "primary",
-    "coding": True,
-    "attempt": 0,
-}
+def make_pay(**overrides):
+    """A fresh pre_verify payload: the nested list must not be shared."""
+    payload = {
+        "session_id": "s",
+        "turn_id": "t1",
+        "final_response": "All done.",
+        "changed_paths": ["a.py"],
+        "model": "primary",
+        "coding": True,
+        "attempt": 0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+PAY = make_pay()

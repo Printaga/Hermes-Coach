@@ -18,6 +18,7 @@
  * (`const x = ctx; x.host`) — the runtime smoke test below is the backstop
  * for those, and review should treat any new `ctx` plumbing with suspicion.
  */
+import { execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -37,7 +38,9 @@ function fail(message) {
 }
 
 try {
-  main()
+  // main() imports the generated module: awaiting it keeps cleanup after the
+  // pending import, and routes async rejections through fail().
+  await main()
 } catch (err) {
   fail(`desktop page check failed: ${err && err.message ? err.message : err}`)
 } finally {
@@ -59,10 +62,14 @@ function main() {
   // Strip block comments, line comments, and single/double-quoted strings so
   // a mention in prose or an error message cannot trip (or satisfy) a check.
   // Template literals are kept: code inside ${} stays analyzable.
+  // Strings first: a literal may contain // or /*, and stripping comments
+  // first corrupted the following code. Template literals are removed too —
+  // their text is display data, never a gate target.
   const code = source
+    .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '""')
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:\\])\/\/.*$/gm, "$1")
-    .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""')
 
   // Context APIs the host does not provide, in every access spelling.
   const ctxName = String.raw`\bctx\s*(?:\?\.\s*|\.\s*)`
@@ -73,11 +80,13 @@ function main() {
     [new RegExp(`${ctxName}useValue\\b`).source, "ctx.useValue"],
     [new RegExp(`${ctxName}useEffect\\b`).source, "ctx.useEffect"],
     [new RegExp(`${ctxName}host\\b|${bracket("host")}`).source, "ctx.host"],
-    [new RegExp(`${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)get\\b`).source, "ctx.rest.get"],
+    [new RegExp(`${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)get\\b|${bracket("rest")}\\s*(?:\\?\\.\\s*|\\.\\s*)get\\b`).source, "ctx.rest.get"],
     [new RegExp(`${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)put\\b`).source, "ctx.rest.put"],
     [new RegExp(`${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)post\\b`).source, "ctx.rest.post"],
-    [new RegExp(`${ctxName}setConfig\\b`).source, "ctx.setConfig"],
+    [new RegExp(`${ctxName}setConfig\\b|${bracket("setConfig")}`).source, "ctx.setConfig"],
+    [new RegExp(`${ctxName}useValue\\b|${bracket("useValue")}`).source, "ctx.useValue"],
     [/\{\s*[^}]*\bhost\b[^}]*\}\s*=\s*ctx\b/.source, "destructured ctx.host"],
+    [/\{\s*[^}]*\b(rest|setConfig)\b[^}]*\}\s*=\s*ctx\b/.source, "destructured ctx.rest"],
   ]
   const used = forbidden
     .filter(([pattern]) => new RegExp(pattern).test(code))
@@ -87,7 +96,7 @@ function main() {
       `desktop page uses APIs the plugin context does not provide: ${used.join(", ")}`,
     )
   }
-  if (!code.includes("createElement")) {
+  if (!/\bcreateElement\b/.test(code)) {
     fail("desktop page must build elements with createElement (variadic children)")
   }
   // The default-export shape is asserted behaviorally below
@@ -100,27 +109,21 @@ function main() {
     new URL("../coach/settings.py", import.meta.url),
     "utf8",
   )
-  const defaultsAt = settings.search(/DEFAULTS\b[^=]*=\s*\{/)
-  if (defaultsAt === -1) {
-    fail("could not locate DEFAULTS assignment in coach/settings.py")
+  let keys = []
+  try {
+    const out = execFileSync(
+      process.env.COACH_PYTHON || "python3",
+      [
+        "-c",
+        "import json,sys;sys.path.insert(0,sys.argv[1]);import coach.settings as s;print(json.dumps(list(s.DEFAULTS)))",
+        new URL("..", import.meta.url).pathname,
+      ],
+      { encoding: "utf8" },
+    )
+    keys = JSON.parse(out)
+  } catch (err) {
+    fail(`could not import coach.settings for the DEFAULTS list: ${err.message}`)
   }
-  let depth = 0
-  let end = -1
-  for (let i = settings.indexOf("{", defaultsAt); i < settings.length; i++) {
-    if (settings[i] === "{") depth++
-    else if (settings[i] === "}") {
-      depth--
-      if (depth === 0) {
-        end = i
-        break
-      }
-    }
-  }
-  if (end === -1) {
-    fail("could not find the end of DEFAULTS in coach/settings.py")
-  }
-  const block = settings.slice(defaultsAt, end)
-  const keys = [...block.matchAll(/"([a-z_]+)"\s*:/g)].map((match) => match[1])
   if (keys.length === 0) {
     fail("could not read DEFAULTS keys from coach/settings.py")
   }
@@ -140,13 +143,13 @@ function main() {
     if (CONFIG_ONLY.has(key)) return false
     const saveCall = new RegExp(`save\\(\\s*["']${key}["']`)
     const valuesProp = new RegExp(`values\\.${key}\\b`)
-    if (saveCall.test(source) || valuesProp.test(source)) return false
+    if (saveCall.test(code) || valuesProp.test(code)) return false
     // Per-mode models render through a mapped ModelPicker: the key appears as
     // a string literal in the overrides list and saves via save(key, ...).
     if (
       ["coach_model", "active_model", "review_model", "consult_model"].includes(key) &&
       source.includes(`"${key}"`) &&
-      /save\(\s*key\b/.test(source)
+      /save\(\s*key\b/.test(code)
     ) {
       return false
     }
@@ -158,22 +161,27 @@ function main() {
 
   // Integrations the page must keep, matched quote- and spacing-tolerantly so
   // a formatting-only edit cannot fail the gate.
+  // Structural snippets are matched against the stripped `code` (a comment
+  // cannot satisfy them); literal UI copy is matched against `source`, because
+  // stripping strings would erase the very text the page must render.
   const required = [
-    [/host\s*\.\s*request\s*\(\s*["']model\.options["']/, 'host.request("model.options")'],
-    [/"Search models or providers"/, '"Search models or providers"'],
-    [/"This chat"/, '"This chat"'],
-    [/"All sessions"/, '"All sessions"'],
-    [/method\s*:\s*["']PUT["']/, 'method: "PUT"'],
-    [/["']\/permissions\/grant["']/, '"/permissions/grant"'],
-    [/["']\/permissions\/revoke["']/, '"/permissions/revoke"'],
-    [/"Refresh"/, '"Refresh"'],
-    [/role["']?\s*:\s*["']status["']/, 'role: "status"'],
-    [/\bproviderName\b/, "providerName"],
-    [/host\s*\.\s*composer\b/, "host.composer"],
-    [/composer\s*\.\s*submit\s*\(/, "composer.submit()"],
+    [/host\s*\.\s*request\s*\(\s*["']model\.options["']/, 'host.request("model.options")', "source"],
+    [/["']Search models or providers["']/, '"Search models or providers"', "source"],
+    [/["']This chat["']/, '"This chat"', "source"],
+    [/["']All sessions["']/, '"All sessions"', "source"],
+    [/method\s*:\s*["']PUT["']/, 'method: "PUT"', "source"],
+    [/["']\/permissions\/grant["']/, '"/permissions/grant"', "source"],
+    [/["']\/permissions\/revoke["']/, '"/permissions/revoke"', "source"],
+    [/["']Refresh["']/, '"Refresh"', "source"],
+    [/role["']?\s*:\s*["']status["']/, 'role: "status"', "source"],
+    [/\bproviderName\b/, "providerName", "code"],
+    [/host\s*\.\s*composer\b/, "host.composer", "code"],
+    [/composer\s*\.\s*submit\s*\(/, "composer.submit()", "code"],
   ]
   const missingSnippets = required
-    .filter(([pattern]) => !pattern.test(source))
+    .filter(([pattern, , target]) =>
+      target === "source" ? !pattern.test(source) : !pattern.test(code),
+    )
     .map(([, label]) => label)
   if (missingSnippets.length) {
     fail(`desktop page is missing required integrations: ${missingSnippets.join(", ")}`)
@@ -225,7 +233,16 @@ const useState = (initial) => {
   return [__hooks[i], set];
 };
 const useRef = (initial) => ({ current: initial });
-const useEffect = (fn) => { try { const cleanup = fn(); } catch {} };
+const useEffect = (fn) => {
+  try {
+    const out = fn();
+    if (out && typeof out.then === "function") {
+      out.catch((err) => { globalThis.__effectError = err; });
+    }
+  } catch (err) {
+    globalThis.__effectError = err;
+  }
+};
 const useValue = () => "";
 const host = { state: { model: "", cwd: "", focusedSessionId: "" }, request: async () => ({ providers: [{ slug: "p", name: "P", models: ["m"] }] }), composer: { submit: () => true } };
 const __resetHooks = () => { __hookIndex = 0; };

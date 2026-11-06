@@ -65,6 +65,17 @@ function findingPrompt(row) {
   return lines.filter(Boolean).join("\n").slice(0, 4000)
 }
 
+function finiteOrNull(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function emptyRecentMessage(recentError, scope) {
+  if (recentError) return `Could not load recent reviews: ${recentError}`
+  if (scope === "chat") return "No findings for this chat yet."
+  return "No reviews logged yet."
+}
+
 function messageOf(error) {
   if (error && error.message) return String(error.message)
   return String(error === null || error === undefined ? "Unknown error" : error)
@@ -76,8 +87,10 @@ function unwrap(response) {
 }
 
 function formatUsd(value) {
+  // Missing or malformed spend is unknown, not zero: "$0.00" implied a budget.
+  if (value === null || value === undefined || value === "") return "—"
   const number = Number(value)
-  return Number.isFinite(number) ? `$${number.toFixed(2)}` : "$0.00"
+  return Number.isFinite(number) ? `$${number.toFixed(2)}` : "—"
 }
 
 function modelLabel(value) {
@@ -135,7 +148,9 @@ function groupModels(models, query) {
 function useSettings(ctx) {
   const [config, setConfig] = useState(null)
   const [status, setStatus] = useState(null)
-  const [error, setError] = useState("")
+  // A failed save must not blank the page: it is a notice, not a load error.
+  const [loadError, setLoadError] = useState("")
+  const [saveError, setSaveError] = useState("")
   const [busy, setBusy] = useState(false)
   const alive = useRef(true)
   const chain = useRef(Promise.resolve())
@@ -149,9 +164,9 @@ function useSettings(ctx) {
       if (!alive.current) return
       setConfig(unwrap(nextConfig))
       setStatus(unwrap(nextStatus))
-      setError("")
+      setLoadError("")
     } catch (err) {
-      if (alive.current) setError(messageOf(err))
+      if (alive.current) setLoadError(messageOf(err))
     }
   }
 
@@ -164,20 +179,21 @@ function useSettings(ctx) {
   }, [])
 
   const write = async (key, value) => {
-    if (alive.current) {
-      setBusy(true)
-      setError("")
-    }
+    if (!alive.current) return false
+    setBusy(true)
+    setSaveError("")
     try {
       const next = await ctx.rest("/config", {
         method: "PUT",
         body: { values: { [key]: value } },
       })
-      if (!alive.current) return
+      if (!alive.current) return true
       setConfig(unwrap(next))
       setStatus(unwrap(await ctx.rest("/status")))
+      return true
     } catch (err) {
-      if (alive.current) setError(messageOf(err))
+      if (alive.current) setSaveError(messageOf(err))
+      return false
     } finally {
       if (alive.current) setBusy(false)
     }
@@ -187,7 +203,8 @@ function useSettings(ctx) {
   // Reloads go through the same chain: a reload racing a save must not
   // overwrite fresh config with its own older fetch.
   const save = (key, value) => {
-    chain.current = chain.current.then(() => write(key, value)).catch(() => {})
+    // The chain resolves to the write's outcome; callers can await failure.
+    chain.current = chain.current.then(() => write(key, value)).catch(() => false)
     return chain.current
   }
   const orderedReload = () => {
@@ -195,7 +212,16 @@ function useSettings(ctx) {
     return chain.current
   }
 
-  return { config, status, error, busy, reload: orderedReload, save }
+  return {
+    config,
+    status,
+    loadError,
+    saveError,
+    error: loadError,
+    busy,
+    reload: orderedReload,
+    save,
+  }
 }
 
 // ---------------------------------------------------------------- primitives
@@ -255,7 +281,8 @@ function Toggle(props) {
 }
 
 function Choice(props) {
-  const selected = props.options.find((option) => option.value === props.value)
+  const options = Array.isArray(props.options) ? props.options : []
+  const selected = options.find((option) => option.value === props.value)
   const known = Boolean(selected)
   const controlId =
     props.controlId ||
@@ -272,7 +299,7 @@ function Choice(props) {
         onChange: (event) => props.onChange(event.target.value),
       },
       known ? null : h("option", { value: "" }, "Choose..."),
-      props.options.map((option) =>
+      options.map((option) =>
         h("option", { key: option.value, value: option.value }, option.label),
       ),
     ),
@@ -281,8 +308,10 @@ function Choice(props) {
 
 function TextField(props) {
   const [draft, setDraft] = useState(String(props.value ?? ""))
+  const editing = useRef(false)
   useEffect(() => {
-    setDraft(String(props.value ?? ""))
+    // Another field's save round-trip must not clobber what is being typed.
+    if (!editing.current) setDraft(String(props.value ?? ""))
   }, [props.value])
   const commit = () => {
     const next = String(draft).trim()
@@ -298,8 +327,14 @@ function TextField(props) {
       style: INPUT,
       value: draft,
       placeholder: props.placeholder,
+      onFocus: () => {
+        editing.current = true
+      },
       onChange: (event) => setDraft(event.target.value),
-      onBlur: commit,
+      onBlur: () => {
+        editing.current = false
+        commit()
+      },
       onKeyDown: (event) => {
         if (event.key === "Enter") commit()
       },
@@ -309,8 +344,9 @@ function TextField(props) {
 
 function NumberField(props) {
   const [draft, setDraft] = useState(String(props.value ?? ""))
+  const editing = useRef(false)
   useEffect(() => {
-    setDraft(String(props.value ?? ""))
+    if (!editing.current) setDraft(String(props.value ?? ""))
   }, [props.value])
   const commit = () => {
     if (!String(draft).trim()) {
@@ -328,7 +364,8 @@ function NumberField(props) {
     // Sync the draft to the clamped value so the input shows what was kept,
     // not the out-of-range number, before the config round-trip lands.
     setDraft(String(clamped))
-    if (clamped !== Number(props.value)) props.onChange(clamped)
+    const current = Number(props.value)
+    if (!Number.isFinite(current) || clamped !== current) props.onChange(clamped)
   }
   const controlId =
     props.controlId ||
@@ -989,11 +1026,15 @@ function useRecent(ctx, sessionParam) {
   // reported a failure, so "no reviews" could mean "the request failed".
   const [recent, setRecent] = useState([])
   const [recentError, setRecentError] = useState("")
+  const [loading, setLoading] = useState(true)
   const pull = (alive) =>
     ctx
       .rest(`/recent?limit=8${sessionParam}`)
       .then((result) => {
-        if (alive()) setRecent((unwrap(result) || {}).reviews || [])
+        if (!alive()) return
+        const list = (unwrap(result) || {}).reviews
+        setRecent(Array.isArray(list) ? list : [])
+        setLoading(false)
       })
       .catch((err) => {
         if (alive()) setRecentError(messageOf(err))
@@ -1010,22 +1051,30 @@ function useRecent(ctx, sessionParam) {
     setRecentError("")
     pull(() => true)
   }
-  return { recent, recentError, refresh }
+  return { recent, recentError, loading, refresh }
 }
 
 function usePermissions(ctx, state, setNotice) {
   const [busy, setBusy] = useState(false)
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
   const apply = async (path, done) => {
     setBusy(true)
     setNotice("")
     try {
       await ctx.rest(path, { method: "POST", body: {} })
+      if (!alive.current) return
       setNotice(done)
       await state.reload()
     } catch (err) {
-      setNotice(messageOf(err))
+      if (alive.current) setNotice(messageOf(err))
     } finally {
-      setBusy(false)
+      if (alive.current) setBusy(false)
     }
   }
   return {
@@ -1068,9 +1117,17 @@ function StatusPage(props) {
   const [notice, setNotice] = useState("")
   const [scope, setScope] = useState("chat")
   const focused = useValue(host.state.focusedSessionId)
+  // Never silently widen "This chat" to the whole profile.
+  const chatScopeUnavailable = scope === "chat" && !focused
   const sessionParam =
     scope === "chat" && focused ? `&session=${encodeURIComponent(focused)}` : ""
-  const { recent, recentError, refresh: refreshRecent } = useRecent(ctx, sessionParam)
+  const {
+    recent: recentRows,
+    recentError,
+    loading: recentLoading,
+    refresh: refreshRecent,
+  } = useRecent(ctx, chatScopeUnavailable ? "&session=__none__" : sessionParam)
+  const recent = recentRows
   const { busy: granting, grant, revoke } = usePermissions(ctx, state, setNotice)
 
   // The host renders plugin cards as notifications, which cannot carry
@@ -1081,26 +1138,47 @@ function StatusPage(props) {
       setNotice("This Desktop build cannot send to the chat.")
       return
     }
-    if (composer.submit(focused || null, findingPrompt(row))) {
-      setNotice("Sent to this chat.")
+    const outcome = composer.submit(focused || null, findingPrompt(row))
+    const done = (ok) =>
+      setNotice(ok ? "Sent to this chat." : "Could not reach this chat's composer.")
+    if (outcome && typeof outcome.then === "function") {
+      outcome.then(done, () => done(false))
     } else {
-      setNotice("Could not reach this chat's composer.")
+      done(outcome !== false && outcome !== null && outcome !== undefined)
     }
   }
 
-  const totalSpend = status.spend_total_usd ?? status.spend_usd
-  const perSessionBudget = status.budget_per_session_usd ?? status.budget_usd
+  const spendMap =
+    status.spend_sessions && typeof status.spend_sessions === "object"
+      ? status.spend_sessions
+      : {}
+  const totalSpend = finiteOrNull(status.spend_total_usd ?? status.spend_usd)
+  const perSessionBudget = finiteOrNull(
+    status.budget_per_session_usd ?? status.budget_usd,
+  )
   const thisChatSpend =
-    focused && status.spend_sessions && focused in status.spend_sessions
-      ? formatUsd(status.spend_sessions[focused])
+    focused && Object.prototype.hasOwnProperty.call(spendMap, focused)
+      ? finiteOrNull(spendMap[focused])
       : null
   const rows = [
     ["Coach model", status.configured ? modelLabel(status.coach_model) : "Not configured"],
     ["Active review", status.active_enabled ? "On" : "Off"],
     ["Completion review", status.review_enabled ? "On" : "Off"],
-    ["Decisions", status.decide_enabled ? `On, ${status.decide_backend}` : "Off"],
+    [
+      "Decisions",
+      status.decide_enabled
+        ? status.decide_backend
+          ? `On, ${status.decide_backend}`
+          : "On"
+        : "Off",
+    ],
     ...(thisChatSpend !== null
-      ? [["This chat spend", `${thisChatSpend} of ${formatUsd(perSessionBudget)} budgeted`]]
+      ? [
+          [
+            "This chat spend",
+            `${formatUsd(thisChatSpend)} of ${formatUsd(perSessionBudget)} budgeted`,
+          ],
+        ]
       : []),
     [
       "Spend total, all sessions",
@@ -1163,11 +1241,9 @@ function StatusPage(props) {
         ? h(
             "p",
             { style: MUTED, role: "status" },
-            recentError
-              ? `Could not load recent reviews: ${recentError}`
-              : scope === "chat"
-                ? "No findings for this chat yet."
-                : "No reviews logged yet.",
+            recentLoading
+              ? "Loading recent reviews..."
+              : emptyRecentMessage(recentError, scope),
           )
         : recent.map((row, index) =>
             h(
@@ -1264,15 +1340,6 @@ export function register(ctx) {
           h("button", { type: "button", style: BUTTON, onClick: () => state.reload() }, "Reload"),
         )
       }
-      if (state.error) {
-        return h(
-          "div",
-          { style: { display: "grid", gap: 10 } },
-          h("p", { style: { ...MUTED, opacity: 1, fontWeight: 600 }, role: "alert" }, state.error),
-          h("button", { type: "button", style: BUTTON, onClick: () => state.reload() }, "Retry"),
-          h(Component, { ctx, state, mainModel: null }),
-        )
-      }
       const raw = String(main || "")
       // Split on the LAST slash: model ids can contain slashes
       // (provider/org/model), and splitting on the first defeats sameModel().
@@ -1283,7 +1350,18 @@ export function register(ctx) {
             model: slash >= 0 ? raw.slice(slash + 1) : raw,
           }
         : null
-      return h(Component, { ctx, state, mainModel })
+      return h(
+        "div",
+        { style: { display: "grid", gap: 10 } },
+        state.saveError
+          ? h(
+              "p",
+              { style: MUTED, role: "status" },
+              `Could not save: ${state.saveError}`,
+            )
+          : null,
+        h(Component, { ctx, state, mainModel }),
+      )
     }
 
   ctx.registerSettingsPage({
