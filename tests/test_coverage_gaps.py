@@ -789,6 +789,25 @@ def test_model_command_sets_shows_and_lists(tmp_path):
     assert "Coach model:" in target.command("model")
 
 
+def test_command_bare_input_prints_help_and_failures_are_named(tmp_path):
+    target = plugin(tmp_path)
+    assert target.command("") == target.command("wat")
+    assert "Usage" in target.command("model bogus")
+    assert target._apply("nope", "x") is False
+    refusing = plugin(tmp_path)
+    refusing.set_setting = lambda key, value: False
+    assert refusing.command("active on") == "Coach: could not save active_enabled."
+    assert refusing.command("set review_max_holds 2") == (
+        "Coach: could not save review_max_holds."
+    )
+    assert refusing.command("model consult p/m") == (
+        "Coach: could not save consult_model."
+    )
+    assert refusing.command("set consult_model p/m") == (
+        "Coach: could not save consult_model."
+    )
+
+
 def test_post_and_inject_failures_do_not_raise(tmp_path):
     def boom_post(text):
         raise RuntimeError("post down")
