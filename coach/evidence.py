@@ -90,13 +90,16 @@ def _git(
     argv: list[str],
     timeout: float = _GIT_TIMEOUT,
 ) -> subprocess.CompletedProcess | None:
+    if timeout <= 0:
+        # The shared budget is spent: do not floor the timeout and overrun it.
+        return None
     try:
         result = run(
             argv,
             cwd=str(root),
             capture_output=True,
             text=True,
-            timeout=max(0.2, timeout),
+            timeout=timeout,
             shell=False,
         )
     except (OSError, subprocess.SubprocessError):

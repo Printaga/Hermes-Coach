@@ -425,8 +425,10 @@ def test_collect_shares_one_git_budget(tmp_path):
         str(tmp_path), ["a.py"], base="abc123", run=fake_run, clock=lambda: now[0]
     )
     assert timeouts, "expected at least one git call"
-    assert all(t <= 2 for t in timeouts)
-    assert timeouts[-1] < 2, timeouts
+    # 8 s of budget, 3 s per call: git work stops inside the budget instead of
+    # paying a floored 0.2 s per call and overrunning it.
+    assert len(timeouts) <= 3, timeouts
+    assert all(0 < t <= 2 for t in timeouts)
 
 
 # --- manifests ------------------------------------------------------------------------

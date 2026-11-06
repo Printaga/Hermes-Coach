@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
+
+from .coerce import as_bool as as_coerce_bool
+from .coerce import as_finite_float, as_int
 
 __all__ = ["DEFAULTS", "ModelChoice", "Settings", "load_settings"]
 
@@ -86,45 +88,15 @@ _MODE_MODEL_FIELDS: dict[str, str] = {
 
 
 def _as_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off"}:
-            return False
-    return default
+    return as_coerce_bool(value, default)
 
 
 def _as_int(value: Any, default: int) -> int:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value) if value.is_integer() else default
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return default
-    return default
+    return as_int(value, default)
 
 
 def _as_float(value: Any, default: float) -> float:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, (int, float)):
-        number = float(value)
-    elif isinstance(value, str):
-        try:
-            number = float(value.strip())
-        except ValueError:
-            return default
-    else:
-        return default
-    return number if math.isfinite(number) else default
+    return as_finite_float(value, default)
 
 
 def _as_text(value: Any, default: str) -> str:

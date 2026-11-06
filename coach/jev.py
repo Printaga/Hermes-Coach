@@ -10,11 +10,14 @@ exception.
 from __future__ import annotations
 
 import json
-import math
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
+
 from typing import Any, Callable
+
+from .coerce import as_finite_float
 
 __all__ = ["Decision", "decide"]
 
@@ -67,11 +70,7 @@ def _inner(value: Any) -> Mapping[str, Any]:
 
 
 def _float(value: Any, default: float = 0.0) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return number if math.isfinite(number) else default
+    return as_finite_float(value, default)
 
 
 def _probabilities(*sources: Mapping[str, Any]) -> dict[str, float]:

@@ -34,7 +34,8 @@ the runtime environment.
 - `plugin.yaml` — manifest and the tools/hooks the host registers. No `config_schema`.
 - `__init__.py` — `register(ctx)`; imports the package lazily and fails open.
 - `coach/` — pure core: `settings`, `state`, `ledger`, `findings`, `advisor`,
-  `jev`, `delivery`, `evidence`, `guidance`, `worker`, `commands`, `plugin`.
+  `jev`, `delivery`, `evidence`, `guidance`, `worker`, `coerce`, `commands`,
+  `plugin`.
   `plugin` holds lifecycle, hooks and the model surfaces; `commands` holds the
   `/coach` surface (a mixin) so the class does not carry four jobs.
 - `dashboard/plugin_api.py` — `/config`, `/status`, `/guidance`,
@@ -62,6 +63,9 @@ the runtime environment.
 - The Desktop page must use `createElement` (variadic children), `host` and
   `useValue` from `@hermes/plugin-sdk`, and `ctx.rest(path, {method, body})`.
   The checker fails on `ctx.jsx`, `ctx.host`, `ctx.rest.get`, `ctx.setConfig`.
+- Values from config, JSON and models go through `coach/coerce.py`: one named
+  policy per rule (`as_int` rejects bool, `as_finite_float` rejects non-finite),
+  so readers cannot drift apart again.
 - Store models as `{provider, model}`; never parse a `provider/model` string,
   because model ids contain slashes.
 - The coach gets no tools. The plugin assembles evidence and wraps it in tags;

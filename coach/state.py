@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import os
 import tempfile
 import time
@@ -20,6 +19,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .coerce import as_finite_float, as_int, as_str
 
 __all__ = ["SessionState", "Store"]
 
@@ -65,43 +66,15 @@ def _safe_name(session_id: str) -> str:
 
 
 def _as_str(value: Any) -> str:
-    return value if isinstance(value, str) else ""
+    return as_str(value)
 
 
 def _as_int(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value) if value.is_integer() else 0
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return 0
-    return 0
+    return as_int(value)
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
-    if isinstance(value, bool):
-        return default
-    number: float | None = None
-    if isinstance(value, (int, float)):
-        try:
-            number = float(value)
-        except OverflowError:
-            # A JSON integer beyond float range would otherwise escape _read
-            # and break load()'s "never raises" contract.
-            return default
-    elif isinstance(value, str):
-        try:
-            number = float(value.strip())
-        except ValueError:
-            return default
-    if number is None or not math.isfinite(number):
-        return default
-    return number
+    return as_finite_float(value, default)
 
 
 def _dict_items(value: Any) -> list[dict[str, Any]]:

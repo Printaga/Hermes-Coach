@@ -37,3 +37,19 @@ def test_a_per_mode_model_alone_counts_as_configured():
     assert s.is_configured() is True
     assert s.model_for("consult").model == "m"
     assert s.model_for("active") is None
+
+
+def test_coercion_policies_reject_bools_and_non_finite():
+    from coach.coerce import as_bool, as_finite_float, as_int, as_text
+
+    assert as_finite_float(True) == 0.0  # jev used to price True as 1.0
+    assert as_finite_float("1.5") == 1.5
+    assert as_finite_float(float("inf")) == 0.0
+    assert as_finite_float(10**400) == 0.0
+    assert as_int(True) == 0
+    assert as_int(2.0) == 2
+    assert as_int(2.5) == 0
+    assert as_bool("ON") is True
+    assert as_bool("maybe", default=False) is False
+    assert as_text("  x  ") == "x"
+    assert as_text(None, default="d") == "d"
