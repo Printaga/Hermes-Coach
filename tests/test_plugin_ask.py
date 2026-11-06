@@ -4,17 +4,7 @@ from coach.guidance import Guidance
 from coach.plugin import CoachPlugin
 from coach.settings import load_settings
 from coach.state import Store
-
-class Llm:
-    def __init__(self): self.last = None
-    def complete(self, messages, **kw):
-        self.last = (messages, kw)
-        class R:
-            text = "Consider extracting the parser."; provider = "openrouter"; model = "x"
-            usage = type("U", (), {"input_tokens": 10, "output_tokens": 5,
-                                   "cache_read_tokens": 0, "cache_write_tokens": 0})()
-            audit = {}
-        return R()
+from tests.support import ConsultLlm as Llm
 
 def _plugin(tmp_path, *, settings=None, surface=lambda: "cli"):
     return CoachPlugin(llm=Llm(), store=Store(tmp_path), surface=surface,
@@ -23,7 +13,7 @@ def _plugin(tmp_path, *, settings=None, surface=lambda: "cli"):
 
 def test_ask_returns_text_as_json_string(tmp_path):
     out = json.loads(_plugin(tmp_path).tool_ask({"question": "Is this parser ok?", "intent": "advice"}))
-    assert out["ok"] is True and out["advice"].startswith("Consider")
+    assert out["ok"] is True and out["advice"].startswith("Advice body.")
 
 def test_unconfigured_answers_clearly(tmp_path):
     p = CoachPlugin(llm=Llm(), store=Store(tmp_path), settings=load_settings({}))

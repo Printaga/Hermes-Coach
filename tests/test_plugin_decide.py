@@ -5,7 +5,7 @@ from coach.jev import Decision
 from coach.plugin import CoachPlugin
 from coach.settings import load_settings
 from coach.state import Store
-from tests.test_plugin_ask import Llm
+from tests.support import ConsultLlm as Llm
 
 ARGS = {"question": "Which path?", "options": ["a", "b"], "turn_id": "t1"}
 

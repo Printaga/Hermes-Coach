@@ -17,11 +17,11 @@ from types import SimpleNamespace
 import yaml
 from fastapi.testclient import TestClient
 
-from coach.advisor import Coach
-from coach.delivery import format_card, route
+from coach.advisor import Coach, _content_text, _differs, _split_messages
+from coach.delivery import format_ambient, format_card, format_corrective, route
 from coach.evidence import collect
 from coach.findings import Finding, is_deliverable, parse_finding
-from coach.jev import Decision, decide
+from coach.jev import Decision, _inner, _probabilities, decide
 from coach.ledger import append_turn, build_messages, tool_card
 from coach.plugin import (
     ASK_DESCRIPTION,
@@ -29,9 +29,20 @@ from coach.plugin import (
     DECIDE_DESCRIPTION,
     DECIDE_SCHEMA,
     CoachPlugin,
+    _as_turn,
+    _bool_arg,
+    _child_id,
     _coerce_setting,
+    _find_turn,
+    _last_reviewed_digest,
     _parse_model,
+    _payload,
     _primary_identity,
+    _record_turn,
+    _request_text,
+    _result_text,
+    _tool_arg,
+    _turns_since_review,
     build_plugin,
 )
 from coach.settings import DEFAULTS, load_settings
@@ -120,7 +131,9 @@ def _plugin(tmp_path, **config):
     base = {"coach_model": {"provider": "openrouter", "model": "x"}}
     base.update(config)
     return CoachPlugin(
-        llm=_ConsultLlm(), store=Store(tmp_path), settings=load_settings(base)
+        llm=_ConsultLlm(),
+        store=Store(tmp_path / "sessions"),
+        settings=load_settings(base),
     )
 
 
@@ -480,9 +493,9 @@ def test_evidence_uses_nul_separated_unquoted_git_status(tmp_path):
 
 
 def test_review_skips_unreadable_changes_instead_of_reviewing_air(tmp_path):
-    from tests.test_review_gate import PAY, _p
+    from tests.support import PAY, review_plugin
 
-    plugin = _p(tmp_path)
+    plugin = review_plugin(tmp_path)
     plugin.collect_evidence = lambda cwd, paths: "   "
     plugin.review_now = lambda **kwargs: (_ for _ in ()).throw(
         AssertionError("empty evidence must not reach the model")
@@ -544,21 +557,28 @@ def test_warn_budget_does_not_stop_automatic_modes(tmp_path):
 
 
 def test_hard_budget_stops_decide_tool_calls(tmp_path, monkeypatch):
-    from tests.test_plugin_decide import ARGS, _fake, _p
+    from tests.support import decide_plugin, decide_result
 
-    plugin = _p(tmp_path, budget_session_usd=0.01, budget_on_exceed="hard")
+    plugin = decide_plugin(tmp_path, budget_session_usd=0.01, budget_on_exceed="hard")
     state = plugin.store.load("current")
     state.spend_usd = 1.0
     plugin.store.save(state)
-    monkeypatch.setattr("coach.plugin.decide", _fake())
-    assert json.loads(plugin.tool_decide(ARGS))["error"] == "budget_exhausted"
+    monkeypatch.setattr(
+        "coach.plugin.decide", lambda **kwargs: decide_result()
+    )
+    assert (
+        json.loads(
+            plugin.tool_decide({"question": "q", "options": ["a", "b"]})
+        )["error"]
+        == "budget_exhausted"
+    )
 
 
 def test_decide_merges_dispatcher_turn_and_session_ids(tmp_path, monkeypatch):
     from coach.jev import Decision
-    from tests.test_plugin_decide import _p
+    from tests.support import decide_plugin
 
-    plugin = _p(tmp_path)
+    plugin = decide_plugin(tmp_path)
     monkeypatch.setattr(
         "coach.plugin.decide",
         lambda **kwargs: Decision("a", 0.8, {"a": 0.8}, "act", "ok", 0.0),
@@ -575,10 +595,12 @@ def test_decide_merges_dispatcher_turn_and_session_ids(tmp_path, monkeypatch):
 
 
 def test_decide_rejects_duplicate_or_blank_options(tmp_path, monkeypatch):
-    from tests.test_plugin_decide import _fake, _p
+    from tests.support import decide_plugin, decide_result
 
-    plugin = _p(tmp_path)
-    monkeypatch.setattr("coach.plugin.decide", _fake())
+    plugin = decide_plugin(tmp_path)
+    monkeypatch.setattr(
+        "coach.plugin.decide", lambda **kwargs: decide_result()
+    )
     assert (
         json.loads(
             plugin.tool_decide({"question": "q", "options": ["a", " a "]})
@@ -887,3 +909,329 @@ def test_dashboard_global_guidance_creates_its_parent(tmp_path):
     assert (tmp_path / "coach" / "guidance.md").read_text(
         encoding="utf-8"
     ) == "Be blunt."
+
+
+# ---------------------------------------------------------------------------
+# Suite-quality coverage: small helpers and uncovered branches
+# ---------------------------------------------------------------------------
+
+
+def test_bool_and_setting_coercions_reject_ambiguous_input():
+    assert _bool_arg("YES") is True
+    assert _bool_arg("disable") is False
+    assert _bool_arg("maybe") is None
+    assert _coerce_setting("active_enabled", "enable") == (True, True)
+    assert _coerce_setting("active_every_n", "3") == (True, 3)
+    assert _coerce_setting("active_every_n", "3.5") == (False, None)
+    assert _coerce_setting("decide_min_confidence", "high") == (
+        False,
+        None,
+    )
+    assert (
+        load_settings({"decide_backend": "nope"}).decide_backend
+        == DEFAULTS["decide_backend"]
+    )
+    assert _coerce_setting("decide_model", 42) == (True, "42")
+    valid, choice = _parse_model("openrouter / a/b")
+    assert (valid, choice.provider, choice.model) == (
+        True,
+        "openrouter",
+        "a/b",
+    )
+
+
+def test_request_text_prefers_history_over_missing_fields():
+    assert _request_text({}) == ""
+    data = {"conversation_history": [{"role": "user", "content": "Fix it"}]}
+    assert _request_text(data) == "Fix it"
+
+
+def test_turn_bookkeeping_counts_reviews_and_updates_turns():
+    from coach.plugin import _record_turn
+
+    state = Store(Path("/tmp")).load("unused")
+    _record_turn(state, {"turn_id": "t1", "user": "u", "assistant": "a", "tools": []})
+    _record_turn(
+        state,
+        {
+            "turn_id": "t1",
+            "user": "u2",
+            "assistant": "a2",
+            "tools": [{"name": "read_file"}],
+        },
+    )
+    assert len(state.ledger) == 1
+    assert state.ledger[0]["user"] == "u2"
+    assert _find_turn(state, "t1")["assistant"] == "a2"
+    assert _find_turn(state, "missing") is None
+    assert _turns_since_review(state) == 1
+    state.ledger[0]["reviewed"] = True
+    state.ledger[0]["digest"] = "d"
+    assert _turns_since_review(state) == 0
+    assert _last_reviewed_digest(state) == "d"
+
+
+def test_payload_child_and_tool_helpers_handle_mixed_shapes():
+    assert _payload({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+    assert _child_id({"subagent_session_id": "child-9"}) == "child-9"
+    assert _as_turn("3") == 3 and _as_turn(object()) == 0
+    assert _tool_arg({"command": "git status"}) == "git status"
+    assert _tool_arg({"other": "  value  "}) == "value"
+    assert _result_text(None) == ""
+    assert json.loads(_result_text({"ok": True})) == {"ok": True}
+
+
+def test_advisor_content_helpers_flatten_roles_and_diffs():
+    assert _content_text([{"text": "a"}, "b", {"text": 1}, None]) == "a\nb"
+    assert _content_text(None) == ""
+    system, body = _split_messages(
+        [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "U"},
+            {"role": "assistant", "content": "A"},
+            {"text": "ignored"},
+        ]
+    )
+    assert system == "S"
+    assert body == "U\n\nassistant: A"
+    assert _differs("", "") is False
+    assert _differs("", "anything") is True
+    assert _differs("OpenRouter/M", "openrouter/m") is False
+    assert _differs("other", "openrouter/m") is True
+
+
+def test_jev_helpers_prefer_named_answers_and_valid_scores():
+    payload = {"answers": {"other": {"choice": "a"}, "choice": {"choice": "b"}}}
+    assert _inner(payload)["choice"] == {"choice": "b"}
+    assert _inner({"answers": [1, 2]}) == {}
+    assert _probabilities({"probabilities": {"a": "high"}}, {}) == {"a": 0.0}
+
+
+def test_jev_chat_backend_failure_modes_stay_errors():
+    assert (
+        decide(
+            backend="chat-model",
+            question="q",
+            options=["a", "b"],
+            state={},
+            chat=None,
+        ).gate
+        == "error"
+    )
+
+    class Boom:
+        def ask(self, *args, **kwargs):
+            raise RuntimeError("down")
+
+    assert (
+        decide(
+            backend="chat-model",
+            question="q",
+            options=["a", "b"],
+            state={},
+            chat=Boom(),
+        ).gate
+        == "error"
+    )
+    assert (
+        decide(
+            backend="unknown-backend",
+            question="q",
+            options=["a", "b"],
+            state={},
+            api_key="k",
+        ).gate
+        == "error"
+    )
+    assert (
+        decide(
+            backend="jev-direct",
+            question="q",
+            options=["a", "b"],
+            state={},
+            api_key="",
+        ).gate
+        == "error"
+    )
+
+
+def test_chat_model_rejects_bad_structured_answers():
+    from types import SimpleNamespace
+
+    class BadChat:
+        def __init__(self, parsed, error=""):
+            self.parsed = parsed
+            self.error = error
+
+        def ask(self, *args, **kwargs):
+            return SimpleNamespace(
+                parsed=self.parsed, cost_usd=0.0, error=self.error
+            )
+
+    assert (
+        decide(
+            backend="chat-model",
+            question="q",
+            options=["a", "b"],
+            state={},
+            chat=BadChat(parsed="nope"),
+        ).gate
+        == "error"
+    )
+    assert (
+        decide(
+            backend="chat-model",
+            question="q",
+            options=["a", "b"],
+            state={},
+            chat=BadChat(parsed={"choice": "c"}, error=""),
+        ).gate
+        == "error"
+    )
+    assert (
+        decide(
+            backend="chat-model",
+            question="q",
+            options=["a", "b"],
+            state={},
+            chat=BadChat(parsed={}, error="boom"),
+        ).gate
+        == "error"
+    )
+
+
+def test_settings_coercion_helpers_reject_wrong_types():
+    from coach.settings import (
+        _as_bool,
+        _as_choice,
+        _as_confidence,
+        _as_float,
+        _as_int,
+        _as_model,
+    )
+
+    assert _as_bool(1, False) is False
+    assert _as_int(2.5, 7) == 7
+    assert _as_float("nan", 1.5) == 1.5
+    assert _as_choice("nope", "delivery_policy", "severity") == "severity"
+    assert _as_confidence("high") == 0.6
+    assert _as_model({"provider": "p", "model": 1}) is None
+
+
+def test_state_coercion_helpers_reject_bad_rows():
+    from coach.state import _as_float, _as_int, _calls, _dict_items
+
+    assert _as_int(True) == 0
+    assert _as_float(float("inf"), 2.0) == 2.0
+    assert _calls({"a": "x", "b": 2.0}) == {"a": 0, "b": 2}
+    assert _dict_items([{}, [], "x"]) == [{}]
+
+
+def test_state_save_and_load_survive_unrelated_failures(tmp_path, monkeypatch):
+    from coach.state import SessionState
+
+    store = Store(tmp_path)
+    state = SessionState(session_id="s", note="n")
+    assert store.save(state) is None
+    monkeypatch.setattr("pathlib.Path.is_file", lambda self: (_ for _ in ()).throw(OSError("gone")))
+    assert store.has("s") is False
+
+
+def test_command_grant_reports_host_failures(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    parent = types.ModuleType("hermes_cli")
+    parent.__path__ = []
+    config_module = types.ModuleType("hermes_cli.config")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("locked")
+
+    config_module.load_config = fail
+    config_module.save_config = fail
+    monkeypatch.setitem(sys.modules, "hermes_cli", parent)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", config_module)
+    monkeypatch.setattr(parent, "config", config_module, raising=False)
+    out = _plugin(tmp_path).command("grant")
+    assert "Could not grant" in out
+    assert "allow_provider_override" in out
+
+
+def test_status_reports_pause_last_error_and_spend(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin._toggle_pause()
+    state = plugin.store.load("current")
+    state.spend_usd = 1.25
+    state.last_error = "boom"
+    plugin.store.save(state)
+    out = plugin.command("status")
+    assert "Paused: yes" in out
+    assert "$1.25" in out
+    assert "boom" in out
+
+
+def test_send_pending_keeps_notes_when_delivery_fails(tmp_path):
+    from coach.findings import Finding
+
+    plugin = CoachPlugin(
+        llm=_ConsultLlm(),
+        store=Store(tmp_path),
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+        post=lambda text: None,
+        inject=lambda text: False,
+    )
+    plugin.deliver(
+        Finding("nit", "t", "b", "e", "f"), session_id="s", turn_id="t1"
+    )
+    assert "stay pending" in plugin._send_pending(session_id="s").lower()
+    assert plugin.store.load("s").pending != []
+
+
+def test_send_pending_reports_a_missing_channel(tmp_path):
+    plugin = CoachPlugin(
+        llm=_ConsultLlm(),
+        store=Store(tmp_path),
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+        post=lambda text: None,
+        inject=None,
+    )
+    plugin.deliver(
+        Finding("nit", "t", "b", "e", "f"), session_id="s", turn_id="t1"
+    )
+    assert "No injection channel" in plugin._send_pending(session_id="s")
+    assert plugin.store.load("s").pending != []
+
+
+def test_recent_log_skips_malformed_lines(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir(parents=True)
+    (logs / "s.jsonl").write_text(
+        "not json\n"
+        '{"at":"2026-01-01T00:00:00+00:00","title":"kept","body":"b",'
+        '"severity":"nit","session_id":"s"}\n',
+        encoding="utf-8",
+    )
+    plugin = CoachPlugin(
+        llm=_ConsultLlm(),
+        store=Store(tmp_path / "sessions"),
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+    )
+    out = plugin.command("log", session_id="s")
+    assert "kept" in out
+
+
+def test_manifest_contract_is_anchored_to_real_files():
+    from coach.plugin import ASK_SCHEMA as ask_schema
+    from coach.plugin import DECIDE_SCHEMA as decide_schema
+    from dashboard.plugin_api import router
+
+    assert set(ask_schema["properties"]) >= {"question", "intent", "context"}
+    assert set(decide_schema["properties"]) >= {"question", "options", "state"}
+    assert {getattr(route, "path", None) for route in router.routes} >= {
+        "/status",
+        "/config",
+        "/recent",
+        "/guidance",
+        "/permissions/grant",
+    }

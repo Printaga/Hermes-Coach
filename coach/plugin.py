@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from datetime import datetime, timezone
 import threading
@@ -32,6 +33,8 @@ from .ledger import append_turn, build_messages, tool_card
 from .settings import DEFAULTS, ModelChoice, Settings, load_settings
 from .state import Store
 from .worker import Worker
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "ASK_DESCRIPTION",

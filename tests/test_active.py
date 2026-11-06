@@ -6,7 +6,7 @@ from coach.plugin import CoachPlugin
 from coach.settings import load_settings
 from coach.state import Store
 from coach.worker import Worker
-from tests.test_plugin_ask import Llm
+from tests.support import ConsultLlm as Llm
 
 
 class FakeWorker:

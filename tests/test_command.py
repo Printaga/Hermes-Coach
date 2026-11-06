@@ -2,7 +2,7 @@
 from coach.plugin import CoachPlugin
 from coach.settings import load_settings
 from coach.state import Store
-from tests.test_plugin_ask import Llm
+from tests.support import ConsultLlm as Llm
 
 
 def _p(tmp_path):
@@ -44,7 +44,7 @@ def test_last_prints_the_advice_the_coach_gave(tmp_path):
     assert "No coach advice" in p.command("last", session_id="s1")
     p.tool_ask({"question": "Is the parser ok?"}, session_id="s1")
     out = p.command("last", session_id="s1")
-    assert "Consider extracting the parser." in out
+    assert "Advice body." in out
     assert "Is the parser ok?" in out
 
 
