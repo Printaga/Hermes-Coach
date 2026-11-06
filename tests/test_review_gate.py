@@ -94,7 +94,7 @@ def test_budget_soft_stop_skips_review(tmp_path):
     assert called == []
 
 
-def test_review_now_uses_a_twenty_second_deadline(tmp_path):
+def test_review_now_uses_a_bounded_deadline(tmp_path):
     llm = StructuredLlm(FINDING)
     p = _p(tmp_path, llm=llm)
     finding = p.review_now(
@@ -105,7 +105,7 @@ def test_review_now_uses_a_twenty_second_deadline(tmp_path):
         evidence="diff --git a/store.py",
     )
     assert finding is not None and finding.severity == "blocker"
-    assert llm.calls and llm.calls[0]["timeout"] == 20.0
+    assert llm.calls and llm.calls[0]["timeout"] == 16.0
 
 
 def test_non_blocker_is_reported_as_a_card(tmp_path):
@@ -157,6 +157,38 @@ def test_review_uses_the_last_user_message_as_request(tmp_path):
     p.on_pre_verify(session_id="s", turn_id="t1", final_response="done",
                     changed_paths=["a.py"], cwd=str(tmp_path))
     assert seen["request"] == "Add a retry cap"
+
+
+def test_the_gate_fits_inside_the_host_hook_timeout(tmp_path, monkeypatch):
+    """A 20 s review plus up to 8 s of git overran the host's 30 s hook timeout.
+
+    The host then skipped the callback, so one slow review silenced the gate.
+    """
+    import coach.plugin as plugin_mod
+
+    clock = iter([100.0, 100.0, 101.0])
+    monkeypatch.setattr(plugin_mod.time, "monotonic", lambda: next(clock, 101.0))
+    p = _p(tmp_path)
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    seen = {}
+    p.review_now = lambda **kw: seen.update(kw) or None
+    p.on_pre_verify(**PAY)
+    assert 0 < seen["timeout"] <= 16.0
+
+
+def test_the_gate_skips_the_model_when_evidence_used_the_window(tmp_path, monkeypatch):
+    import coach.plugin as plugin_mod
+
+    clock = iter([100.0, 100.0, 121.0, 121.0, 121.0])
+    monkeypatch.setattr(plugin_mod.time, "monotonic", lambda: next(clock, 121.0))
+    p = _p(tmp_path)
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+
+    def never(**kw):
+        raise AssertionError("no time left: the review must not start")
+
+    p.review_now = never
+    assert p.on_pre_verify(**PAY) is None
 
 
 def _concern():

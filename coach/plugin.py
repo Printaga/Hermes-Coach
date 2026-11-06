@@ -44,6 +44,13 @@ from .worker import Worker
 
 log = logging.getLogger(__name__)
 
+# The host kills a hook at 30 s and then skips that callback for a while, so a
+# slow review does not just lose its verdict: it silences the gate. Keep the
+# whole gate (evidence + model call + store writes) inside this budget.
+_GATE_BUDGET_S = 24.0
+_REVIEW_TIMEOUT_S = 16.0
+_GATE_MIN_REVIEW_S = 5.0
+
 __all__ = [
     "ASK_DESCRIPTION",
     "ASK_SCHEMA",
@@ -1173,6 +1180,7 @@ class CoachPlugin(CommandsMixin):
             return None
 
     def _pre_verify(self, data: Mapping[str, Any]) -> dict[str, str] | None:
+        started = time.monotonic()
         self.refresh_settings()
         if not self.settings.review_enabled or self._paused:
             return None
@@ -1208,6 +1216,13 @@ class CoachPlugin(CommandsMixin):
         evidence = self.collect_evidence(cwd, changed, base=base)
         if not evidence.strip():
             return None
+        left = _GATE_BUDGET_S - (time.monotonic() - started) - 1.5
+        if left < _GATE_MIN_REVIEW_S:
+            # Evidence collection already ate the window. A review started now
+            # would be killed by the host and take the hook down with it, so
+            # skip it: no verdict is better than a silenced gate.
+            log.info("coach: gate skipped, %.1fs left after evidence", left)
+            return None
         finding = self.review_now(
             session_id=session_id,
             turn_id=turn_id,
@@ -1215,6 +1230,7 @@ class CoachPlugin(CommandsMixin):
             claim=str(data.get("final_response") or ""),
             evidence=evidence,
             cwd=cwd,
+            timeout=min(_REVIEW_TIMEOUT_S, left),
         )
         if finding is None:
             return None
@@ -1260,6 +1276,7 @@ class CoachPlugin(CommandsMixin):
         claim: str,
         evidence: str,
         cwd: str = "",
+        timeout: float = _REVIEW_TIMEOUT_S,
     ) -> Finding | None:
         """Run the single structured Review call and record its spend."""
         state = self.store.load(session_id)
@@ -1289,7 +1306,7 @@ class CoachPlugin(CommandsMixin):
                 messages,
                 mode="review",
                 structured=True,
-                timeout=20.0,
+                timeout=float(timeout),
             )
             with self._store_lock:
                 # Re-load: the Active worker or another hook may have saved

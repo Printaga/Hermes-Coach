@@ -57,8 +57,11 @@ the runtime environment.
   never raise out of a handler.
 - Hooks are fail-open and bounded. `post_llm_call` queues work and returns; no
   hook may block or raise into a turn.
-- The Review hook runs under the host's 30 s `hook_callback_timeout`, so its
-  model call uses 20 s. Active and Consult use `worker_timeout_s`.
+- The Review hook runs under the host's 30 s `hook_callback_timeout`. The gate
+  keeps a 24 s budget (evidence up to 8 s, the review call 16 s) and skips the
+  review when the window is gone: a timed-out hook is not just a lost verdict,
+  the host then skips that callback and the gate goes silent. Active and
+  Consult use `worker_timeout_s`.
 - Settings are flat snake_case and default only in `coach/settings.py`. Do not
   add a `config_schema`: it makes the host add a duplicate "Agent settings" tab.
   `scripts/check-desktop-page.mjs` fails if a setting has no control on the page.
