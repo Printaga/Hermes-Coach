@@ -13,13 +13,17 @@ log = logging.getLogger(__name__)
 
 
 def register(ctx):
-    from .coach.plugin import (
-        ASK_DESCRIPTION,
-        ASK_SCHEMA,
-        DECIDE_DESCRIPTION,
-        DECIDE_SCHEMA,
-        build_plugin,
-    )
+    try:
+        from .coach.plugin import (
+            ASK_DESCRIPTION,
+            ASK_SCHEMA,
+            DECIDE_DESCRIPTION,
+            DECIDE_SCHEMA,
+            build_plugin,
+        )
+    except Exception:
+        log.exception("coach: could not import plugin")
+        return
 
     try:
         plugin = build_plugin(ctx)
@@ -28,15 +32,18 @@ def register(ctx):
         return
 
     register_tool = getattr(ctx, "register_tool", None)
+    # Handler names, resolved per item: one missing attribute must not stop
+    # the other tool, the command, or the hooks below.
     tools = (
-        ("coach_ask", ASK_SCHEMA, plugin.tool_ask, ASK_DESCRIPTION),
-        ("coach_decide", DECIDE_SCHEMA, plugin.tool_decide, DECIDE_DESCRIPTION),
+        ("coach_ask", ASK_SCHEMA, "tool_ask", ASK_DESCRIPTION),
+        ("coach_decide", DECIDE_SCHEMA, "tool_decide", DECIDE_DESCRIPTION),
     )
     if register_tool is None:
         log.warning("coach: host has no register_tool; coach tools unavailable")
     else:
-        for name, schema, handler, description in tools:
+        for name, schema, attr, description in tools:
             try:
+                handler = getattr(plugin, attr)
                 register_tool(
                     name, "coach", schema, handler, description=description
                 )
@@ -59,23 +66,24 @@ def register(ctx):
     register_hook = getattr(ctx, "register_hook", None)
     if register_hook is None:
         log.warning("coach: host has no register_hook; ambient delivery unavailable")
-        return
+    else:
+        hooks = (
+            ("pre_verify", "on_pre_verify"),
+            ("post_tool_call", "on_post_tool_call"),
+            ("post_llm_call", "on_post_llm_call"),
+            ("pre_llm_call", "on_pre_llm_call"),
+            ("subagent_start", "on_subagent_start"),
+            ("subagent_stop", "on_subagent_stop"),
+            ("on_session_end", "on_session_end"),
+        )
+        for name, attr in hooks:
+            try:
+                register_hook(name, getattr(plugin, attr))
+            except Exception:
+                log.exception("coach: could not register %s", name)
 
-    hooks = (
-        ("pre_verify", plugin.on_pre_verify),
-        ("post_tool_call", plugin.on_post_tool_call),
-        ("post_llm_call", plugin.on_post_llm_call),
-        ("pre_llm_call", plugin.on_pre_llm_call),
-        ("subagent_start", plugin.on_subagent_start),
-        ("subagent_stop", plugin.on_subagent_stop),
-        ("on_session_end", plugin.on_session_end),
-    )
-    for name, handler in hooks:
-        try:
-            register_hook(name, handler)
-        except Exception:
-            log.exception("coach: could not register %s", name)
-
+    # Unload cleanup registers even when the host has no hook surface: the
+    # worker thread must not outlive the plugin.
     on_unload = getattr(ctx, "on_unload", None)
     if callable(on_unload):
         try:

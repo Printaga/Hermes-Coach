@@ -29,7 +29,7 @@ from .evidence import collect
 from .findings import Finding
 from .guidance import Guidance
 from .jev import decide
-from .ledger import append_turn, build_messages, tool_card
+from .ledger import _MAX_TURNS, append_turn, build_messages, tool_card
 from .settings import DEFAULTS, ModelChoice, Settings, load_settings
 from .state import Store
 from .worker import Worker
@@ -298,8 +298,10 @@ def _result_text(result: Any) -> str:
 
 
 def _turn_digest(turn: Mapping[str, Any]) -> str:
+    # The digest covers content only, never the turn id: the same work seen
+    # twice must not earn two reviews, and a changed turn id alone must not
+    # defeat the duplicate-review guard.
     parts = [
-        str(turn.get("turn_id") or ""),
         str(turn.get("user") or ""),
         str(turn.get("assistant") or ""),
     ]
@@ -341,6 +343,26 @@ def _record_turn(state: Any, turn: dict[str, Any]) -> None:
         last.update(turn)
     else:
         state.ledger.append(turn)
+    if len(state.ledger) > _MAX_TURNS:
+        del state.ledger[: len(state.ledger) - _MAX_TURNS]
+        _prune_calls(state)
+
+
+def _prune_calls(state: Any) -> None:
+    """Drop per-turn counters for turns no longer on the ledger.
+
+    ``state.calls`` grows one entry per turn (call caps, tool counts, holds);
+    without eviction a long session bloats the file on every save.
+    """
+    turn_ids = {
+        str(record.get("turn_id"))
+        for record in state.ledger
+        if isinstance(record, dict)
+    }
+    for key in list(state.calls):
+        suffix = str(key).rsplit(":", 1)[-1]
+        if str(key) not in turn_ids and suffix not in turn_ids:
+            del state.calls[key]
 
 
 def _find_turn(state: Any, turn_id: str) -> dict[str, Any] | None:
@@ -444,6 +466,11 @@ class CoachPlugin:
         self._child_sessions: set[str] = set()
         self._queued: dict[tuple[str, str], None] = {}
         self._queued_lock = threading.Lock()
+        # Guards every store.load() -> mutate -> store.save() sequence. The
+        # review worker and the host hooks run on different threads; without
+        # this, a review that holds a stale state across its network call
+        # overwrites concurrent host updates (spend, holds, pending notes).
+        self._store_lock = threading.RLock()
         self._turn_tools: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._paused = False
 
@@ -470,11 +497,12 @@ class CoachPlugin:
         session_id = str(data.get("session_id") or "")
         if session_id:
             try:
-                state = self.store.load(session_id)
-                if state.last_primary_model != model:
-                    state.last_primary_model = model
-                    state.updated_at = self.clock()
-                    self.store.save(state)
+                with self._store_lock:
+                    state = self.store.load(session_id)
+                    if state.last_primary_model != model:
+                        state.last_primary_model = model
+                        state.updated_at = self.clock()
+                        self.store.save(state)
             except Exception:
                 pass
 
@@ -516,6 +544,12 @@ class CoachPlugin:
         self, payload: Mapping[str, Any] | None = None, **kw: Any
     ) -> None:
         """Drop the oldest session files once a session closes."""
+        data = _payload(payload, kw)
+        session_id = str(data.get("session_id") or "")
+        if session_id:
+            # Buffered tool cards for the closed session will never be read.
+            for key in [k for k in self._turn_tools if k[0] == session_id]:
+                del self._turn_tools[key]
         try:
             self.store.prune()
         except Exception:
@@ -881,25 +915,37 @@ class CoachPlugin:
         return "\n".join(lines)
 
     def _send_pending(self, session_id: str = "current") -> str:
-        state = self.store.load(session_id)
-        notes = [note for note in state.pending if isinstance(note, Mapping)]
-        if not notes:
-            return "No pending coach notes."
+        with self._store_lock:
+            state = self.store.load(session_id)
+            notes = [note for note in state.pending if isinstance(note, Mapping)]
+            if not notes:
+                return "No pending coach notes."
         if self.inject is None:
             return "No injection channel available; notes stay pending."
         sent = 0
+        sent_texts: set[str] = set()
         remaining: list[dict[str, Any]] = []
         for note in notes:
             text = str(note.get("text") or "").strip()
             if text and self._inject(text):
                 sent += 1
+                sent_texts.add(text)
             else:
                 remaining.append(dict(note))
         if not sent:
             return "Could not deliver pending notes; they stay pending."
-        state.pending = remaining
-        state.updated_at = self.clock()
-        self.store.save(state)
+        with self._store_lock:
+            # Re-load and drop by text: another thread may have appended notes
+            # while the injections above were in flight.
+            state = self.store.load(session_id)
+            state.pending = [
+                note
+                for note in state.pending
+                if not isinstance(note, Mapping)
+                or str(note.get("text") or "").strip() not in sent_texts
+            ]
+            state.updated_at = self.clock()
+            self.store.save(state)
         return f"Delivered {sent} pending coach note(s)."
 
     def _toggle_pause(self) -> str:
@@ -936,44 +982,52 @@ class CoachPlugin:
         """Route one finding to a card, a pending note, or an injection."""
         if finding is None:
             return
-        state = self.store.load(session_id)
-        decision = route(
-            finding,
-            self.settings,
-            surface=self._surface_kind(),
-            holds_used=state.holds,
-        )
-        if decision == "drop":
-            return
+        with self._store_lock:
+            state = self.store.load(session_id)
+            decision = route(
+                finding,
+                self.settings,
+                surface=self._surface_kind(),
+                holds_used=state.holds,
+            )
+            if decision == "drop":
+                return
         if self.settings.delivery_show_cards:
             self._post(format_card(finding))
-        if decision == "corrective" and self._inject(format_corrective(finding)):
-            state.holds += 1
+        injected = bool(
+            decision == "corrective" and self._inject(format_corrective(finding))
+        )
+        with self._store_lock:
+            # Re-load: the card post and injection above are host calls that
+            # may run while another thread records a turn.
+            state = self.store.load(session_id)
+            state.updated_at = self.clock()
+            if injected:
+                state.holds += 1
+                self.store.save(state)
+                return
+
+            ttl = max(0, int(self.settings.delivery_note_ttl_turns))
+            state.pending = [
+                note
+                for note in state.pending
+                if isinstance(note, Mapping)
+                and _as_turn(note.get("expires_at_turn")) >= state.note_seq
+            ]
+            state.pending.append(
+                {
+                    "turn_id": str(turn_id or ""),
+                    "expires_at_turn": int(state.note_seq) + ttl,
+                    "text": format_ambient(finding, turn_id),
+                    "severity": finding.severity,
+                    "title": finding.title,
+                    "body": finding.body,
+                    "evidence": finding.evidence,
+                    "fix": finding.fix,
+                }
+            )
             state.updated_at = self.clock()
             self.store.save(state)
-            return
-
-        ttl = max(0, int(self.settings.delivery_note_ttl_turns))
-        state.pending = [
-            note
-            for note in state.pending
-            if isinstance(note, Mapping)
-            and _as_turn(note.get("expires_at_turn")) >= state.note_seq
-        ]
-        state.pending.append(
-            {
-                "turn_id": str(turn_id or ""),
-                "expires_at_turn": int(state.note_seq) + ttl,
-                "text": format_ambient(finding, turn_id),
-                "severity": finding.severity,
-                "title": finding.title,
-                "body": finding.body,
-                "evidence": finding.evidence,
-                "fix": finding.fix,
-            }
-        )
-        state.updated_at = self.clock()
-        self.store.save(state)
 
     def on_pre_llm_call(
         self, payload: Mapping[str, Any] | None = None, **kw: Any
@@ -983,21 +1037,22 @@ class CoachPlugin:
         data = _payload(payload, kw)
         self._remember_primary(data)
         session_id = str(data.get("session_id") or "current")
-        state = self.store.load(session_id)
-        state.note_seq = _as_turn(state.note_seq) + 1
+        with self._store_lock:
+            state = self.store.load(session_id)
+            state.note_seq = _as_turn(state.note_seq) + 1
 
-        delivered: list[str] = []
-        for note in state.pending:
-            if not isinstance(note, Mapping):
-                continue
-            if _as_turn(note.get("expires_at_turn")) < state.note_seq:
-                continue
-            text = str(note.get("text") or "").strip()
-            if text:
-                delivered.append(text)
-        state.pending = []
-        state.updated_at = self.clock()
-        self.store.save(state)
+            delivered: list[str] = []
+            for note in state.pending:
+                if not isinstance(note, Mapping):
+                    continue
+                if _as_turn(note.get("expires_at_turn")) < state.note_seq:
+                    continue
+                text = str(note.get("text") or "").strip()
+                if text:
+                    delivered.append(text)
+            state.pending = []
+            state.updated_at = self.clock()
+            self.store.save(state)
 
         if not delivered:
             return None
@@ -1026,12 +1081,18 @@ class CoachPlugin:
             max_chars=self.settings.ledger_max_tool_result_chars,
         )
         self._turn_tools.setdefault((session_id, turn_id), []).append(card)
+        if len(self._turn_tools) > 500:
+            # Hooks fire per tool call; if session end is missed, drop the
+            # oldest buffered cards instead of growing without bound.
+            for stale in list(self._turn_tools)[: len(self._turn_tools) - 500]:
+                del self._turn_tools[stale]
         try:
-            state = self.store.load(session_id)
-            tool_key = f"tools:{turn_id}"
-            state.calls[tool_key] = state.calls.get(tool_key, 0) + 1
-            state.updated_at = self.clock()
-            self.store.save(state)
+            with self._store_lock:
+                state = self.store.load(session_id)
+                tool_key = f"tools:{turn_id}"
+                state.calls[tool_key] = state.calls.get(tool_key, 0) + 1
+                state.updated_at = self.clock()
+                self.store.save(state)
         except Exception:
             pass
 
@@ -1048,12 +1109,13 @@ class CoachPlugin:
         if not self.settings.active_enabled and not self.settings.review_enabled:
             return
         try:
-            seen = self.store.load(session_id)
-            message = str(data.get("user_message") or data.get("user") or "").strip()
-            if message:
-                seen.last_user_message = message[:4000]
-                seen.updated_at = self.clock()
-                self.store.save(seen)
+            with self._store_lock:
+                seen = self.store.load(session_id)
+                message = str(data.get("user_message") or data.get("user") or "").strip()
+                if message:
+                    seen.last_user_message = message[:4000]
+                    seen.updated_at = self.clock()
+                    self.store.save(seen)
         except Exception:
             pass
         if not self.settings.active_enabled:
@@ -1065,17 +1127,19 @@ class CoachPlugin:
                 data.get("assistant_response") or data.get("assistant") or ""
             ),
             "tools": tools,
+            "cwd": str(self.cwd() or os.getcwd()),
         }
         turn["digest"] = _turn_digest(turn)
         try:
-            state = self.store.load(session_id)
-            _record_turn(state, turn)
-            worker = getattr(self, "worker", None)
-            due = worker is not None and self.should_review(state, turn, self.settings)
-            state.updated_at = self.clock()
-            # Persist before submitting: the worker loads the state itself, and
-            # a submit first means it can find no turn and drop the review.
-            self.store.save(state)
+            with self._store_lock:
+                state = self.store.load(session_id)
+                _record_turn(state, turn)
+                worker = getattr(self, "worker", None)
+                due = worker is not None and self.should_review(state, turn, self.settings)
+                state.updated_at = self.clock()
+                # Persist before submitting: the worker loads the state itself, and
+                # a submit first means it can find no turn and drop the review.
+                self.store.save(state)
             if due:
                 key = (session_id, turn_id)
                 with self._queued_lock:
@@ -1126,45 +1190,54 @@ class CoachPlugin:
         tid = str(turn_id or "current")
         state = None
         try:
-            state = self.store.load(sid)
-            if self._paused:
-                return
-            turn = _find_turn(state, tid)
-            if turn is None:
-                return
-            if (
-                self.settings.budget_on_exceed in {"soft", "hard"}
-                and state.spend_usd >= self.settings.budget_session_usd
-            ):
-                return
-            digest = str(turn.get("digest") or _turn_digest(turn))
-            cwd = str(turn.get("cwd") or os.getcwd())
-            guidance = (
-                self.guidance.system_block(cwd)
-                if self.settings.guidance_enabled
-                else ""
-            )
-            messages = build_messages(
-                system=_SYSTEM,
-                guidance=guidance,
-                state=state,
-                question=None,
-                max_tokens=self.settings.ledger_max_tokens,
-                tool_result_chars=self.settings.ledger_max_tool_result_chars,
-                recent_turns=self.settings.ledger_max_recent_turns,
-            )
+            with self._store_lock:
+                state = self.store.load(sid)
+                if self._paused:
+                    return
+                turn = _find_turn(state, tid)
+                if turn is None:
+                    return
+                over_budget = (
+                    self.settings.budget_on_exceed in {"soft", "hard"}
+                    and state.spend_usd >= self.settings.budget_session_usd
+                )
+                if over_budget:
+                    return
+                digest = str(turn.get("digest") or _turn_digest(turn))
+                cwd = str(turn.get("cwd") or self.cwd() or os.getcwd())
+                guidance = (
+                    self.guidance.system_block(cwd)
+                    if self.settings.guidance_enabled
+                    else ""
+                )
+                messages = build_messages(
+                    system=_SYSTEM,
+                    guidance=guidance,
+                    state=state,
+                    question=None,
+                    max_tokens=self.settings.ledger_max_tokens,
+                    tool_result_chars=self.settings.ledger_max_tool_result_chars,
+                    recent_turns=self.settings.ledger_max_recent_turns,
+                )
             reply = self.coach.ask(
                 messages,
                 mode="active",
                 structured=True,
                 timeout=float(self.settings.worker_timeout_s),
             )
-            state.spend_usd = round(state.spend_usd + reply.cost_usd, 9)
-            turn["reviewed"] = True
-            turn["digest"] = digest
-            state.last_error = reply.error
-            state.updated_at = self.clock()
-            self.store.save(state)
+            with self._store_lock:
+                # Re-load: the host may have recorded turns, holds, or spend
+                # while the model call was in flight; applying onto the stale
+                # copy would silently discard those updates.
+                state = self.store.load(sid)
+                turn = _find_turn(state, tid)
+                state.spend_usd = round(state.spend_usd + reply.cost_usd, 9)
+                if turn is not None:
+                    turn["reviewed"] = True
+                    turn["digest"] = digest
+                state.last_error = reply.error
+                state.updated_at = self.clock()
+                self.store.save(state)
             self._log_review(sid, tid, reply)
             if not reply.error:
                 self.deliver(reply.finding, session_id=sid, turn_id=tid)
@@ -1203,6 +1276,11 @@ class CoachPlugin:
                 "at": _now_iso(),
             }
             path = root / f"{_log_name(session_id)}.jsonl"
+            path.touch(mode=0o600, exist_ok=True)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             _trim_log(path)
@@ -1229,6 +1307,11 @@ class CoachPlugin:
                 "at": _now_iso(),
             }
             path = root / f"{_log_name(session_id)}.jsonl"
+            path.touch(mode=0o600, exist_ok=True)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             _trim_log(path)
@@ -1257,17 +1340,18 @@ class CoachPlugin:
 
         session_id = str(data.get("session_id") or "current")
         turn_id = str(data.get("turn_id") or "current")
-        state = self.store.load(session_id)
-        if (
-            self.settings.budget_on_exceed in {"soft", "hard"}
-            and state.spend_usd >= self.settings.budget_session_usd
-        ):
-            return None
+        with self._store_lock:
+            state = self.store.load(session_id)
+            if (
+                self.settings.budget_on_exceed in {"soft", "hard"}
+                and state.spend_usd >= self.settings.budget_session_usd
+            ):
+                return None
 
-        holds_key = f"review_holds:{turn_id}"
-        used = state.calls.get(holds_key, 0)
-        if used >= max(0, int(self.settings.review_max_holds)):
-            return None
+            holds_key = f"review_holds:{turn_id}"
+            used = state.calls.get(holds_key, 0)
+            if used >= max(0, int(self.settings.review_max_holds)):
+                return None
 
         cwd = str(data.get("cwd") or self.cwd())
         evidence = self.collect_evidence(cwd, changed)
@@ -1287,12 +1371,14 @@ class CoachPlugin:
             finding.severity == "blocker"
             and self.settings.review_authority == "hold_once"
         ):
-            # review_now saved its own copy with the spend added; reload so the
-            # hold counter does not overwrite that update.
-            state = self.store.load(session_id)
-            state.calls[holds_key] = state.calls.get(holds_key, used) + 1
-            state.updated_at = self.clock()
-            self.store.save(state)
+            # review_now saved its own copy with the spend added; reload under
+            # the store lock so the hold counter does not overwrite that
+            # update or any concurrent host update.
+            with self._store_lock:
+                state = self.store.load(session_id)
+                state.calls[holds_key] = state.calls.get(holds_key, used) + 1
+                state.updated_at = self.clock()
+                self.store.save(state)
             return {"action": "continue", "message": _hold_message(finding)}
 
         self._post(format_card(finding))
@@ -1315,7 +1401,7 @@ class CoachPlugin:
         """Run the single structured Review call and record its spend."""
         state = self.store.load(session_id)
         try:
-            root = cwd or os.getcwd()
+            root = str(cwd or self.cwd() or os.getcwd())
             guidance = (
                 self.guidance.system_block(root)
                 if self.settings.guidance_enabled
@@ -1341,10 +1427,14 @@ class CoachPlugin:
                 structured=True,
                 timeout=20.0,
             )
-            state.spend_usd = round(state.spend_usd + reply.cost_usd, 9)
-            state.last_error = reply.error
-            state.updated_at = self.clock()
-            self.store.save(state)
+            with self._store_lock:
+                # Re-load: the Active worker or another hook may have saved
+                # while the review call was in flight.
+                state = self.store.load(session_id)
+                state.spend_usd = round(state.spend_usd + reply.cost_usd, 9)
+                state.last_error = reply.error
+                state.updated_at = self.clock()
+                self.store.save(state)
             self._log_review(session_id, turn_id, reply)
             if reply.error:
                 return None
@@ -1399,31 +1489,35 @@ class CoachPlugin:
         if not self.settings.allow_in_subagents and self._is_child(session_id):
             return _error("child_session")
 
-        state = self.store.load(session_id)
-        if state.last_primary_model:
-            self.coach.primary_model = state.last_primary_model
-        if (
-            self.settings.budget_on_exceed == "hard"
-            and state.spend_usd >= self.settings.budget_session_usd
-        ):
-            return _error("budget_exhausted")
+        with self._store_lock:
+            state = self.store.load(session_id)
+            if state.last_primary_model:
+                self.coach.primary_model = state.last_primary_model
+            if (
+                self.settings.budget_on_exceed == "hard"
+                and state.spend_usd >= self.settings.budget_session_usd
+            ):
+                return _error("budget_exhausted")
 
-        if not self.settings.is_configured():
-            return _error(_error_text("unconfigured"))
+            if not self.settings.is_configured():
+                return _error(_error_text("unconfigured"))
 
-        turn_id = str(args.get("turn_id") or "current")
-        used = state.calls.get(turn_id, 0)
-        if used >= self.settings.consult_max_calls_per_turn:
-            return _error("call_cap")
+            turn_id = str(args.get("turn_id") or "current")
+            used = state.calls.get(turn_id, 0)
+            if used >= self.settings.consult_max_calls_per_turn:
+                return _error("call_cap")
 
-        state.calls[turn_id] = used + 1
-        state.updated_at = self.clock()
-        self.store.save(state)  # count the attempt even if the call fails
+            state.calls[turn_id] = used + 1
+            state.updated_at = self.clock()
+            self.store.save(state)  # count the attempt even if the call fails
         prompt = question
         context = str(args.get("context") or "").strip()
         if context:
             prompt = f"{question}\n\nContext:\n{context}"
-        cwd = str(args.get("cwd") or os.getcwd())
+        # Session-aware project dir: the model's working directory may differ
+        # from this process's cwd in multi-session hosts. Model-supplied paths
+        # are never trusted for the working directory.
+        cwd = str(self.cwd() or os.getcwd())
         guidance = (
             self.guidance.system_block(cwd) if self.settings.guidance_enabled else ""
         )
@@ -1442,30 +1536,36 @@ class CoachPlugin:
             structured=False,
             timeout=float(self.settings.worker_timeout_s),
         )
-        state.spend_usd = round(state.spend_usd + reply.cost_usd, 9)
-        if reply.error:
-            self.store.save(state)
-            return _error(_error_text(reply.error), spend_usd=state.spend_usd)
+        with self._store_lock:
+            # Re-load: the Active worker may have saved while the consult
+            # call was in flight; the attempt counter was already persisted
+            # above, so only spend and history are applied here.
+            state = self.store.load(session_id)
+            state.spend_usd = round(state.spend_usd + reply.cost_usd, 9)
+            if reply.error:
+                state.updated_at = self.clock()
+                self.store.save(state)
+                return _error(_error_text(reply.error), spend_usd=state.spend_usd)
 
-        append_turn(
-            state,
-            turn_id=turn_id,
-            user=prompt,
-            assistant=reply.text,
-            tools=[],
-        )
-        entry = {
-            "question": question,
-            "text": reply.text,
-            "intent": intent,
-            "provider": reply.provider,
-            "model": reply.model,
-            "at": _now_iso(),
-        }
-        state.advice = [*state.advice, entry][-_ADVICE_KEEP:]
-        state.last_advice = entry
-        state.updated_at = self.clock()
-        self.store.save(state)
+            append_turn(
+                state,
+                turn_id=turn_id,
+                user=prompt,
+                assistant=reply.text,
+                tools=[],
+            )
+            entry = {
+                "question": question,
+                "text": reply.text,
+                "intent": intent,
+                "provider": reply.provider,
+                "model": reply.model,
+                "at": _now_iso(),
+            }
+            state.advice = [*state.advice, entry][-_ADVICE_KEEP:]
+            state.last_advice = entry
+            state.updated_at = self.clock()
+            self.store.save(state)
         return {
             "ok": True,
             "advice": reply.text,
@@ -1514,21 +1614,22 @@ class CoachPlugin:
         if not self.settings.allow_in_subagents and self._is_child(session_id):
             return _error("child_session")
 
-        state = self.store.load(session_id)
-        if (
-            self.settings.budget_on_exceed in {"soft", "hard"}
-            and state.spend_usd >= self.settings.budget_session_usd
-        ):
-            return _error("budget_exhausted")
+        with self._store_lock:
+            state = self.store.load(session_id)
+            if (
+                self.settings.budget_on_exceed in {"soft", "hard"}
+                and state.spend_usd >= self.settings.budget_session_usd
+            ):
+                return _error("budget_exhausted")
 
-        turn_id = str(args.get("turn_id") or "current")
-        key = f"decide:{turn_id}"
-        used = state.calls.get(key, 0)
-        if used >= self.settings.decide_max_calls_per_turn:
-            return _error("call_cap")
-        state.calls[key] = used + 1
-        state.updated_at = self.clock()
-        self.store.save(state)  # count the attempt even if the call fails
+            turn_id = str(args.get("turn_id") or "current")
+            key = f"decide:{turn_id}"
+            used = state.calls.get(key, 0)
+            if used >= self.settings.decide_max_calls_per_turn:
+                return _error("call_cap")
+            state.calls[key] = used + 1
+            state.updated_at = self.clock()
+            self.store.save(state)  # count the attempt even if the call fails
 
         backend = self.settings.decide_backend
         if backend == "jev-openrouter":
@@ -1551,24 +1652,28 @@ class CoachPlugin:
             min_confidence=self.settings.decide_min_confidence,
             chat=self.coach,
         )
-        state.spend_usd = round(state.spend_usd + decision.cost_usd, 9)
-        state.updated_at = self.clock()
-        if decision.gate == "error":
-            state.last_error = decision.rationale
-            self.store.save(state)
-            return _error(decision.rationale, spend_usd=state.spend_usd)
+        with self._store_lock:
+            # Re-load: the Active worker may have saved while the decide call
+            # was in flight; the attempt counter was persisted above.
+            state = self.store.load(session_id)
+            state.spend_usd = round(state.spend_usd + decision.cost_usd, 9)
+            state.updated_at = self.clock()
+            if decision.gate == "error":
+                state.last_error = decision.rationale
+                self.store.save(state)
+                return _error(decision.rationale, spend_usd=state.spend_usd)
 
-        state.last_error = ""
-        state.last_decision = {
-            "question": question,
-            "decision": decision.decision,
-            "confidence": decision.confidence,
-            "gate": decision.gate,
-            "rationale": decision.rationale,
-            "backend": backend,
-            "at": _now_iso(),
-        }
-        self.store.save(state)
+            state.last_error = ""
+            state.last_decision = {
+                "question": question,
+                "decision": decision.decision,
+                "confidence": decision.confidence,
+                "gate": decision.gate,
+                "rationale": decision.rationale,
+                "backend": backend,
+                "at": _now_iso(),
+            }
+            self.store.save(state)
         self._log_decision(session_id, turn_id, decision, backend)
         return {
             "ok": True,
@@ -1609,13 +1714,17 @@ def _with_host_ids(args: Any, kw: Mapping[str, Any]) -> dict[str, Any]:
     The dispatcher passes ``session_id`` and ``task_id`` as keyword arguments,
     not inside ``args``. Without this the plugin keys every call on "current":
     one shared state file, and a per-turn cap that never resets.
+
+    The dispatcher wins over ``args``: ``args`` is model-controlled JSON, and
+    letting the model pick the session would let it read another session's
+    state, dodge per-turn call caps, and spread spend across sessions.
     """
     merged: dict[str, Any] = dict(args) if isinstance(args, Mapping) else {}
     session = kw.get("session_id")
-    if session and not merged.get("session_id"):
+    if session:
         merged["session_id"] = str(session)
     task = kw.get("task_id")
-    if task and not merged.get("turn_id"):
+    if task:
         merged["turn_id"] = str(task)
     return merged
 

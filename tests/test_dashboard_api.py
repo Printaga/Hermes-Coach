@@ -1,4 +1,8 @@
 # tests/test_dashboard_api.py
+import json
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 from dashboard.plugin_api import router, app_for_tests
 
@@ -79,3 +83,50 @@ def test_recent_can_filter_one_session(tmp_path):
     client = TestClient(app_for_tests(home=tmp_path))
     rows = client.get("/recent", params={"session": "s1"}).json()["reviews"]
     assert [row["title"] for row in rows] == ["one"]
+
+
+def test_get_guidance_does_not_follow_symlinks(tmp_path):
+    from dashboard.plugin_api import _read_guidance
+
+    target = tmp_path / "real.txt"
+    target.write_text("secret", encoding="utf-8")
+    link = tmp_path / "COACH.md"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    assert _read_guidance(link, root=tmp_path) == ""
+
+
+def test_get_guidance_rejects_paths_outside_the_project(tmp_path):
+    from dashboard.plugin_api import _read_guidance
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    assert _read_guidance(outside, root=tmp_path / "project") == ""
+    assert _read_guidance(outside, root=tmp_path) == "secret"
+
+
+def test_recent_returns_only_the_tail_of_large_logs(tmp_path):
+    logs = tmp_path / "coach" / "logs"
+    logs.mkdir(parents=True)
+    with (logs / "big.jsonl").open("w", encoding="utf-8") as handle:
+        for index in range(200):
+            handle.write(
+                json.dumps(
+                    {
+                        "kind": "review",
+                        "session_id": "s",
+                        "turn_id": "t",
+                        "severity": "nit",
+                        "title": f"note {index}",
+                        "at": f"2026-11-06T00:00:{index:02d}",
+                    }
+                )
+                + "\n"
+            )
+    client = TestClient(app_for_tests(home=tmp_path))
+    payload = client.get("/recent", params={"limit": 5}).json()
+    assert [row["title"] for row in payload["reviews"]] == [
+        f"note {index}" for index in (199, 198, 197, 196, 195)
+    ]

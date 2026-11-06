@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import sys
+from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -210,8 +211,14 @@ def _guidance_target(home: Path, scope: str, cwd: str) -> tuple[Path, Path | Non
     return home / "coach" / _GLOBAL_FILE, None
 
 
-def _read_guidance(path: Path) -> str:
+def _read_guidance(path: Path, *, root: Path | None = None) -> str:
+    # Reads mirror the write-time guards: a planted symlink (or a path that
+    # resolves outside the project root) must not expose arbitrary files.
     try:
+        if path.is_symlink():
+            return ""
+        if root is not None and path.parent.resolve() != Path(root).resolve():
+            return ""
         return path.read_text(encoding="utf-8", errors="replace")[
             :_GUIDANCE_WRITE_MAX
         ]
@@ -392,10 +399,13 @@ def get_recent(
         paths = []
     for path in paths:
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            # Tail only: full-file reads are O(file size) per request, and
+            # logs grow without bound. A deque keeps at most `limit` lines.
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                tail = deque(handle, maxlen=max(1, limit))
         except OSError:
             continue
-        for line in lines[-limit:]:
+        for line in tail:
             try:
                 record = json.loads(line)
             except ValueError:
@@ -421,7 +431,10 @@ def get_guidance(
     home = _home(request)
     path, project = _guidance_target(home, name, cwd)
     return _guidance_payload(
-        name, str(project) if project is not None else "", path, _read_guidance(path)
+        name,
+        str(project) if project is not None else "",
+        path,
+        _read_guidance(path, root=project),
     )
 
 

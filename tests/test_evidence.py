@@ -10,7 +10,7 @@ def test_untracked_files_are_included(tmp_path):
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        if argv[:2] == ["git", "diff"]:
+        if "diff" in argv:
             return subprocess.CompletedProcess(argv, 0, "", "")
         return subprocess.CompletedProcess(argv, 0, "?? new.py\0", "")
 

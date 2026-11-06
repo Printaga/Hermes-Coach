@@ -45,3 +45,51 @@ def test_has_reports_a_known_session(tmp_path):
     assert store.has("s1") is False
     store.save(store.load("s1"))
     assert store.has("s1") is True
+
+
+def test_unreadable_file_names_the_cause_in_last_error(tmp_path):
+    store = Store(tmp_path)
+    path = store._path("denied")
+    path.write_text('{"session_id": "denied"}', encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        state = store.load("denied")
+    finally:
+        path.chmod(0o600)
+    assert state.session_id == "denied"
+    assert "PermissionError" in state.last_error
+    assert state.last_error != "state reset"
+
+
+def test_corrupt_files_are_skipped_by_listings_not_surfaced_as_ids(tmp_path):
+    store = Store(tmp_path)
+    good = store.load("s1")
+    store.save(good)
+    corrupt = store._path("bad")
+    corrupt.write_text("{nope", encoding="utf-8")
+    assert store.sessions_on_disk() == ["s1"]
+    assert store.sessions_by_recency() == ["s1"]
+    assert store.spend_total() == 0.0
+
+
+def test_missing_session_id_is_skipped_by_listings(tmp_path):
+    store = Store(tmp_path)
+    store.save(store.load("s1"))
+    store._path("anon").write_text('{"ledger": []}', encoding="utf-8")
+    assert store.sessions_on_disk() == ["s1"]
+
+
+def test_prune_sweeps_stale_tmp_files(tmp_path):
+    store = Store(tmp_path)
+    store.save(store.load("s1"))
+    stale = tmp_path / ".s1-abc123.tmp"
+    stale.write_text("partial", encoding="utf-8")
+    old = 7200.0
+    import os as _os
+
+    _os.utime(stale, (old, old))
+    fresh = tmp_path / ".s1-def456.tmp"
+    fresh.write_text("partial", encoding="utf-8")
+    store.prune()
+    assert not stale.exists()
+    assert fresh.exists()

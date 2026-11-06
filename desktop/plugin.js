@@ -54,7 +54,7 @@ const SECTION_TITLE = {
 
 function messageOf(error) {
   if (error && error.message) return String(error.message)
-  return String(error == null ? "Unknown error" : error)
+  return String(error === null || error === undefined ? "Unknown error" : error)
 }
 
 function unwrap(response) {
@@ -171,12 +171,18 @@ function useSettings(ctx) {
   }
 
   // One PUT at a time: overlapping saves could land out of order.
+  // Reloads go through the same chain: a reload racing a save must not
+  // overwrite fresh config with its own older fetch.
   const save = (key, value) => {
     chain.current = chain.current.then(() => write(key, value)).catch(() => {})
     return chain.current
   }
+  const orderedReload = () => {
+    chain.current = chain.current.then(() => reload()).catch(() => {})
+    return chain.current
+  }
 
-  return { config, status, error, busy, reload, save }
+  return { config, status, error, busy, reload: orderedReload, save }
 }
 
 // ---------------------------------------------------------------- primitives
@@ -256,6 +262,8 @@ function TextField(props) {
   }, [props.value])
   const commit = () => {
     const next = String(draft).trim()
+    // Sync the draft to the trimmed value so the input shows what was kept.
+    if (next !== String(draft)) setDraft(next)
     if (next !== String(props.value ?? "")) props.onChange(next)
   }
   return h(
@@ -291,7 +299,11 @@ function NumberField(props) {
     }
     const min = props.min ?? Number.NEGATIVE_INFINITY
     const max = props.max ?? Number.POSITIVE_INFINITY
-    props.onChange(Math.min(max, Math.max(min, parsed)))
+    const clamped = Math.min(max, Math.max(min, parsed))
+    // Sync the draft to the clamped value so the input shows what was kept,
+    // not the out-of-range number, before the config round-trip lands.
+    setDraft(String(clamped))
+    if (clamped !== Number(props.value)) props.onChange(clamped)
   }
   return h(
     Field,
@@ -788,17 +800,35 @@ function GuidancePage(props) {
   }, [scope, cwd])
 
   const save = async () => {
-    if (loading) return
+    if (loading) {
+      setNotice("Still loading guidance — try again in a moment.")
+      return
+    }
+    // Capture what the user sees now: if the scope or cwd changes while the
+    // PUT is in flight, the result below must not overwrite the new editor.
+    const id = seq.current
+    const saveScope = scope
+    const saveCwd = cwd
+    const saveText = text
     setSaving(true)
     setNotice("")
     try {
       const result = unwrap(
-        await ctx.rest("/guidance", { method: "PUT", body: { scope, cwd, text } }),
+        await ctx.rest("/guidance", {
+          method: "PUT",
+          body: { scope: saveScope, cwd: saveCwd, text: saveText },
+        }),
       )
+      if (seq.current !== id) {
+        // The scope or cwd changed (and reloaded) while the PUT was in
+        // flight: the write landed, but this editor now shows another file.
+        setNotice("Saved. The editor moved on, so reload to see it.")
+        return
+      }
       setNotice(result && result.message ? result.message : "Saved.")
       if (result && result.path) setPath(String(result.path))
     } catch (err) {
-      setNotice(messageOf(err))
+      if (seq.current === id) setNotice(messageOf(err))
     } finally {
       setSaving(false)
     }
@@ -899,6 +929,7 @@ function StatusPage(props) {
   const [granting, setGranting] = useState(false)
   const [notice, setNotice] = useState("")
   const [recent, setRecent] = useState([])
+  const [recentError, setRecentError] = useState("")
   const [scope, setScope] = useState("chat")
   const focused = useValue(host.state.focusedSessionId)
   const sessionParam =
@@ -906,12 +937,17 @@ function StatusPage(props) {
 
   useEffect(() => {
     let alive = true
+    setRecentError("")
     ctx
       .rest(`/recent?limit=8${sessionParam}`)
       .then((result) => {
         if (alive) setRecent((unwrap(result) || {}).reviews || [])
       })
-      .catch(() => {})
+      .catch((err) => {
+        // A failed fetch must not look like "no reviews": surface it so an
+        // empty list is only ever a genuinely empty log.
+        if (alive) setRecentError(messageOf(err))
+      })
     return () => {
       alive = false
     }
@@ -1003,14 +1039,21 @@ function StatusPage(props) {
         ? h(
             "p",
             { style: MUTED },
-            scope === "chat"
-              ? "No findings for this chat yet."
-              : "No reviews logged yet.",
+            recentError
+              ? `Could not load recent reviews: ${recentError}`
+              : scope === "chat"
+                ? "No findings for this chat yet."
+                : "No reviews logged yet.",
           )
-        : recent.map((row) =>
+        : recent.map((row, index) =>
             h(
               "div",
-              { key: `${row.session}-${row.at}-${row.title}`, style: { display: "grid", gap: 2 } },
+              {
+                // Rows may share session/at/title when fields are missing;
+                // the index keeps reconciliation stable on re-order.
+                key: `${row.id || ""}-${row.session}-${row.at}-${row.title}-${index}`,
+                style: { display: "grid", gap: 2 },
+              },
               h(
                 "div",
                 { style: { fontWeight: 600, fontSize: "0.8125rem" } },
@@ -1087,7 +1130,9 @@ export function register(ctx) {
         )
       }
       const raw = String(main || "")
-      const slash = raw.indexOf("/")
+      // Split on the LAST slash: model ids can contain slashes
+      // (provider/org/model), and splitting on the first defeats sameModel().
+      const slash = raw.lastIndexOf("/")
       const mainModel = raw
         ? {
             provider: slash >= 0 ? raw.slice(0, slash) : "",

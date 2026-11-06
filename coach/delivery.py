@@ -7,6 +7,8 @@ never inject: an injected turn there has no live agent to act on it.
 
 from __future__ import annotations
 
+import re
+
 from .findings import Finding, is_deliverable
 from .settings import Settings
 
@@ -67,9 +69,20 @@ def _attr(value: object) -> str:
     )
 
 
+_NOTE_CLOSE = re.compile(r"</\s*coach-note\s*>", re.IGNORECASE)
+_NOTE_OPEN = re.compile(r"<\s*coach-note\b[^>]*>", re.IGNORECASE)
+
+
 def _text(value: object) -> str:
-    """Escape the block's closing tag in model-supplied text."""
-    return str(value or "").replace("</coach-note>", "&lt;/coach-note&gt;")
+    """Neutralize note block delimiters in model-supplied text.
+
+    The finding text rides back into model context inside ``<coach-note>``,
+    so both the closing and opening forms are stripped case-insensitively
+    (allowing inner whitespace) before the note is assembled.
+    """
+    text = str(value or "")
+    text = _NOTE_CLOSE.sub("", text)
+    return _NOTE_OPEN.sub("", text)
 
 
 def _lines(*parts: str) -> str:

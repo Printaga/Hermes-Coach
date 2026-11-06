@@ -3,7 +3,8 @@
 A turn renders as a heading, the user's message verbatim, a truncated
 assistant answer and tool cards. Assembly drops the oldest tool cards, then
 old assistant text, then old turn headings until the ledger fits its
-character ceiling; user messages are never dropped.
+character ceiling; user messages are dropped only as an absolute last resort,
+oldest first, so the newest context always survives.
 """
 
 from __future__ import annotations
@@ -16,6 +17,9 @@ __all__ = ["append_turn", "build_messages", "estimate_tokens", "tool_card"]
 
 _ASSISTANT_CHARS = 600
 _USER_CHARS = 4000
+_NAME_CHARS = 64
+_ARG_CHARS = 256
+_STATUS_CHARS = 64
 _MAX_TURNS = 60
 
 
@@ -27,13 +31,20 @@ def append_turn(
     assistant: str,
     tools: list[dict],
 ) -> None:
-    """Record one completed turn on the session ledger."""
+    """Record one completed turn on the session ledger.
+
+    Text is bounded at write time so arbitrarily large model output or tool
+    payloads cannot accumulate in memory or on disk: only rendering truncates
+    is not enough, because the raw values persist in the session file.
+    """
     state.ledger.append(
         {
             "turn_id": turn_id,
             "user": str(user or "")[:_USER_CHARS],
-            "assistant": assistant,
-            "tools": list(tools),
+            "assistant": str(assistant or "")[:_ASSISTANT_CHARS],
+            "tools": [
+                dict(card) if isinstance(card, dict) else card for card in tools
+            ],
         }
     )
     if len(state.ledger) > _MAX_TURNS:
@@ -66,9 +77,9 @@ def estimate_tokens(text: str) -> int:
 
 
 def _card_line(card: dict[str, Any], max_chars: int) -> str:
-    name = str(card.get("name") or "tool")
-    arg = str(card.get("arg") or "").strip()
-    status = str(card.get("status") or "").strip()
+    name = str(card.get("name") or "tool")[:_NAME_CHARS]
+    arg = str(card.get("arg") or "").strip()[:_ARG_CHARS]
+    status = str(card.get("status") or "").strip()[:_STATUS_CHARS]
     size = card.get("size", 0)
     preview = str(card.get("preview") or "")[:max_chars]
     line = f"- {name}"
@@ -169,8 +180,28 @@ def build_messages(
                 line["dropped"] = True
                 ledger_text = render()
 
-    if len(ledger_text) > budget:  # last resort: user history alone is oversized
-        ledger_text = ledger_text[:budget].rstrip()
+    if len(ledger_text) > budget:
+        # Last resort: the user history alone is oversized. Drop the oldest
+        # user lines first so the newest context survives, but always keep at
+        # least one user line; only then keep the tail, cut on a line boundary.
+        def _kept_user_lines() -> list[Any]:
+            return [
+                line
+                for line in lines
+                if line["kind"] == "user" and not line["dropped"]
+            ]
+
+        for line in lines:
+            if len(ledger_text) <= budget or len(_kept_user_lines()) <= 1:
+                break
+            if line["kind"] == "user" and not line["dropped"]:
+                line["dropped"] = True
+                ledger_text = render()
+    if len(ledger_text) > budget:
+        start = max(0, len(ledger_text) - budget)
+        cut = ledger_text.find("\n", start)
+        ledger_text = ledger_text[cut + 1 :] if cut != -1 else ledger_text[-budget:]
+        ledger_text = ledger_text.lstrip()
 
     system_parts = [str(system or ""), str(guidance or "")]
     if note_text:

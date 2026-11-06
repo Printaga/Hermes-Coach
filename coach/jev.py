@@ -185,9 +185,14 @@ def _decide_chat(
     }
     context = ""
     if state:
-        context = "\n\nState:\n" + json.dumps(
-            dict(state), ensure_ascii=False, sort_keys=True, default=str
-        )
+        try:
+            context = "\n\nState:\n" + json.dumps(
+                dict(state), ensure_ascii=False, sort_keys=True, default=str
+            )
+        except (TypeError, ValueError):
+            # Circular or otherwise unserializable state must not escape the
+            # fail-open contract; the question and options still decide.
+            context = "\n\nState:\n" + str(dict(state))
     messages = [
         {"role": "system", "content": _CHAT_SYSTEM},
         {
@@ -244,8 +249,14 @@ def decide(
 ) -> Decision:
     """Resolve one fork; every failure is an error decision, never a raise."""
     text = str(question or "").strip()
+    if isinstance(options, (str, bytes)):
+        return _error("a decision needs a question and 2-6 distinct options")
+    try:
+        candidates = list(options or [])
+    except TypeError:
+        return _error("a decision needs a question and 2-6 distinct options")
     choices: list[str] = []
-    for option in options or []:
+    for option in candidates:
         value = str(option or "").strip()
         if value and value not in choices:
             choices.append(value)
@@ -257,7 +268,7 @@ def decide(
     if backend == "chat-model":
         return _decide_chat(text, choices, context, threshold, chat)
 
-    url = base_url.strip() or _ENDPOINTS.get(backend, "")
+    url = (base_url.strip() if isinstance(base_url, str) else "") or _ENDPOINTS.get(backend, "")
     if not url:
         return _error(f"unknown decide backend: {backend}")
     if not api_key:

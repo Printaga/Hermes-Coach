@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import tempfile
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 __all__ = ["SessionState", "Store"]
+
+log = logging.getLogger(__name__)
 
 _MAX_NAME_CHARS = 80
 
@@ -125,15 +128,30 @@ class Store:
         return [path for path in self.root.glob("*.json") if path.is_file()]
 
     def _read(self, path: Path, fallback_id: str) -> SessionState:
-        """Parse one file; a corrupt or missing one is a fresh state."""
+        """Parse one file; a corrupt or missing one is a fresh state.
+
+        Corrupt content (bad JSON, wrong shape) resets to a fresh state that
+        says so in ``last_error``. Read failures that are not corruption
+        (permissions, I/O) also yield a fresh state — the store is fail-open
+        by contract — but ``last_error`` names the real cause so /coach
+        status shows it instead of silently discarding history.
+        """
         try:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
             return SessionState(session_id=fallback_id)
-        except Exception:  # RecursionError, ValueError, OSError, TypeError
+        except (ValueError, TypeError, RecursionError):
+            # json raises ValueError (incl. UnicodeDecodeError) on bad bytes;
+            # TypeError/RecursionError cover hostile shapes.
             return SessionState(
                 session_id=fallback_id, last_error="state reset", updated_at=0.0
+            )
+        except OSError as exc:
+            return SessionState(
+                session_id=fallback_id,
+                last_error=f"state unreadable: {type(exc).__name__}",
+                updated_at=0.0,
             )
         if not isinstance(data, dict):
             return SessionState(
@@ -181,8 +199,10 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             os.chmod(self.root, 0o700)  # mode= applies on creation only
-        except OSError:
-            pass
+        except OSError as exc:
+            # The privacy guarantee is only as good as the directory mode; a
+            # silent failure would pretend otherwise.
+            log.warning("coach store root not private: %s: %s", self.root, exc)
         state.updated_at = time.time()
         path = self._path(state.session_id)
         descriptor, temporary = tempfile.mkstemp(
@@ -201,12 +221,14 @@ class Store:
                 try:
                     if len(self._state_paths()) > self.max_sessions:
                         self.prune()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # A persistent prune failure silently un-caps the directory.
+                    log.warning("coach store prune failed: %s", exc)
         except BaseException:
             try:
-                tmp_path.unlink()
-            except FileNotFoundError:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup must never mask the exception that caused it.
                 pass
             raise
 
@@ -221,10 +243,31 @@ class Store:
             entries.append((stamp, path.name, path))
         overflow = len(entries) - self.max_sessions
         if overflow <= 0:
+            self._sweep_tmp_files()
             return
         entries.sort(key=lambda entry: (entry[0], entry[1]))
         for _, _, path in entries[:overflow]:
             path.unlink(missing_ok=True)
+        self._sweep_tmp_files()
+
+    def _sweep_tmp_files(self, older_than_s: float = 3600.0) -> None:
+        """Remove stale dot-tmp files left by a crash between mkstemp and replace.
+
+        They end in ``.tmp``, so the ``*.json`` glob and the session cap never
+        see them; without this they accumulate indefinitely.
+        """
+        if not self.root.is_dir():
+            return
+        now = time.time()
+        for tmp in self.root.glob(".*.tmp"):
+            try:
+                if not tmp.is_file():
+                    continue
+                if now - tmp.stat().st_mtime < older_than_s:
+                    continue
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     def forget(self, session_id: str) -> None:
         """Remove one session file, ignoring an already absent one."""
@@ -234,9 +277,11 @@ class Store:
             pass
 
     def spend_total(self) -> float:
-        """Sum recorded spend across every session on disk."""
+        """Sum recorded spend across every readable session on disk."""
         return sum(
-            self._read(path, path.stem).spend_usd for path in self._state_paths()
+            state.spend_usd
+            for state in (self._read_quiet(path) for path in self._state_paths())
+            if state is not None
         )
 
     def sessions_by_recency(self) -> list[str]:
@@ -248,10 +293,37 @@ class Store:
             except OSError:
                 continue
         rows.sort(key=lambda item: item[0], reverse=True)
-        return [self._read(path, path.stem).session_id for _, path in rows]
+        ids = []
+        for _, path in rows:
+            state = self._read_quiet(path)
+            if state is not None:
+                ids.append(state.session_id)
+        return ids
 
     def sessions_on_disk(self) -> list[str]:
-        """Original session ids with a state file, in a stable order."""
+        """Original session ids with a readable state file, in a stable order."""
         return sorted(
-            self._read(path, path.stem).session_id for path in self._state_paths()
+            state.session_id
+            for state in (self._read_quiet(path) for path in self._state_paths())
+            if state is not None
         )
+
+    def _read_quiet(self, path: Path) -> SessionState | None:
+        """Read one file for aggregation; unreadable files are skipped.
+
+        ``_read`` falls back to a fresh state whose ``session_id`` is the
+        caller's fallback (here the encoded filename), so aggregations must
+        not use it: a corrupt file would surface the encoded filename as a
+        session id. Reading the stored id directly keeps the listings honest.
+        """
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        session_id = data.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return None
+        return self._read(path, session_id)

@@ -25,7 +25,10 @@ def _read_text(path: Path) -> str | None:
 
 
 def _safe_paths(root: Path, paths: Sequence[str]) -> list[str]:
-    base = root.resolve()
+    try:
+        base = root.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return []
     safe: list[str] = []
     for raw in paths or []:
         text = str(raw or "").strip()
@@ -37,14 +40,14 @@ def _safe_paths(root: Path, paths: Sequence[str]) -> list[str]:
             # inside the project, and pass it to git as a relative path.
             try:
                 safe.append(candidate.resolve().relative_to(base).as_posix())
-            except (OSError, ValueError):
+            except (OSError, ValueError, RuntimeError):
                 continue
             continue
         if ".." in candidate.parts:
             continue
         try:
             (base / candidate).resolve().relative_to(base)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             continue
         safe.append(candidate.as_posix())
     return safe
@@ -82,8 +85,16 @@ def _heads(
     reader: Callable[[Path], str | None],
 ) -> str:
     parts: list[str] = []
+    base = root.resolve()
     for rel in paths:
-        body = reader(root / rel)
+        try:
+            # Re-resolve at read time: a symlink swap between validation and
+            # this read must not redirect the read outside the project.
+            target = (base / rel).resolve()
+            target.relative_to(base)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        body = reader(target)
         if body is None:
             continue
         parts.append(f"--- {rel} (new file) ---\n{body}")
@@ -107,12 +118,39 @@ def collect(
     reader = read or _read_text
 
     # -z keeps paths unquoted and unescaped (no C-style octal for non-ASCII).
+    # --untracked-files=all lists new files individually instead of collapsing
+    # new directories to a trailing-slash "dir/" entry git diff would miss.
     status = _git(
         runner,
         root,
-        ["git", "-c", "core.quotePath=false", "status", "--porcelain", "-z", "--", *safe],
+        [
+            "git",
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            *safe,
+        ],
     )
-    diff = _git(runner, root, ["git", "diff", "HEAD", "--", *safe])
+    diff = _git(
+        runner,
+        root,
+        [
+            "git",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "HEAD",
+            "--",
+            *safe,
+        ],
+    )
     if (
         status is None
         or status.returncode != 0
@@ -122,12 +160,13 @@ def collect(
         text = _heads(root, safe, reader)
     else:
         text = _stdout(diff)
+        safe_set = set(safe)
         untracked: list[str] = []
         for entry in _stdout(status).split("\0"):
             if not entry.startswith("?? "):
                 continue
-            rel = entry[3:]
-            if rel and rel in safe:
+            rel = entry[3:].removesuffix("/")
+            if rel and rel in safe_set:
                 untracked.append(rel)
         if untracked:
             extra = _heads(root, _safe_paths(root, untracked), reader)

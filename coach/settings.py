@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 __all__ = ["DEFAULTS", "ModelChoice", "Settings", "load_settings"]
@@ -176,7 +176,6 @@ class Settings:
     decide_min_confidence: float
     decide_max_calls_per_turn: int
     consult_max_calls_per_turn: int
-    decide_typesafe_api_key: str
 
     # Delivery
     delivery_policy: str
@@ -200,6 +199,8 @@ class Settings:
     skip_same_model: bool
     allow_in_subagents: bool
     debug_log_decisions: bool
+    # Secret: excluded from repr so keys never leak into logs or tracebacks.
+    decide_typesafe_api_key: str = field(default="", repr=False)
 
     def model_for(self, mode: str) -> ModelChoice | None:
         """Return the mode override, or the shared coach model when unset."""

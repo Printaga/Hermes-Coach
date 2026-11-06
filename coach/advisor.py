@@ -7,7 +7,6 @@ or a silent host fallback all come back as a :class:`CoachReply` with an
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -77,7 +76,14 @@ def _split_messages(
 
 
 def _differs(reported: str, requested: str) -> bool:
-    """True when the host did not confirm the provider or model we asked for."""
+    """True when the host did not confirm the provider or model we asked for.
+
+    An empty report is also a mismatch: Hermes always reports both fields, so
+    a blank means the reply is unattributed, and silently trusting it would
+    defeat the same-model guard. A false mismatch only discards one review
+    (visible in the logs); a missed fallback would review the model's own
+    work as if it were a second opinion.
+    """
     if not requested.strip():
         return False
     return reported.strip().lower() != requested.strip().lower()
@@ -146,6 +152,9 @@ class Coach:
         try:
             if structured:
                 system, body = _split_messages(messages)
+                if not body.strip():
+                    # Nothing to review: fail open without a billable call.
+                    return CoachReply(error="empty_prompt")
                 result = self.llm.complete_structured(
                     instructions=instructions or _STRUCTURED_INSTRUCTIONS,
                     input=[{"type": "text", "text": body}],

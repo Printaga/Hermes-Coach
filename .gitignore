@@ -1,7 +1,8 @@
-# Virtualenvs
+# Virtualenvs (root-anchored: a bare env/ would also shadow src/env/ or
+# app/env/ source directories in a monorepo layout)
 .venv/
 venv/
-env/
+/env/
 
 # Bytecode
 __pycache__/
@@ -9,8 +10,8 @@ __pycache__/
 
 # Test and build output
 .pytest_cache/
-build/
-dist/
+/build/
+/dist/
 *.egg-info/
 .eggs/
 .coverage*
@@ -22,12 +23,15 @@ htmlcov/
 .env
 .env.*
 !.env.example
+!.env.sample
+!.env.template
+*.pem
 
 # Tool scratch
 .freebuff/
 
-# Generated review output
-/review.json
+# Generated review output (at any depth, not just the repo root)
+review.json
 
 # CodeWiki scratch
 .codewiki/
