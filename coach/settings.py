@@ -243,7 +243,7 @@ class Settings:
 _MINIMUMS: dict[str, float] = {
     "max_reply_tokens": 80,
     "active_every_n": 2,
-    "review_max_holds": 0,
+    "review_max_holds": 1,
     "decide_max_calls_per_turn": 1,
     "consult_max_calls_per_turn": 1,
     "delivery_max_corrective_per_request": 0,
@@ -254,6 +254,22 @@ _MINIMUMS: dict[str, float] = {
     "ledger_max_recent_turns": 1,
     "ledger_note_max_chars": 100,
     "ledger_max_tokens": 500,
+}
+
+_MAXIMUMS: dict[str, float] = {
+    "max_reply_tokens": 2000,
+    "active_every_n": 100,
+    "review_max_holds": 10,
+    "decide_max_calls_per_turn": 10,
+    "consult_max_calls_per_turn": 10,
+    "delivery_max_corrective_per_request": 10,
+    "delivery_note_ttl_turns": 20,
+    "budget_session_usd": 1000.0,
+    "worker_timeout_s": 120,
+    "ledger_max_tool_result_chars": 5000,
+    "ledger_max_recent_turns": 10,
+    "ledger_note_max_chars": 5000,
+    "ledger_max_tokens": 20000,
 }
 
 
@@ -358,4 +374,10 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
         for key, minimum in _MINIMUMS.items()
         if getattr(settings, key) < minimum
     }
-    return replace(settings, **low) if low else settings
+    high = {
+        key: maximum
+        for key, maximum in _MAXIMUMS.items()
+        if getattr(settings, key) > maximum
+    }
+    clamped = {**low, **high}
+    return replace(settings, **clamped) if clamped else settings

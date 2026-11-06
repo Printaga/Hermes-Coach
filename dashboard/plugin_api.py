@@ -122,6 +122,27 @@ def _apply_grant(config: dict[str, Any]) -> None:
     llm["allow_model_override"] = True
 
 
+def _apply_revoke(config: dict[str, Any]) -> None:
+    """Clear both trust flags; the host still owns the actual write."""
+    plugins = _mapping_section(config, "plugins")
+    entries = _mapping_section(plugins, "entries")
+    coach = _mapping_section(entries, "coach")
+    llm = _mapping_section(coach, "llm")
+    llm["allow_provider_override"] = False
+    llm["allow_model_override"] = False
+
+
+def _canonical_values(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Serialize validated settings so stored values are the effective ones."""
+    settings = load_settings(raw)
+    out: dict[str, Any] = {}
+    for key in DEFAULTS:
+        if key == _SECRET_KEY:
+            continue
+        out[key] = _json_value(getattr(settings, key, DEFAULTS[key]))
+    return out
+
+
 def _json_value(value: Any) -> Any:
     """Make one config value JSON-safe without dropping structure."""
     if isinstance(value, ModelChoice):
@@ -287,9 +308,11 @@ def _status_payload(request: Request) -> dict[str, Any]:
     pending = 0
     last_error = ""
     sessions = store.sessions_on_disk()
+    spend_sessions: dict[str, float] = {}
     for name in sessions:
         state = store.load(name)
         spend += state.spend_usd
+        spend_sessions[name] = round(state.spend_usd, 6)
         pending += len(state.pending)
         if state.last_error:
             last_error = state.last_error
@@ -305,7 +328,10 @@ def _status_payload(request: Request) -> dict[str, Any]:
         "decide_enabled": settings.decide_enabled,
         "decide_backend": settings.decide_backend,
         "spend_usd": round(spend, 6),
+        "spend_total_usd": round(spend, 6),
+        "spend_sessions": spend_sessions,
         "budget_usd": settings.budget_session_usd,
+        "budget_per_session_usd": settings.budget_session_usd,
         "budget_on_exceed": settings.budget_on_exceed,
         "pending_notes": pending,
         "sessions": len(sessions),
@@ -370,12 +396,18 @@ def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[st
     if isinstance(state_config, dict):
         coach = _mapping_section(_mapping_section(_mapping_section(
             state_config, "plugins"), "entries"), "coach")
-        _mapping_section(coach, "settings").update(clean)
+        merged = dict(_coach_settings(state_config))
+        merged.update(clean)
+        canonical = _canonical_values(merged)
+        _mapping_section(coach, "settings").update(canonical)
     else:
         config = _load_host_config()
         coach = _mapping_section(_mapping_section(_mapping_section(
             config, "plugins"), "entries"), "coach")
-        _mapping_section(coach, "settings").update(clean)
+        merged = dict(_coach_settings(config))
+        merged.update(clean)
+        canonical = _canonical_values(merged)
+        _mapping_section(coach, "settings").update(canonical)
         if not _save_host_config(config):
             raise HTTPException(status_code=500, detail="config_write_failed")
     return get_config(request)
@@ -475,6 +507,20 @@ def grant_permissions(request: Request) -> dict[str, Any]:
     else:
         config = _load_host_config()
         _apply_grant(config)
+        if not _save_host_config(config):
+            raise HTTPException(status_code=500, detail="config_write_failed")
+    return _status_payload(request)
+
+
+@router.post("/permissions/revoke")
+def revoke_permissions(request: Request) -> dict[str, Any]:
+    """Clear both model-override trust flags, then return the new status."""
+    state_config = getattr(request.app.state, "config", None)
+    if isinstance(state_config, dict):
+        _apply_revoke(state_config)
+    else:
+        config = _load_host_config()
+        _apply_revoke(config)
         if not _save_host_config(config):
             raise HTTPException(status_code=500, detail="config_write_failed")
     return _status_payload(request)

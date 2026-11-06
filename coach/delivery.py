@@ -76,13 +76,18 @@ _NOTE_OPEN = re.compile(r"<\s*coach-note\b[^>]*>", re.IGNORECASE)
 def _text(value: object) -> str:
     """Neutralize note block delimiters in model-supplied text.
 
-    The finding text rides back into model context inside ``<coach-note>``,
-    so both the closing and opening forms are stripped case-insensitively
-    (allowing inner whitespace) before the note is assembled.
+    Finding text rides back into model context inside ``<coach-note>``, so both
+    the closing and opening forms are stripped case-insensitively (allowing
+    inner whitespace) before the note is assembled.
     """
     text = str(value or "")
     text = _NOTE_CLOSE.sub("", text)
     return _NOTE_OPEN.sub("", text)
+
+
+def sanitize(value: object) -> str:
+    """Public form of the block-delimiter strip, for messages outside a note."""
+    return _text(value)
 
 
 def _lines(*parts: str) -> str:
@@ -125,12 +130,12 @@ def format_corrective(finding: Finding) -> str:
 
 def format_card(finding: Finding) -> str:
     """Format the short, user-visible card."""
-    evidence = f"Evidence: {finding.evidence}" if finding.evidence else ""
-    fix = f"Fix: {finding.fix}" if finding.fix else ""
+    evidence = f"Evidence: {_text(finding.evidence)}" if finding.evidence else ""
+    fix = f"Fix: {_text(finding.fix)}" if finding.fix else ""
     return _lines(
-        f"Coach · {finding.severity} — {finding.title}",
-        finding.body,
+        f"Coach · {finding.severity} — {_text(finding.title)}",
+        _text(finding.body),
         evidence,
         fix,
-        "Logged: /coach log · Status → Recent reviews",
+        "Logged: /coach log · Send to chat: /coach send",
     )

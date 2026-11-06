@@ -246,7 +246,8 @@ def test_tool_schemas_and_descriptions_are_host_ready():
 
 def test_test_script_runs_both_gates():
     text = _product_text("scripts/test.sh")
-    assert "pytest tests" in text
+    assert "pytest" in text
+    assert "${@:-tests}" in text
     assert "check-desktop-page.mjs" in text
     assert "pipefail" in text
 
@@ -495,7 +496,7 @@ def test_delivery_card_points_at_the_durable_record():
         Finding("concern", "Title", "Body", "a.py:1", "Fix it.")
     )
     assert "/coach log" in card
-    assert "Status" in card
+    assert "/coach send" in card
 
 
 def test_evidence_uses_nul_separated_unquoted_git_status(tmp_path):
@@ -518,7 +519,7 @@ def test_evidence_uses_nul_separated_unquoted_git_status(tmp_path):
     assert status_argv[:4] == ["git", "-c", "core.quotePath=false", "status"]
     assert "--porcelain" in status_argv and "-z" in status_argv
     assert "--untracked-files=all" in status_argv
-    assert status_kwargs["timeout"] == 5
+    assert status_kwargs["timeout"] == 2
     assert status_kwargs["shell"] is False
     assert diff_argv[diff_argv.index("diff") + 1 : diff_argv.index("HEAD")] == [
         "--no-color",
@@ -1576,6 +1577,13 @@ def test_guidance_strips_tag_variants_case_insensitively(tmp_path):
     assert "<coach-guidance >" not in block
 
 
+_needs_readable_chmod = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 0o000 is not unreadable for root or on Windows",
+)
+
+
+_needs_readable_chmod
 def test_guidance_read_surfaces_permission_errors(tmp_path):
     from coach.guidance import Guidance
 
@@ -1589,6 +1597,7 @@ def test_guidance_read_surfaces_permission_errors(tmp_path):
         target.chmod(0o600)
 
 
+_needs_readable_chmod
 def test_guidance_system_block_degrades_on_permission_error(tmp_path):
     from coach.guidance import Guidance
 

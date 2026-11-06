@@ -98,3 +98,29 @@ def test_same_model_guard_reads_the_session_model(tmp_path):
     p.on_pre_llm_call(session_id="s", turn_id="t", conversation_history=[], model="glm-5.3")
     out = json.loads(p.tool_ask({"question": "q"}, session_id="s", task_id="t2"))
     assert out["ok"] is False and "matches the primary" in out["error"].lower()
+
+
+def test_consult_posts_a_card_with_the_advice(tmp_path):
+    p = _plugin(tmp_path)
+    posted = []
+    p.post = posted.append
+    result = json.loads(p.tool_ask({"question": "Is the retry safe?", "session_id": "s"}))
+    assert result["ok"] is True
+    assert posted and "Coach advice" in posted[0]
+    assert "advice" in posted[0].lower()
+
+
+def test_advice_card_is_suppressed_when_cards_are_off(tmp_path):
+    p = _plugin(tmp_path, settings=load_settings({"coach_model": {"provider": "openrouter", "model": "x"}, "delivery_show_cards": False}))
+    posted = []
+    p.post = posted.append
+    p.tool_ask({"question": "Is the retry safe?", "session_id": "s"})
+    assert posted == []
+
+
+def test_advice_card_truncates_a_huge_answer(tmp_path):
+    from coach.plugin import _advice_card
+
+    card = _advice_card("x" * 5000, "advice", "p", "m")
+    assert len(card) < 1200
+    assert " ..." in card

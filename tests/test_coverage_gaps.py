@@ -646,10 +646,10 @@ def test_worker_stop_is_safe_without_a_submission():
     assert worker.submit("s", "t") is False
 
 
-def test_trim_log_keeps_small_files_and_log_names_are_safe():
+def test_trim_log_keeps_small_files_and_log_names_are_safe(tmp_path):
     from coach.plugin import _log_name
 
-    target = Path("/tmp/coach-coverage-test.jsonl")
+    target = tmp_path / "coach-coverage-test.jsonl"
     target.write_text("a\nb\n", encoding="utf-8")
     try:
         from coach.plugin import _trim_log
@@ -888,7 +888,8 @@ def test_log_falls_back_to_newest_session_with_a_label(tmp_path):
     )
     target = plugin(tmp_path)
     out = target.command("log", session_id="unknown-session")
-    assert "kept" in out and "(from session" in out
+    assert "kept" not in out and "(from session" not in out
+    assert "No coach reviews logged" in out
 
 
 def test_error_reviews_render_their_error(tmp_path):

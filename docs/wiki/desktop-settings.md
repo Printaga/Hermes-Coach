@@ -51,6 +51,10 @@ flowchart TD
   same-model warning.
 - A failed `/recent` fetch says so instead of rendering an empty list, so
   "no reviews" always means no reviews.
+- Each recent finding carries a **Send to chat** button: it builds a prompt from
+  the finding and calls `host.composer.submit(sessionId, text)` for the focused
+  chat. Cards are host notifications with no action support, so this page is the
+  only click path; `/coach send` is the CLI equivalent.
 - Keep the picker's provider grouping: rows carry `slug` and `name`, models are
   strings, and a flat list loses which provider a model belongs to.
 

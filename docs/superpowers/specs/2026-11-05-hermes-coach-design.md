@@ -211,9 +211,13 @@ hermes-coach/
    afterwards. Prompt: "does the change satisfy the request; is there a defect
    the claim hides?" A missing diff is a coverage limit of the plugin, never a
    finding about the work (at most a nit).
-5. `blocker` and `authority=hold_once` and budget allows → return
-   `{"action": "continue", "message": "<required fix>"}`. Everything else →
-   post a card, return `None`. A timeout is a card or nothing, never a hold.
+5. `blocker` and `authority=hold_once` and budget allows → post a card and
+   return `{"action": "continue", "message": "<what, why, evidence, fix>"}`.
+   Everything else goes through the same delivery path as Active
+   (`deliver(..., allow_corrective=False)`): a card for the user and a pending
+   `<coach-note>` for the agent's next turn. A timeout is a card or nothing,
+   never a hold. The gate never starts a turn through delivery policy — its one
+   hold slot is the only way it may continue the turn.
 
 ### 8.4 Data flow — Decide
 

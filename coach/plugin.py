@@ -24,12 +24,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .advisor import Coach
-from .delivery import format_ambient, format_card, format_corrective, route
+from .delivery import format_ambient, format_card, format_corrective, route, sanitize
 from .evidence import collect, head
 from .findings import Finding
 from .guidance import Guidance
 from .jev import decide
-from .ledger import _MAX_TURNS, append_turn, build_messages, tool_card
+from .ledger import _MAX_TURNS, _bound_card, append_turn, build_messages, tool_card
 from .settings import DEFAULTS, ModelChoice, Settings, load_settings
 from .state import Store
 from .worker import Worker
@@ -63,6 +63,7 @@ ASK_SCHEMA = {
         },
         "context": {
             "type": "string",
+            "maxLength": 4000,
             "description": "Optional extra context for this one consultation.",
         },
         "turn_id": {
@@ -79,6 +80,7 @@ ASK_SCHEMA = {
 }
 
 _QUESTION_MAX = 4000
+_CONTEXT_MAX = 4000
 _OPTIONS_MIN = 2
 _OPTIONS_MAX = 6
 _INTENTS = {"advice", "plan", "review"}
@@ -112,7 +114,9 @@ _HELP = (
     "  /coach pending                   undelivered ambient notes\n"
     "  /coach send                      inject pending notes now\n"
     "  /coach pause                     toggle background reviews and holds\n"
-    "  /coach grant                     allow per-mode model overrides"
+    "  /coach grant                     allow per-mode model overrides\n"
+    "  /coach revoke                    remove per-mode model overrides\n"
+    "  /coach forget                    delete this session\u2019s coach state"
 )
 _SYSTEM = (
     "You are the coach: a concise, skeptical reviewer outside the main agent's "
@@ -304,6 +308,40 @@ def _result_text(result: Any) -> str:
         return str(result)
 
 
+_STATE_KEYS_MAX = 50
+_STATE_VALUE_MAX = 1000
+_STATE_JSON_MAX = 8000
+
+
+def _bound_state(value: Any) -> dict[str, Any]:
+    """Bound model-supplied decide state before it leaves for a third party.
+
+    ``coach_decide.state`` is posted to the Jev backend verbatim; without a
+    cap a compromised or careless model turns one decide call into an
+    exfiltration and billing event. Keep flat scalar-ish values only.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    bounded: dict[str, Any] = {}
+    for key in list(value)[:_STATE_KEYS_MAX]:
+        name = str(key)[:120]
+        item = value[key]
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            bounded[name] = str(item)[:_STATE_VALUE_MAX] if isinstance(item, str) else item
+        else:
+            try:
+                text = json.dumps(item, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                continue
+            bounded[name] = text[:_STATE_VALUE_MAX]
+    try:
+        while len(json.dumps(bounded, ensure_ascii=False, default=str)) > _STATE_JSON_MAX and bounded:
+            bounded.pop(next(iter(bounded)))
+    except (TypeError, ValueError):
+        return {}
+    return bounded
+
+
 def _turn_digest(turn: Mapping[str, Any]) -> str:
     # The digest covers content only, never the turn id: the same work seen
     # twice must not earn two reviews, and a changed turn id alone must not
@@ -346,10 +384,14 @@ def _last_reviewed_digest(state: Any) -> str:
 
 def _record_turn(state: Any, turn: dict[str, Any]) -> None:
     last = state.ledger[-1] if state.ledger else None
+    bounded = dict(turn)
+    tools = bounded.get("tools")
+    if isinstance(tools, list):
+        bounded["tools"] = [_bound_card(card) for card in tools[:20]]
     if isinstance(last, dict) and str(last.get("turn_id")) == turn["turn_id"]:
-        last.update(turn)
+        last.update(bounded)
     else:
-        state.ledger.append(turn)
+        state.ledger.append(bounded)
     if len(state.ledger) > _MAX_TURNS:
         del state.ledger[: len(state.ledger) - _MAX_TURNS]
         _prune_calls(state)
@@ -422,11 +464,54 @@ def _request_text(data: Mapping[str, Any]) -> str:
     return ""
 
 
+def _advice_card(text: str, intent: str, provider: str, model: str) -> str:
+    """One user-visible card summarising a consult answer."""
+    body = sanitize(text).strip()
+    if len(body) > 900:
+        body = body[:900].rstrip() + " ..."
+    who = f"{provider}/{model}" if provider or model else "coach"
+    return "\n".join(
+        part
+        for part in (
+            f"Coach advice ({intent}) · {who}",
+            body,
+            "Full text: /coach last · replay: coach_ask",
+        )
+        if part
+    )
+
+
+def _decision_card(decision: Any, backend: str) -> str:
+    """One user-visible card summarising a typed decision."""
+    rationale = sanitize(decision.rationale).strip()
+    if len(rationale) > 400:
+        rationale = rationale[:400].rstrip() + " ..."
+    return "\n".join(
+        part
+        for part in (
+            f"Coach decision · {backend} — {decision.decision} "
+            f"({decision.confidence:.2f}, {decision.gate})",
+            rationale,
+        )
+        if part
+    )
+
+
 def _hold_message(finding: Finding) -> str:
-    title = finding.title.strip().rstrip(".")
-    fix = finding.fix.strip().rstrip(".")
-    head = f"Coach: {title}. {fix}" if fix else f"Coach: {title}."
-    return f"{head} Fix or explain before claiming done."
+    """One self-contained message for the held turn: what, why, evidence, fix."""
+    title = sanitize(finding.title).strip().rstrip(".")
+    body = sanitize(finding.body).strip()
+    evidence = sanitize(finding.evidence).strip()
+    fix = sanitize(finding.fix).strip().rstrip(".")
+    lines = [f"Coach blocked completion: {title}."]
+    if body:
+        lines.append(body[:400])
+    if evidence:
+        lines.append(f"Evidence: {evidence[:200]}")
+    if fix:
+        lines.append(f"Suggested fix: {fix}")
+    lines.append("Address it or explain why it does not apply, then finish.")
+    return "\n".join(lines)
 
 
 class CoachPlugin:
@@ -473,6 +558,7 @@ class CoachPlugin:
         self._child_sessions: set[str] = set()
         self._queued: dict[tuple[str, str], None] = {}
         self._queued_lock = threading.Lock()
+        self._tools_lock = threading.Lock()
         # Guards every store.load() -> mutate -> store.save() sequence. The
         # review worker and the host hooks run on different threads; without
         # this, a review that holds a stale state across its network call
@@ -492,7 +578,11 @@ class CoachPlugin:
         worker = getattr(self, "worker", None)
         try:
             if worker is not None:
-                worker.stop(timeout=1.0)
+                try:
+                    timeout = float(self.settings.worker_timeout_s)
+                except (TypeError, ValueError):
+                    timeout = 5.0
+                worker.stop(timeout=min(max(1.0, timeout), 20.0))
         except Exception:
             pass
 
@@ -535,7 +625,18 @@ class CoachPlugin:
             current = self._turn_base.get(session_id)
             if current is not None and current[0] == turn_id:
                 return
-        commit = self.head_commit()
+        payload_cwd = str(data.get("cwd") or "").strip()
+        try:
+            own_cwd = str(self.cwd() or os.getcwd())
+        except Exception:
+            own_cwd = os.getcwd()
+        if payload_cwd and os.path.abspath(payload_cwd) != os.path.abspath(own_cwd):
+            try:
+                commit = head(payload_cwd)
+            except Exception:
+                return
+        else:
+            commit = self.head_commit()
         if not commit:
             return
         with self._base_lock:
@@ -593,19 +694,26 @@ class CoachPlugin:
         session_id = str(data.get("session_id") or "")
         if session_id:
             # Buffered tool cards for the closed session will never be read.
-            for key in [k for k in self._turn_tools if k[0] == session_id]:
-                del self._turn_tools[key]
+            with self._tools_lock:
+                for key in [k for k in self._turn_tools if k[0] == session_id]:
+                    del self._turn_tools[key]
             with self._base_lock:
                 self._turn_base.pop(session_id, None)
+            with self._queued_lock:
+                for key in [k for k in self._queued if k[0] == session_id]:
+                    self._queued.pop(key, None)
         try:
             self.store.prune()
         except Exception:
             log.warning("coach: session-end prune failed", exc_info=True)
 
-    def status(self) -> dict[str, Any]:
-        """Report configuration, modes, and this session's spend."""
+    def status(self, session_id: str = "current") -> dict[str, Any]:
+        """Report configuration, modes, and one session's spend."""
         self.refresh_settings()
-        state = self.store.load("current")
+        try:
+            state = self.store.load(str(session_id or "current"))
+        except Exception:
+            state = self.store.load("current")
         return {
             "configured": self.settings.is_configured(),
             "coach_model": _model_dict(self.settings.coach_model),
@@ -659,6 +767,10 @@ class CoachPlugin:
                 return self._toggle_pause()
             if name == "grant":
                 return self._grant()
+            if name == "revoke":
+                return self._revoke()
+            if name == "forget":
+                return self._forget(session_id)
         except Exception as exc:  # a command must not break the host
             return f"Coach: {name} failed ({type(exc).__name__})."
         return _HELP.rstrip()
@@ -730,6 +842,8 @@ class CoachPlugin:
             return f"Invalid value for {key}."
         if not self._apply(key, value):
             return f"Coach: could not save {key}."
+        if key == "decide_typesafe_api_key":
+            return "decide_typesafe_api_key = *** (saved, value hidden)"
         current = getattr(self.settings, key, None)
         if isinstance(current, ModelChoice):
             return f"{key} = {_model_label(current)}"
@@ -809,25 +923,12 @@ class CoachPlugin:
         return "\n".join(lines)
 
     def _state_with(self, session_id: str, has) -> tuple[Any, str]:
-        """Load the session state, else the newest session that has content.
+        """Load the session state; never leak another session's content.
 
-        The command layer and a tool can be handed different session ids by the
-        host; a read-only command should still find the coach's output.
+        A read-only command stays in its own session: other chats' advice
+        must not surface in the current context.
         """
         state = self.store.load(session_id)
-        if has(state):
-            return state, ""
-        if self.store.has(session_id):
-            return state, ""  # a known session with nothing to show: do not leak another chat's
-        try:
-            for other in self.store.sessions_by_recency():
-                if other == session_id:
-                    continue
-                candidate = self.store.load(other)
-                if has(candidate):
-                    return candidate, f"session {other[:12]}"
-        except Exception:
-            pass
         return state, ""
 
     def _last_advice_text(
@@ -896,19 +997,8 @@ class CoachPlugin:
             count = 5
         path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
         label = ""
-        if not path.exists() and not self.store.has(session_id):
-            try:
-                candidates = sorted(
-                    (self.store.root.parent / "logs").glob("*.jsonl"),
-                    key=lambda item: item.stat().st_mtime,
-                    reverse=True,
-                )
-            except OSError:
-                candidates = []
-            if not candidates:
-                return "No coach reviews logged for this session yet."
-            path = candidates[0]
-            label = f" (from session {path.stem[:12]})"
+        if not path.exists():
+            return "No coach reviews logged for this session yet."
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -1023,10 +1113,52 @@ class CoachPlugin:
             )
         return "Granted per-mode model overrides for the coach plugin."
 
+    def _revoke(self) -> str:
+        """Clear the host's model-override trust flags, best effort."""
+        try:
+            from hermes_cli.config import load_config, save_config
+
+            config = load_config() or {}
+            entries = config.setdefault("plugins", {}).setdefault("entries", {})
+            llm = entries.setdefault("coach", {}).setdefault("llm", {})
+            llm["allow_provider_override"] = False
+            llm["allow_model_override"] = False
+            save_config(config)
+        except Exception as exc:
+            return (
+                "Could not revoke model overrides automatically "
+                f"({type(exc).__name__}). Set plugins.entries.coach.llm."
+                "allow_provider_override and allow_model_override to false."
+            )
+        return "Revoked per-mode model overrides for the coach plugin."
+
+    def _forget(self, session_id: str) -> str:
+        """Delete this session's coach state file; never raise."""
+        try:
+            self.store.forget(session_id)
+        except Exception:
+            return "Coach: could not forget this session."
+        return "Forgot this session's coach state."
+
+    def _debug(self, message: str) -> None:
+        if self.settings.debug_log_decisions:
+            log.debug("coach: %s", message)
+
     def deliver(
-        self, finding: Finding | None, *, session_id: str, turn_id: str
+        self,
+        finding: Finding | None,
+        *,
+        session_id: str,
+        turn_id: str,
+        allow_corrective: bool = True,
     ) -> None:
-        """Route one finding to a card, a pending note, or an injection."""
+        """Route one finding to a card, a pending note, or an injection.
+
+        ``allow_corrective=False`` is for the completion gate: it has its own
+        single-hold authority, so a delivery-policy injection there would be a
+        second, unbudgeted way to start a turn. The finding still shows as a
+        card and still reaches the model as a note on the next turn.
+        """
         if finding is None:
             return
         with self._store_lock:
@@ -1037,10 +1169,16 @@ class CoachPlugin:
                 surface=self._surface_kind(),
                 holds_used=state.holds,
             )
+            if decision == "corrective" and not allow_corrective:
+                decision = "ambient"
+            self._debug(
+                f"deliver session={session_id} turn={turn_id} "
+                f"decision={decision} surface={self._surface_kind()} "
+                f"holds={state.holds}"
+            )
             if decision == "drop":
                 return
-        if self.settings.delivery_show_cards:
-            self._post(format_card(finding))
+        self.card(finding)
         injected = bool(
             decision == "corrective" and self._inject(format_corrective(finding))
         )
@@ -1060,6 +1198,12 @@ class CoachPlugin:
                 for note in state.pending
                 if isinstance(note, Mapping)
                 and _as_turn(note.get("expires_at_turn")) >= state.note_seq
+                # One note per (turn, title): Active and the completion gate can
+                # both flag the same turn, and the model should read it once.
+                and not (
+                    str(note.get("turn_id") or "") == str(turn_id or "")
+                    and str(note.get("title") or "") == finding.title
+                )
             ]
             state.pending.append(
                 {
@@ -1080,31 +1224,34 @@ class CoachPlugin:
         self, payload: Mapping[str, Any] | None = None, **kw: Any
     ) -> dict[str, str] | None:
         """Return pending ambient notes once, dropping notes past their TTL."""
-        self.refresh_settings()
-        data = _payload(payload, kw)
-        self._remember_primary(data)
-        self._snapshot_turn_base(data)
-        session_id = str(data.get("session_id") or "current")
-        with self._store_lock:
-            state = self.store.load(session_id)
-            state.note_seq = _as_turn(state.note_seq) + 1
+        try:
+            self.refresh_settings()
+            data = _payload(payload, kw)
+            self._remember_primary(data)
+            self._snapshot_turn_base(data)
+            session_id = str(data.get("session_id") or "current")
+            with self._store_lock:
+                state = self.store.load(session_id)
+                state.note_seq = _as_turn(state.note_seq) + 1
 
-            delivered: list[str] = []
-            for note in state.pending:
-                if not isinstance(note, Mapping):
-                    continue
-                if _as_turn(note.get("expires_at_turn")) < state.note_seq:
-                    continue
-                text = str(note.get("text") or "").strip()
-                if text:
-                    delivered.append(text)
-            state.pending = []
-            state.updated_at = self.clock()
-            self.store.save(state)
+                delivered: list[str] = []
+                for note in state.pending:
+                    if not isinstance(note, Mapping):
+                        continue
+                    if _as_turn(note.get("expires_at_turn")) < state.note_seq:
+                        continue
+                    text = str(note.get("text") or "").strip()
+                    if text:
+                        delivered.append(text)
+                state.pending = []
+                state.updated_at = self.clock()
+                self.store.save(state)
 
-        if not delivered:
+            if not delivered:
+                return None
+            return {"context": "\n".join(delivered)}
+        except Exception:
             return None
-        return {"context": "\n".join(delivered)}
 
     def on_post_tool_call(
         self, payload: Mapping[str, Any] | None = None, **kw: Any
@@ -1128,12 +1275,13 @@ class CoachPlugin:
             text,
             max_chars=self.settings.ledger_max_tool_result_chars,
         )
-        self._turn_tools.setdefault((session_id, turn_id), []).append(card)
-        if len(self._turn_tools) > 500:
-            # Hooks fire per tool call; if session end is missed, drop the
-            # oldest buffered cards instead of growing without bound.
-            for stale in list(self._turn_tools)[: len(self._turn_tools) - 500]:
-                del self._turn_tools[stale]
+        with self._tools_lock:
+            self._turn_tools.setdefault((session_id, turn_id), []).append(card)
+            if len(self._turn_tools) > 500:
+                # Hooks fire per tool call; if session end is missed, drop the
+                # oldest buffered cards instead of growing without bound.
+                for stale in list(self._turn_tools)[: len(self._turn_tools) - 500]:
+                    del self._turn_tools[stale]
         try:
             with self._store_lock:
                 state = self.store.load(session_id)
@@ -1153,7 +1301,8 @@ class CoachPlugin:
         self._remember_primary(data)
         session_id = str(data.get("session_id") or "current")
         turn_id = str(data.get("turn_id") or "current")
-        tools = self._turn_tools.pop((session_id, turn_id), [])
+        with self._tools_lock:
+            tools = self._turn_tools.pop((session_id, turn_id), [])
         if not self.settings.active_enabled and not self.settings.review_enabled:
             return
         try:
@@ -1166,8 +1315,6 @@ class CoachPlugin:
                     self.store.save(seen)
         except Exception:
             pass
-        if not self.settings.active_enabled:
-            return
         turn = {
             "turn_id": turn_id,
             "user": str(data.get("user_message") or data.get("user") or ""),
@@ -1188,7 +1335,7 @@ class CoachPlugin:
                 # Persist before submitting: the worker loads the state itself, and
                 # a submit first means it can find no turn and drop the review.
                 self.store.save(state)
-            if due:
+            if due and worker is not None:
                 key = (session_id, turn_id)
                 with self._queued_lock:
                     for stale in [
@@ -1197,7 +1344,18 @@ class CoachPlugin:
                         if queued[0] == session_id and queued[1] != turn_id
                     ]:
                         del self._queued[stale]
-                    if key not in self._queued and worker.submit(session_id, turn_id):
+                    submitted = False
+                    try:
+                        submitted = bool(worker.submit(session_id, turn_id))
+                    except Exception:
+                        submitted = False
+                    try:
+                        evicted = worker.pop_evicted()
+                    except Exception:
+                        evicted = None
+                    if evicted is not None:
+                        self._queued.pop((str(evicted[0]), str(evicted[1])), None)
+                    if key not in self._queued and submitted:
                         self._queued[key] = None
         except Exception:
             pass
@@ -1266,6 +1424,7 @@ class CoachPlugin:
                     max_tokens=self.settings.ledger_max_tokens,
                     tool_result_chars=self.settings.ledger_max_tool_result_chars,
                     recent_turns=self.settings.ledger_max_recent_turns,
+                    note_max_chars=self.settings.ledger_note_max_chars,
                 )
             reply = self.coach.ask(
                 messages,
@@ -1287,13 +1446,19 @@ class CoachPlugin:
                 state.updated_at = self.clock()
                 self.store.save(state)
             self._log_review(sid, tid, reply)
+            self._debug(
+                f"active review {sid}/{tid} error={reply.error!r} "
+                f"finding={reply.finding.severity if reply.finding else None} "
+                f"cost={reply.cost_usd}"
+            )
             if not reply.error:
                 self.deliver(reply.finding, session_id=sid, turn_id=tid)
         except Exception:
             try:
-                if state is not None:
-                    state.updated_at = self.clock()
-                    self.store.save(state)
+                with self._store_lock:
+                    fresh = self.store.load(sid)
+                    fresh.updated_at = self.clock()
+                    self.store.save(fresh)
             except Exception:
                 pass
         finally:
@@ -1432,9 +1597,20 @@ class CoachPlugin:
                 state.calls[holds_key] = state.calls.get(holds_key, used) + 1
                 state.updated_at = self.clock()
                 self.store.save(state)
+            # The user sees the blocker too, not only the agent.
+            self.card(finding)
             return {"action": "continue", "message": _hold_message(finding)}
 
-        self._post(format_card(finding))
+        # Everything else reaches the model as a note on the next turn, through
+        # the same path Active uses. Without this a concern is a card the model
+        # never reads. allow_corrective=False: the gate has its own hold slot,
+        # so delivery policy must not open a second, uncapped turn from here.
+        self.deliver(
+            finding,
+            session_id=session_id,
+            turn_id=turn_id,
+            allow_corrective=False,
+        )
         return None
 
     def collect_evidence(self, cwd: str, paths: list[str], base: str = "") -> str:
@@ -1473,6 +1649,7 @@ class CoachPlugin:
                 max_tokens=self.settings.ledger_max_tokens,
                 tool_result_chars=self.settings.ledger_max_tool_result_chars,
                 recent_turns=self.settings.ledger_max_recent_turns,
+                note_max_chars=self.settings.ledger_note_max_chars,
             )
             reply = self.coach.ask(
                 messages,
@@ -1494,11 +1671,23 @@ class CoachPlugin:
             return reply.finding
         except Exception:
             try:
-                state.updated_at = self.clock()
-                self.store.save(state)
+                with self._store_lock:
+                    fresh = self.store.load(session_id)
+                    fresh.updated_at = self.clock()
+                    self.store.save(fresh)
             except Exception:
                 pass
             return None
+
+    def card(self, finding: Finding) -> None:
+        """Post the user-visible card for a finding, when cards are enabled."""
+        if self.settings.delivery_show_cards:
+            self._post(format_card(finding))
+
+    def card_text(self, text: str) -> None:
+        """Post a user-visible card for advice that is not a finding."""
+        if self.settings.delivery_show_cards:
+            self._post(text)
 
     def _post(self, text: str) -> None:
         if self.post is None:
@@ -1533,6 +1722,9 @@ class CoachPlugin:
             return _error("question_required")
         if len(question) > _QUESTION_MAX:
             return _error("question_too_long")
+        raw_context = str(args.get("context") or "")
+        if len(raw_context) > _CONTEXT_MAX:
+            return _error("context_too_long")
 
         intent = str(args.get("intent") or "advice").strip().lower()
         if intent not in _INTENTS:
@@ -1564,7 +1756,7 @@ class CoachPlugin:
             state.updated_at = self.clock()
             self.store.save(state)  # count the attempt even if the call fails
         prompt = question
-        context = str(args.get("context") or "").strip()
+        context = str(args.get("context") or "").strip()[:_CONTEXT_MAX]
         if context:
             prompt = f"{question}\n\nContext:\n{context}"
         # Session-aware project dir: the model's working directory may differ
@@ -1582,6 +1774,7 @@ class CoachPlugin:
             max_tokens=self.settings.ledger_max_tokens,
             tool_result_chars=self.settings.ledger_max_tool_result_chars,
             recent_turns=self.settings.ledger_max_recent_turns,
+            note_max_chars=self.settings.ledger_note_max_chars,
         )
         reply = self.coach.ask(
             messages,
@@ -1619,6 +1812,11 @@ class CoachPlugin:
             state.last_advice = entry
             state.updated_at = self.clock()
             self.store.save(state)
+        # Transparency: the user sees the advice even when the agent only
+        # summarises it (or not at all) in its reply.
+        self.card_text(
+            _advice_card(reply.text, intent, reply.provider, reply.model)
+        )
         return {
             "ok": True,
             "advice": reply.text,
@@ -1699,7 +1897,7 @@ class CoachPlugin:
             backend=backend,
             question=question,
             options=options,
-            state=context if isinstance(context, Mapping) else {},
+            state=_bound_state(context),
             model=self.settings.decide_model,
             api_key=api_key,
             min_confidence=self.settings.decide_min_confidence,
@@ -1728,6 +1926,9 @@ class CoachPlugin:
             }
             self.store.save(state)
         self._log_decision(session_id, turn_id, decision, backend)
+        self.card_text(
+            _decision_card(decision, backend)
+        )
         return {
             "ok": True,
             "decision": decision.decision,
@@ -1776,9 +1977,13 @@ def _with_host_ids(args: Any, kw: Mapping[str, Any]) -> dict[str, Any]:
     session = kw.get("session_id")
     if session:
         merged["session_id"] = str(session)
+    elif "session_id" not in merged:
+        merged["session_id"] = "current"
     task = kw.get("task_id")
     if task:
         merged["turn_id"] = str(task)
+    elif "turn_id" not in merged:
+        merged["turn_id"] = "current"
     return merged
 
 

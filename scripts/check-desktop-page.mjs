@@ -136,9 +136,22 @@ function main() {
     "allow_in_subagents",
     "debug_log_decisions",
   ])
-  const missing = keys.filter(
-    (key) => !CONFIG_ONLY.has(key) && !source.includes(`"${key}"`),
-  )
+  const missing = keys.filter((key) => {
+    if (CONFIG_ONLY.has(key)) return false
+    const saveCall = new RegExp(`save\\(\\s*["']${key}["']`)
+    const valuesProp = new RegExp(`values\\.${key}\\b`)
+    if (saveCall.test(source) || valuesProp.test(source)) return false
+    // Per-mode models render through a mapped ModelPicker: the key appears as
+    // a string literal in the overrides list and saves via save(key, ...).
+    if (
+      ["coach_model", "active_model", "review_model", "consult_model"].includes(key) &&
+      source.includes(`"${key}"`) &&
+      /save\(\s*key\b/.test(source)
+    ) {
+      return false
+    }
+    return true
+  })
   if (missing.length) {
     fail(`settings with no control on the page: ${missing.join(", ")}`)
   }
@@ -152,7 +165,12 @@ function main() {
     [/"All sessions"/, '"All sessions"'],
     [/method\s*:\s*["']PUT["']/, 'method: "PUT"'],
     [/["']\/permissions\/grant["']/, '"/permissions/grant"'],
+    [/["']\/permissions\/revoke["']/, '"/permissions/revoke"'],
+    [/"Refresh"/, '"Refresh"'],
+    [/role["']?\s*:\s*["']status["']/, 'role: "status"'],
     [/\bproviderName\b/, "providerName"],
+    [/host\s*\.\s*composer\b/, "host.composer"],
+    [/composer\s*\.\s*submit\s*\(/, "composer.submit()"],
   ]
   const missingSnippets = required
     .filter(([pattern]) => !pattern.test(source))
@@ -192,12 +210,28 @@ function main() {
   const body = kept.join("\n")
 
   const stub = `
-const createElement = (type, props, ...children) => ({ type, props, children });
-const useState = (initial) => [initial, () => {}];
+const createElement = (type, props, ...children) => {
+  if (typeof type === "function") {
+    return type({ ...props, children });
+  }
+  return { type, props, children };
+};
+let __hookIndex = 0;
+let __hooks = [];
+const useState = (initial) => {
+  const i = __hookIndex++;
+  if (!(i in __hooks)) __hooks[i] = (typeof initial === "function" ? initial() : initial);
+  const set = (v) => { __hooks[i] = (typeof v === "function" ? v(__hooks[i]) : v); };
+  return [__hooks[i], set];
+};
 const useRef = (initial) => ({ current: initial });
-const useEffect = () => {};
+const useEffect = (fn) => { try { const cleanup = fn(); } catch {} };
 const useValue = () => "";
-const host = { state: { model: "" }, request: async () => ({ providers: [{ slug: "p", models: ["m"] }] }) };
+const host = { state: { model: "", cwd: "", focusedSessionId: "" }, request: async () => ({ providers: [{ slug: "p", name: "P", models: ["m"] }] }), composer: { submit: () => true } };
+const __resetHooks = () => { __hookIndex = 0; };
+const __resetAll = () => { __hookIndex = 0; __hooks = []; };
+globalThis.__resetHooks = __resetHooks;
+globalThis.__resetAll = __resetAll;
 `
 
   dir = mkdtempSync(join(tmpdir(), "coach-page-"))
@@ -240,6 +274,7 @@ const host = { state: { model: "" }, request: async () => ({ providers: [{ slug:
     }
 
     let page = null
+    const called = new Set()
     return Promise.resolve(
       plugin.register({
         registerSettingsPage: (value) => {
@@ -251,26 +286,35 @@ const host = { state: { model: "" }, request: async () => ({ providers: [{ slug:
         // Unknown routes throw: a new endpoint without a fixture fails loudly.
         rest: async (url = "", opts = {}) => {
           const method = (opts && opts.method) || "GET"
+          called.add(`${method} ${String(url).split("?")[0]}`)
           if (url.startsWith("/config")) {
             if (method === "PUT") {
               return {
                 values: (opts.body && opts.body.values) || {},
-                permissions: {},
+                permissions: { granted: false, provider_overrides: false, model_overrides: false },
               }
             }
             return {
               values: { active_enabled: true, delivery_show_cards: true },
-              permissions: { model_overrides: false },
+              permissions: { granted: false, provider_overrides: false, model_overrides: false },
             }
           }
           if (url.startsWith("/status")) {
             return {
               configured: false,
+              coach_model: null,
+              active_enabled: true,
+              review_enabled: true,
+              decide_enabled: false,
+              decide_backend: "jev-openrouter",
               spend_usd: 0,
+              spend_total_usd: 0,
+              spend_sessions: {},
               budget_usd: 5,
+              budget_per_session_usd: 5,
               pending_notes: 0,
               sessions: 0,
-              permissions: { model_overrides: false },
+              permissions: { granted: false, provider_overrides: false, model_overrides: false },
             }
           }
           if (url.startsWith("/recent")) {
@@ -291,10 +335,11 @@ const host = { state: { model: "" }, request: async () => ({ providers: [{ slug:
             return { text: "", path: "", scope: "global", cwd: "" }
           }
           if (url.startsWith("/permissions/grant")) return { ok: true }
+          if (url.startsWith("/permissions/revoke")) return { ok: true }
           throw new Error(`unexpected REST call in smoke test: ${method} ${url}`)
         },
       }),
-    ).then(() => {
+    ).then(async () => {
       if (!page || page.id !== "coach" || !Array.isArray(page.children)) {
         fail("register() did not contribute a coach settings page")
       }
@@ -318,6 +363,12 @@ const host = { state: { model: "" }, request: async () => ({ providers: [{ slug:
       for (const child of tabs) {
         let tree
         try {
+          globalThis.__resetAll()
+          tree = child.render({})
+          // Let queued effects resolve, then re-render with loaded state.
+          await new Promise((resolve) => setTimeout(resolve, 0))
+          await new Promise((resolve) => setTimeout(resolve, 0))
+          globalThis.__resetHooks()
           tree = child.render({})
         } catch (err) {
           fail(`settings tab ${child.id} threw while rendering: ${err.message}`)
@@ -329,6 +380,11 @@ const host = { state: { model: "" }, request: async () => ({ providers: [{ slug:
         // no branch of the tree may be malformed.
         if (substance(tree) < 3) {
           fail(`settings tab ${child.id} rendered almost nothing`)
+        }
+      }
+      for (const route of ["GET /status", "GET /recent"]) {
+        if (!called.has(route)) {
+          fail(`desktop page never called ${route}`)
         }
       }
 

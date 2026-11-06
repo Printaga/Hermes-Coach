@@ -175,3 +175,123 @@ def test_review_uses_the_last_user_message_as_request(tmp_path):
     p.on_pre_verify(session_id="s", turn_id="t1", final_response="done",
                     changed_paths=["a.py"], cwd=str(tmp_path))
     assert seen["request"] == "Add a retry cap"
+
+
+def _concern():
+    return {
+        "severity": "concern",
+        "title": "Retry hides the timeout",
+        "body": "The retry loop swallows the deadline error.",
+        "evidence": "client.py:88",
+        "fix": "Re-raise after the last attempt.",
+    }
+
+
+def test_a_concern_is_queued_for_the_model_not_only_carded(tmp_path):
+    """The bug: a review finding was a card the model never read."""
+    p = _p(tmp_path, llm=StructuredLlm(_concern()))
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+
+    p.on_pre_verify(
+        session_id="s",
+        turn_id="t1",
+        final_response="done",
+        changed_paths=["client.py"],
+        cwd=str(tmp_path),
+    )
+
+    state = p.store.load("s")
+    assert len(state.pending) == 1
+    note = state.pending[0]
+    assert note["turn_id"] == "t1"
+    assert "<coach-note" in note["text"]
+    assert "Retry hides the timeout" in note["text"]
+    assert any("Coach · concern" in text for text in p._test_post)
+
+
+def test_the_queued_note_reaches_the_next_turn_as_context(tmp_path):
+    p = _p(tmp_path, llm=StructuredLlm(_concern()))
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+    p.on_pre_verify(
+        session_id="s",
+        turn_id="t1",
+        final_response="done",
+        changed_paths=["client.py"],
+        cwd=str(tmp_path),
+    )
+
+    context = p.on_pre_llm_call({"session_id": "s", "turn_id": "t2"})
+    assert context and "<coach-note" in context["context"]
+    assert p.store.load("s").pending == []
+
+
+def test_the_gate_never_starts_a_turn_through_delivery_policy(tmp_path):
+    injected = []
+    p = _p(
+        tmp_path,
+        llm=StructuredLlm({**_concern(), "severity": "blocker"}),
+        delivery_policy="corrective",
+        review_authority="report",
+    )
+    p.inject = lambda text: injected.append(text) or True
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+
+    p.on_pre_verify(
+        session_id="s",
+        turn_id="t1",
+        final_response="done",
+        changed_paths=["client.py"],
+        cwd=str(tmp_path),
+    )
+    assert injected == []
+    assert len(p.store.load("s").pending) == 1
+
+
+def test_a_hold_posts_a_card_and_a_complete_message(tmp_path):
+    p = _p(tmp_path, llm=StructuredLlm({**_concern(), "severity": "blocker"}))
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+
+    out = p.on_pre_verify(
+        session_id="s",
+        turn_id="t1",
+        final_response="done",
+        changed_paths=["client.py"],
+        cwd=str(tmp_path),
+    )
+
+    assert out["action"] == "continue"
+    message = out["message"]
+    assert "Retry hides the timeout" in message
+    assert "swallows the deadline error" in message
+    assert "client.py:88" in message
+    assert "Re-raise" in message
+    assert any("Coach · blocker" in text for text in p._test_post)
+
+
+def test_the_same_finding_is_queued_once_per_turn(tmp_path):
+    p = _p(tmp_path, llm=StructuredLlm(_concern()))
+    finding = Finding(**{
+        "severity": "concern",
+        "title": "Retry hides the timeout",
+        "body": "b",
+        "evidence": "",
+        "fix": "",
+    })
+    p.deliver(finding, session_id="s", turn_id="t1")
+    p.deliver(finding, session_id="s", turn_id="t1")
+    assert len(p.store.load("s").pending) == 1
+
+
+def test_cards_can_be_switched_off_entirely(tmp_path):
+    p = _p(tmp_path, llm=StructuredLlm(_concern()), delivery_show_cards=False)
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+
+    p.on_pre_verify(
+        session_id="s",
+        turn_id="t1",
+        final_response="done",
+        changed_paths=["client.py"],
+        cwd=str(tmp_path),
+    )
+    assert p._test_post == []
+    assert len(p.store.load("s").pending) == 1

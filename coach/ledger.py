@@ -13,14 +13,33 @@ from typing import Any
 
 from .state import SessionState
 
-__all__ = ["append_turn", "build_messages", "estimate_tokens", "tool_card"]
+__all__ = ["_bound_card", "append_turn", "build_messages", "estimate_tokens", "tool_card"]
 
 _ASSISTANT_CHARS = 600
 _USER_CHARS = 4000
 _NAME_CHARS = 64
 _ARG_CHARS = 256
 _STATUS_CHARS = 64
+_PREVIEW_WRITE_MAX = 2000
+_CARDS_PER_TURN_MAX = 20
 _MAX_TURNS = 60
+
+
+def _bound_card(card: Any) -> dict:
+    """Truncate one tool card so raw payloads cannot persist unbounded."""
+    if not isinstance(card, dict):
+        return {"name": "tool", "arg": "", "status": "", "size": 0, "preview": ""}
+    try:
+        size = int(card.get("size", 0) or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return {
+        "name": str(card.get("name") or "tool")[:_NAME_CHARS],
+        "arg": str(card.get("arg") or "")[:_ARG_CHARS],
+        "status": str(card.get("status") or "")[:_STATUS_CHARS],
+        "size": max(0, size),
+        "preview": str(card.get("preview") or "")[:_PREVIEW_WRITE_MAX],
+    }
 
 
 def append_turn(
@@ -42,9 +61,7 @@ def append_turn(
             "turn_id": turn_id,
             "user": str(user or "")[:_USER_CHARS],
             "assistant": str(assistant or "")[:_ASSISTANT_CHARS],
-            "tools": [
-                dict(card) if isinstance(card, dict) else card for card in tools
-            ],
+            "tools": [_bound_card(card) for card in list(tools or [])[:_CARDS_PER_TURN_MAX]],
         }
     )
     if len(state.ledger) > _MAX_TURNS:
@@ -104,6 +121,7 @@ def build_messages(
     max_tokens: int,
     tool_result_chars: int,
     recent_turns: int,
+    note_max_chars: int = 1000,
 ) -> list[dict[str, str]]:
     """Assemble the coach prompt from the bounded ledger."""
     lines: list[dict[str, Any]] = []
@@ -157,9 +175,11 @@ def build_messages(
                 }
             )
 
+    note_cap = max(0, int(note_max_chars))
+    note_body = str(state.note or "")[:note_cap] if note_cap else ""
     note_text = (
-        f"Session note (the coach's own interpretation):\n{state.note}"
-        if state.note
+        f"Session note (the coach's own interpretation):\n{note_body}"
+        if note_body
         else ""
     )
     fixed = len(str(system or "")) + len(str(guidance or "")) + len(note_text)
@@ -198,10 +218,13 @@ def build_messages(
                 line["dropped"] = True
                 ledger_text = render()
     if len(ledger_text) > budget:
-        start = max(0, len(ledger_text) - budget)
-        cut = ledger_text.find("\n", start)
-        ledger_text = ledger_text[cut + 1 :] if cut != -1 else ledger_text[-budget:]
-        ledger_text = ledger_text.lstrip()
+        if budget <= 0:
+            ledger_text = ""
+        else:
+            start = max(0, len(ledger_text) - budget)
+            cut = ledger_text.find("\n", start)
+            ledger_text = ledger_text[cut + 1 :] if cut != -1 else ledger_text[-budget:]
+            ledger_text = ledger_text.lstrip()
 
     system_parts = [str(system or ""), str(guidance or "")]
     if note_text:

@@ -58,7 +58,7 @@ sequenceDiagram
 | `post_tool_call` | Buffer a compact tool card for the current turn | Ignore |
 | `post_llm_call` | Snapshot the turn, check cadence/budget/digest, queue a review | Return immediately |
 | `pre_llm_call` | Hand over ambient notes once, drop expired ones, snapshot the turn's base commit | Return `None` |
-| `pre_verify` | Review the turn's diff and optionally hold completion | Fail open |
+| `pre_verify` | Review the turn's diff, card the finding, queue it for the next turn, and optionally hold completion | Fail open |
 | `subagent_start/stop` | Track child sessions so their tools are refused | Ignore |
 | `on_session_end` | Prune old session files | Log and continue |
 

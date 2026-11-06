@@ -73,11 +73,11 @@ function modelLabel(value) {
 }
 
 function sameModel(a, b) {
-  if (!a || !b) return false
+  if (!a || !b) return false;
   return (
-    String(a.model || "") === String(b.model || "") &&
-    String(a.provider || "") === String(b.provider || "")
-  )
+    String(a.model || "").trim().toLowerCase() === String(b.model || "").trim().toLowerCase() &&
+    String(a.provider || "").trim().toLowerCase() === String(b.provider || "").trim().toLowerCase()
+  );
 }
 
 function flattenModels(result) {
@@ -144,7 +144,7 @@ function useSettings(ctx) {
 
   useEffect(() => {
     alive.current = true
-    reload()
+    chain.current = chain.current.then(() => reload()).catch(() => {})
     return () => {
       alive.current = false
     }
@@ -201,7 +201,14 @@ function Field(props) {
   return h(
     "div",
     { style: { display: "grid", gap: 5 } },
-    h("label", { style: { fontWeight: 600, fontSize: "0.875rem" } }, props.label),
+    h(
+      "label",
+      {
+        style: { fontWeight: 600, fontSize: "0.875rem" },
+        ...(props.controlId ? { htmlFor: props.controlId } : {}),
+      },
+      props.label
+    ),
     props.children,
     props.hint ? h("p", { style: MUTED }, props.hint) : null,
   )
@@ -237,12 +244,16 @@ function Toggle(props) {
 function Choice(props) {
   const selected = props.options.find((option) => option.value === props.value)
   const known = Boolean(selected)
+  const controlId =
+    props.controlId ||
+    `coach-choice-${String(props.label || "field").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
   return h(
     Field,
-    { label: props.label, hint: selected && selected.description ? selected.description : props.hint },
+    { label: props.label, hint: selected && selected.description ? selected.description : props.hint, controlId },
     h(
       "select",
       {
+        id: controlId,
         style: INPUT,
         value: known ? props.value : "",
         onChange: (event) => props.onChange(event.target.value),
@@ -268,8 +279,9 @@ function TextField(props) {
   }
   return h(
     Field,
-    { label: props.label, hint: props.hint },
+    { label: props.label, hint: props.hint, controlId: props.controlId },
     h("input", {
+      id: props.controlId,
       style: INPUT,
       value: draft,
       placeholder: props.placeholder,
@@ -305,10 +317,14 @@ function NumberField(props) {
     setDraft(String(clamped))
     if (clamped !== Number(props.value)) props.onChange(clamped)
   }
+  const controlId =
+    props.controlId ||
+    `coach-num-${String(props.label || "field").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
   return h(
     Field,
-    { label: props.label, hint: props.hint },
+    { label: props.label, hint: props.hint, controlId },
     h("input", {
+      id: controlId,
       type: "number",
       style: INPUT,
       value: draft,
@@ -345,6 +361,7 @@ function ModelPicker(props) {
       "button",
       {
         type: "button",
+        "aria-label": "Choose model",
         style: { ...BUTTON, display: "flex", justifyContent: "space-between", gap: 12 },
         onClick: () => setOpen(!open),
       },
@@ -358,6 +375,7 @@ function ModelPicker(props) {
           h("input", {
             autoFocus: true,
             placeholder: "Search models or providers",
+            "aria-label": "Search models or providers",
             style: INPUT,
             value: query,
             onChange: (event) => setQuery(event.target.value),
@@ -369,8 +387,11 @@ function ModelPicker(props) {
                 "Inherit shared model",
               )
             : null,
-          props.models.length === 0
+          props.models.length === 0 && !props.catalogLoading
             ? h("p", { style: MUTED }, "The host returned no models. Check that a provider is authenticated.")
+            : null,
+          props.catalogLoading
+            ? h("p", { style: MUTED, role: "status" }, "Loading models...")
             : null,
           groups.length === 0 && props.models.length > 0
             ? h("p", { style: MUTED }, "No model matches that search.")
@@ -406,15 +427,23 @@ function ModelSection(props) {
   const values = (state.config && state.config.values) || {}
   const [catalog, setCatalog] = useState([])
   const [catalogError, setCatalogError] = useState("")
+  const [catalogLoading, setCatalogLoading] = useState(true)
 
   useEffect(() => {
     let alive = true
+    setCatalogLoading(true)
     Promise.resolve(host.request("model.options"))
       .then((result) => {
-        if (alive) setCatalog(flattenModels(result))
+        if (alive) {
+          setCatalog(flattenModels(result))
+          setCatalogLoading(false)
+        }
       })
       .catch((err) => {
-        if (alive) setCatalogError(messageOf(err))
+        if (alive) {
+          setCatalogError(messageOf(err))
+          setCatalogLoading(false)
+        }
       })
     return () => {
       alive = false
@@ -437,6 +466,7 @@ function ModelSection(props) {
       { label: "Shared coach model", hint: catalogError || warning },
       h(ModelPicker, {
         models: catalog,
+        catalogLoading,
         value: values.coach_model,
         inherit: false,
         onChange: (next) => state.save("coach_model", next),
@@ -465,6 +495,7 @@ function ModelSection(props) {
         { key, label, hint },
         h(ModelPicker, {
           models: catalog,
+          catalogLoading,
           value: values[key],
           inherit: true,
           onChange: (next) => state.save(key, next),
@@ -770,7 +801,7 @@ const STARTER = `# Coach guidance
 function GuidancePage(props) {
   const { ctx, state } = props
   const cwd = useValue(host.state.cwd)
-  const [scope, setScope] = useState("project")
+  const [scope, setScope] = useState("global")
   const [text, setText] = useState("")
   const [path, setPath] = useState("")
   const [notice, setNotice] = useState("")
@@ -779,6 +810,13 @@ function GuidancePage(props) {
   const seq = useRef(0)
 
   const load = async (nextScope) => {
+    if (nextScope === "project" && !cwd) {
+      setText("")
+      setPath("")
+      setNotice("Open a project chat to edit project guidance; showing global scope instead is available above.")
+      setLoading(false)
+      return
+    }
     const id = ++seq.current
     setNotice("")
     setLoading(true)
@@ -878,6 +916,8 @@ function GuidancePage(props) {
       ),
       path ? h("p", { style: { ...MUTED, fontFamily: "monospace" } }, path) : null,
       h("textarea", {
+        id: "coach-guidance-text",
+        "aria-label": "Guidance text",
         style: {
           ...INPUT,
           minHeight: 220,
@@ -953,6 +993,43 @@ function StatusPage(props) {
     }
   }, [sessionParam])
 
+  const refreshRecent = () => {
+    setRecentError("")
+    ctx
+      .rest(`/recent?limit=8${sessionParam}`)
+      .then((result) => {
+        setRecent((unwrap(result) || {}).reviews || [])
+      })
+      .catch((err) => {
+        setRecentError(messageOf(err))
+      })
+  }
+
+  // The host renders plugin cards as notifications, which cannot carry
+  // buttons. The composer IS scriptable, so the click lives here instead.
+  const sendToChat = (row) => {
+    const composer = host.composer
+    if (!composer || typeof composer.submit !== "function") {
+      setNotice("This Desktop build cannot send to the chat.")
+      return
+    }
+    const lines = [
+      row.severity && row.severity !== "none"
+        ? `Coach ${row.severity}: ${row.title || ""}`
+        : `Coach note: ${row.title || "finding"}`,
+      row.body ? String(row.body) : "",
+      row.evidence ? `Evidence: ${row.evidence}` : "",
+      row.fix ? `Suggested fix: ${row.fix}` : "",
+      "Address this finding, or explain why it does not apply.",
+    ]
+    const text = lines.filter(Boolean).join("\n").slice(0, 4000)
+    if (composer.submit(focused || null, text)) {
+      setNotice("Sent to this chat.")
+    } else {
+      setNotice("Could not reach this chat's composer.")
+    }
+  }
+
   const grant = async () => {
     setGranting(true)
     setNotice("")
@@ -967,14 +1044,37 @@ function StatusPage(props) {
     }
   }
 
+  const revoke = async () => {
+    setGranting(true)
+    setNotice("")
+    try {
+      await ctx.rest("/permissions/revoke", { method: "POST", body: {} })
+      setNotice("Model overrides revoked.")
+      await state.reload()
+    } catch (err) {
+      setNotice(messageOf(err))
+    } finally {
+      setGranting(false)
+    }
+  }
+
+  const totalSpend = status.spend_total_usd ?? status.spend_usd
+  const perSessionBudget = status.budget_per_session_usd ?? status.budget_usd
+  const thisChatSpend =
+    focused && status.spend_sessions && focused in status.spend_sessions
+      ? formatUsd(status.spend_sessions[focused])
+      : null
   const rows = [
     ["Coach model", status.configured ? modelLabel(status.coach_model) : "Not configured"],
     ["Active review", status.active_enabled ? "On" : "Off"],
     ["Completion review", status.review_enabled ? "On" : "Off"],
     ["Decisions", status.decide_enabled ? `On, ${status.decide_backend}` : "Off"],
+    ...(thisChatSpend !== null
+      ? [["This chat spend", `${thisChatSpend} of ${formatUsd(perSessionBudget)} budgeted`]]
+      : []),
     [
-      "Spend, all sessions",
-      `${formatUsd(status.spend_usd)} of ${formatUsd(status.budget_usd)} per session`,
+      "Spend total, all sessions",
+      `${formatUsd(totalSpend)} total · ${formatUsd(perSessionBudget)} budget per session`,
     ],
     ["Pending notes", String(status.pending_notes || 0)],
     ["Sessions with state", String(status.sessions || 0)],
@@ -1034,11 +1134,16 @@ function StatusPage(props) {
             value === "chat" ? "This chat" : "All sessions",
           ),
         ),
+        h(
+          "button",
+          { type: "button", style: BUTTON, onClick: refreshRecent },
+          "Refresh",
+        ),
       ),
       recent.length === 0
         ? h(
             "p",
-            { style: MUTED },
+            { style: MUTED, role: "status" },
             recentError
               ? `Could not load recent reviews: ${recentError}`
               : scope === "chat"
@@ -1061,6 +1166,15 @@ function StatusPage(props) {
               ),
               row.body ? h("p", { style: MUTED }, String(row.body).slice(0, 220)) : null,
               row.error ? h("p", { style: MUTED }, `error: ${row.error}`) : null,
+              h(
+                "button",
+                {
+                  type: "button",
+                  style: { ...BUTTON, justifySelf: "start", fontSize: "0.75rem" },
+                  onClick: () => sendToChat(row),
+                },
+                "Send to chat",
+              ),
             ),
           ),
     ),
@@ -1073,17 +1187,28 @@ function StatusPage(props) {
       },
       h(
         "p",
-        { style: { ...MUTED, opacity: 1, fontWeight: 600 } },
-        permissions.model_overrides ? "Granted" : "Not granted",
+        { style: { ...MUTED, opacity: 1, fontWeight: 600 }, role: "status" },
+        permissions.granted ? "Granted" : "Not granted",
       ),
-      permissions.model_overrides
-        ? null
+      permissions.granted
+        ? h(
+            "button",
+            { type: "button", style: BUTTON, onClick: revoke, disabled: granting },
+            granting ? "Working..." : "Revoke model overrides",
+          )
         : h(
             "button",
             { type: "button", style: BUTTON, onClick: grant, disabled: granting },
             granting ? "Granting..." : "Grant model overrides",
           ),
-      notice ? h("p", { style: MUTED }, notice) : null,
+      !permissions.granted && (permissions.provider_overrides !== permissions.model_overrides)
+        ? h(
+            "p",
+            { style: MUTED, role: "status" },
+            "Partial grant: both provider and model overrides are required.",
+          )
+        : null,
+      notice ? h("p", { style: MUTED, role: "status" }, notice) : null,
     ),
     h(
       Card,
@@ -1116,7 +1241,7 @@ export function register(ctx) {
         return h(
           "div",
           { style: { display: "grid", gap: 10, padding: 8 } },
-          h("p", { style: MUTED }, state.error || "Loading settings..."),
+          h("p", { style: MUTED, role: "status" }, state.error || "Loading settings..."),
           h("button", { type: "button", style: BUTTON, onClick: () => state.reload() }, "Reload"),
         )
       }
@@ -1124,7 +1249,7 @@ export function register(ctx) {
         return h(
           "div",
           { style: { display: "grid", gap: 10 } },
-          h("p", { style: { ...MUTED, opacity: 1, fontWeight: 600 } }, state.error),
+          h("p", { style: { ...MUTED, opacity: 1, fontWeight: 600 }, role: "alert" }, state.error),
           h("button", { type: "button", style: BUTTON, onClick: () => state.reload() }, "Retry"),
           h(Component, { ctx, state, mainModel: null }),
         )

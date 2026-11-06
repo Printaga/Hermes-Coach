@@ -24,6 +24,7 @@ class Worker:
         self._run = run
         self._condition = threading.Condition()
         self._pending: tuple[str, str] | None = None
+        self._evicted: tuple[str, str] | None = None
         self._running = False
         self._stopped = False
         self._thread = threading.Thread(
@@ -39,9 +40,19 @@ class Worker:
         with self._condition:
             if self._stopped:
                 return False
+            pending = self._pending
+            if pending is not None and pending != (session, str(turn_id or "").strip()):
+                self._evicted = pending
             self._pending = (session, str(turn_id or "").strip())
             self._condition.notify()
             return True
+
+    def pop_evicted(self) -> tuple[str, str] | None:
+        """Return and clear the last overwritten queued turn, if any."""
+        with self._condition:
+            evicted = self._evicted
+            self._evicted = None
+            return evicted
 
     def drain(self, timeout: float | None = None) -> bool:
         """Wait for pending work to finish; True when the worker is idle."""

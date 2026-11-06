@@ -1,7 +1,15 @@
 # tests/test_state.py
-import json, os
+import json, os, sys
+
+import pytest
+
 from pathlib import Path
 from coach.state import SessionState, Store
+
+_not_readable_as_non_owner = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 0o000 is not unreadable for root or on Windows",
+)
 
 def test_roundtrip_and_defaults(tmp_path):
     store = Store(tmp_path)
@@ -47,6 +55,7 @@ def test_has_reports_a_known_session(tmp_path):
     assert store.has("s1") is True
 
 
+_not_readable_as_non_owner
 def test_unreadable_file_names_the_cause_in_last_error(tmp_path):
     store = Store(tmp_path)
     path = store._path("denied")

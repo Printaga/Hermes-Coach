@@ -160,7 +160,7 @@ class Store:
         return SessionState(
             session_id=_as_str(data.get("session_id")) or fallback_id,
             ledger=_dict_items(data.get("ledger")),
-            note=_as_str(data.get("note")),
+            note=_as_str(data.get("note"))[:5000],
             pending=_dict_items(data.get("pending")),
             note_seq=_as_int(data.get("note_seq")),
             holds=_as_int(data.get("holds")),

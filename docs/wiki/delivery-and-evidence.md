@@ -28,6 +28,19 @@ flowchart TD
 | `corrective` | A message in the conversation, which starts a turn | A full turn, often with tools |
 | `drop` | Nothing delivered | — |
 
+The completion gate hands its finding to `deliver()` too, with
+`allow_corrective=False`: the gate has its own single-hold authority, so
+delivery policy must not open a second, uncapped turn from there. A held
+blocker is carded and returned as a self-contained message (title, body,
+evidence, fix) inside the current turn; every other finding is carded and
+queued as a note the agent reads at the start of its next turn. Before this,
+a review finding was only a card, so the model never learned about it.
+
+Notes are deduplicated per `(turn, title)`: Active and the gate can flag the
+same turn, and the model should read it once. Every card respects
+`delivery_show_cards`, which makes the coach visible without changing what the
+model sees.
+
 Messaging surfaces (Telegram, Discord, …) always take `ambient`: an injected
 turn there has no live agent to act on it. The corrective cap
 (`delivery_max_corrective_per_request`) is counted per user request, so advice

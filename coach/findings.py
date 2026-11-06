@@ -27,6 +27,8 @@ SEVERITIES = ("none", "nit", "concern", "blocker")
 _DELIVERABLE = ("nit", "concern", "blocker")
 _TITLE_MAX = 80
 _BODY_MAX = 600
+_EVIDENCE_MAX = 1000
+_FIX_MAX = 1000
 _FENCED_JSON = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
 )
@@ -37,8 +39,8 @@ SCHEMA: dict = {
         "severity": {"type": "string", "enum": list(SEVERITIES)},
         "title": {"type": "string", "maxLength": _TITLE_MAX},
         "body": {"type": "string", "maxLength": _BODY_MAX},
-        "evidence": {"type": "string"},
-        "fix": {"type": "string"},
+        "evidence": {"type": "string", "maxLength": _EVIDENCE_MAX},
+        "fix": {"type": "string", "maxLength": _FIX_MAX},
     },
     "required": ["severity", "title", "body", "evidence", "fix"],
     "additionalProperties": False,
@@ -83,8 +85,8 @@ def _from_mapping(payload: Mapping[str, Any]) -> Finding | None:
         severity=severity,
         title=title[:_TITLE_MAX],
         body=body[:_BODY_MAX],
-        evidence=str(payload.get("evidence") or "").strip(),
-        fix=str(payload.get("fix") or "").strip(),
+        evidence=str(payload.get("evidence") or "").strip()[:_EVIDENCE_MAX],
+        fix=str(payload.get("fix") or "").strip()[:_FIX_MAX],
     )
 
 

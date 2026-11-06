@@ -99,7 +99,8 @@ def test_last_falls_back_to_another_session(tmp_path):
     p = _p(tmp_path)
     p.tool_ask({"question": "only question"}, session_id="s1")
     out = p.command("last", session_id="unknown-session")
-    assert "only question" in out and "(from session" in out
+    assert "only question" not in out and "(from session" not in out
+    assert "No coach advice" in out
 
 
 def test_decisions_are_logged_and_listed(tmp_path):

@@ -15,12 +15,14 @@ which files changed.
 from __future__ import annotations
 
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 __all__ = ["collect", "head"]
 
-_GIT_TIMEOUT = 5
+_GIT_TIMEOUT = 2
+_GIT_TOTAL_BUDGET = 8.0
 _HARDENED = [
     "git",
     "-c",
@@ -71,6 +73,7 @@ def _git(
     run: Callable[..., object],
     root: Path,
     argv: list[str],
+    timeout: float = _GIT_TIMEOUT,
 ) -> subprocess.CompletedProcess | None:
     try:
         result = run(
@@ -78,7 +81,7 @@ def _git(
             cwd=str(root),
             capture_output=True,
             text=True,
-            timeout=_GIT_TIMEOUT,
+            timeout=max(0.2, timeout),
             shell=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -109,6 +112,7 @@ def _diff(
     paths: Sequence[str],
     *,
     stat: bool = False,
+    timeout: float = _GIT_TIMEOUT,
 ) -> str:
     argv = [
         *_HARDENED,
@@ -120,7 +124,7 @@ def _diff(
     if stat:
         argv.append("--stat=100")
     argv.extend([rev, "--", *paths])
-    result = _git(runner, root, argv)
+    result = _git(runner, root, argv, timeout=timeout)
     if result is None or result.returncode != 0:
         return ""
     return _stdout(result)
@@ -148,14 +152,22 @@ def _heads(
     return "\n".join(parts)
 
 
-def _range_usable(runner: Callable[..., object], root: Path, base: str) -> bool:
+def _range_usable(
+    runner: Callable[..., object],
+    root: Path,
+    base: str,
+    timeout: float = _GIT_TIMEOUT,
+) -> bool:
     """True when ``base`` is a commit and an ancestor of HEAD.
 
     A rebase, amend, or unrelated base makes ``base..HEAD`` meaningless (or
     huge), so the caller falls back to the worktree-only diff and says so.
     """
     check = _git(
-        runner, root, [*_HARDENED, "merge-base", "--is-ancestor", base, "HEAD"]
+        runner,
+        root,
+        [*_HARDENED, "merge-base", "--is-ancestor", base, "HEAD"],
+        timeout=timeout,
     )
     return check is not None and check.returncode == 0
 
@@ -168,6 +180,7 @@ def collect(
     max_chars: int = 8000,
     run: Callable[..., object] | None = None,
     read: Callable[[Path], str | None] | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> str:
     """Return the changed-file evidence for ``paths`` under ``cwd``.
 
@@ -175,6 +188,11 @@ def collect(
     usable ancestor, the evidence is prefixed with the commits made during the
     turn, which is where a completion claim's work usually lives after the
     agent commits. Without a usable base the evidence is the worktree alone.
+
+    Git calls share one overall budget (``_GIT_TOTAL_BUDGET``): each call gets
+    at most ``_GIT_TIMEOUT`` and whatever is left. Hung git plus the Review
+    model call must stay under the host's hook timeout, so the budget
+    degrades to partial evidence instead of a killed hook.
     """
     root = Path(cwd)
     safe = _safe_paths(root, paths)
@@ -182,13 +200,27 @@ def collect(
         return ""
     runner = run or subprocess.run
     reader = read or _read_text
+    now = clock or time.monotonic
+    deadline = now() + _GIT_TOTAL_BUDGET
+
+    def remaining() -> float:
+        return max(0.0, deadline - now())
+
+    def gcall(argv: list[str]) -> subprocess.CompletedProcess | None:
+        return _git(runner, root, argv, timeout=min(_GIT_TIMEOUT, remaining()))
+
+    def gdiff(rev: str, *, stat: bool = False) -> str:
+        return _diff(runner, root, rev, safe, stat=stat,
+                     timeout=min(_GIT_TIMEOUT, remaining()))
+
+    def gusable(ref: str) -> bool:
+        return _range_usable(runner, root, ref,
+                             timeout=min(_GIT_TIMEOUT, remaining()))
 
     # -z keeps paths unquoted and unescaped (no C-style octal for non-ASCII).
     # --untracked-files=all lists new files individually instead of collapsing
     # new directories to a trailing-slash "dir/" entry git diff would miss.
-    status = _git(
-        runner,
-        root,
+    status = gcall(
         [
             "git",
             "-c",
@@ -204,7 +236,7 @@ def collect(
     if status is None or status.returncode != 0:
         return _heads(root, safe, reader)[: max(0, int(max_chars))]
 
-    uncommitted = _diff(runner, root, "HEAD", safe)
+    uncommitted = gdiff("HEAD")
     untracked: list[str] = []
     safe_set = set(safe)
     for entry in _stdout(status).split("\0"):
@@ -218,8 +250,8 @@ def collect(
     committed = ""
     base_note = "no turn base recorded"
     base = str(base or "").strip()
-    if base and _range_usable(runner, root, base):
-        committed = _diff(runner, root, f"{base}..HEAD", safe)
+    if base and gusable(base):
+        committed = gdiff(f"{base}..HEAD")
         if committed:
             base_note = f"commits since turn start ({base[:12]}..HEAD)"
     elif base:
@@ -228,9 +260,9 @@ def collect(
     sections: list[str] = []
     if committed or uncommitted or new_files:
         if committed:
-            stat = _diff(runner, root, f"{base}..HEAD", safe, stat=True)
+            stat = gdiff(f"{base}..HEAD", stat=True)
         else:
-            stat = _diff(runner, root, "HEAD", safe, stat=True)
+            stat = gdiff("HEAD", stat=True)
         if stat:
             sections.append(f"--- stat ({base_note}) ---\n{stat.rstrip()}")
         if committed:

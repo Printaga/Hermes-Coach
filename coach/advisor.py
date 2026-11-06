@@ -162,11 +162,16 @@ class Coach:
                     system_prompt=system,
                     model=model,
                     provider=provider,
+                    max_tokens=self.settings.max_reply_tokens,
                     timeout=timeout,
                 )
             else:
                 result = self.llm.complete(
-                    messages, model=model, provider=provider, timeout=timeout
+                    messages,
+                    model=model,
+                    provider=provider,
+                    max_tokens=self.settings.max_reply_tokens,
+                    timeout=timeout,
                 )
         except Exception as exc:  # fail-open by contract
             return CoachReply(error=f"provider_error: {type(exc).__name__}")
@@ -201,7 +206,7 @@ class Coach:
         """Price one call, returning ``0.0`` when pricing is unavailable."""
         if self.cost_fn is not None:
             try:
-                return float(self.cost_fn(model, usage, provider))
+                return max(0.0, float(self.cost_fn(model, usage, provider)))
             except Exception:
                 return 0.0
         if usage is None:
@@ -211,6 +216,6 @@ class Coach:
 
             priced = estimate_usage_cost(model, usage, provider=provider)
             amount = getattr(priced, "amount_usd", priced)
-            return float(amount or 0.0)
+            return max(0.0, float(amount or 0.0))
         except Exception:
             return 0.0

@@ -11,7 +11,7 @@ status=0
 
 uv run --python "$PYTHON" --with "pytest==9.2.0" --with "pyyaml==6.0.2" \
   --with "fastapi==0.133.1" --with "httpx==0.28.1" \
-  python -m pytest tests -q ${1+"$@"} || status=$?
+  python -m pytest -q "${@:-tests}" || status=$?
 
 if [ "${SKIP_DESKTOP_CHECK:-0}" != "1" ]; then
   node scripts/check-desktop-page.mjs || status=$?

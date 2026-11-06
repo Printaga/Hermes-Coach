@@ -74,7 +74,7 @@ tool descriptions carry their own guidance.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `coach_ask` | `question` (required, ≤4000 chars), `intent` (`advice`, `plan`, `review`), `context` | advice text, or `{"ok": false, "error": …}` |
+| `coach_ask` | `question` (required, ≤4000 chars), `intent` (`advice`, `plan`, `review`), `context` (≤4000 chars) | advice text, or `{"ok": false, "error": …}` |
 | `coach_decide` | `question` (required), `options` (2–6 strings), `state` (object) | `{decision, confidence, probabilities, gate, rationale}` |
 
 `turn_id` and `session_id` are optional host hints used for the per-turn caps
@@ -85,7 +85,7 @@ and the child-session refusal; the agent does not need to send them.
 | Command | Effect |
 |---|---|
 | `/coach status` | model, modes, spend, pending notes |
-| `/coach last [n]` | the last advice (or the last `n`), falling back to the latest session |
+| `/coach last [n]` | the last advice (or the last `n`) for this session |
 | `/coach log [n]` | recent review findings for this session |
 | `/coach active on\|off` | per-turn review |
 | `/coach review on\|off` | completion review |
@@ -96,6 +96,8 @@ and the child-session refusal; the agent does not need to send them.
 | `/coach pending`, `/coach send` | list held advice, release it now |
 | `/coach pause` | pause background reviews for this session |
 | `/coach grant` | write the model-override permission |
+| `/coach revoke` | clear the model-override permission |
+| `/coach forget` | delete this session's coach state |
 
 Unknown input prints the full help.
 
@@ -151,9 +153,20 @@ State lives in `$HERMES_HOME/coach/`: one JSON file per session (atomic,
 `0600`), a JSONL review log, and the global guidance file. Sessions are pruned
 to the newest twenty.
 
-Where to read the coach's output: consult advice is the `coach_ask` tool result
-(the agent is asked to relay it), `/coach last` reprints the most recent one,
-and `/coach pending` lists undelivered notes with their body. Review findings
+Every piece of advice is also posted as a card in the conversation, so the
+coach's work is visible even when the agent does not relay it. Cards can be
+turned off with `delivery_show_cards`; the log and `/coach` output stay. A card
+is a host notification and cannot carry buttons, so the one-click path lives on
+the Desktop page: every finding under **Status → Recent reviews** has a **Send
+to chat** button that submits it to this chat's composer. From the CLI, the
+same action is `/coach send`.
+
+Where the model reads it: review and Active findings become `<coach-note>`
+blocks handed to the agent at the start of its next turn, and a blocked
+completion is a message inside the current turn. Consult advice is the
+`coach_ask` tool result (the agent is asked to relay it), `/coach last`
+reprints the most recent one, and `/coach pending` lists undelivered notes
+with their body. Review findings
 and decisions are cards plus one line each in
 `$HERMES_HOME/coach/logs/<session>.jsonl` (timestamp, kind, severity, title,
 body, evidence, fix; trimmed to the newest 200). `/coach log` prints them for
