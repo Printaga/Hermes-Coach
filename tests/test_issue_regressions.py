@@ -585,7 +585,7 @@ def test_review_skips_unreadable_changes_instead_of_reviewing_air(tmp_path):
     from tests.support import PAY, review_plugin
 
     plugin = review_plugin(tmp_path)
-    plugin.collect_evidence = lambda cwd, paths: "   "
+    plugin.collect_evidence = lambda cwd, paths, base="": "   "
     plugin.review_now = lambda **kwargs: (_ for _ in ()).throw(
         AssertionError("empty evidence must not reach the model")
     )

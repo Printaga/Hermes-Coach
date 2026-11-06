@@ -4,6 +4,12 @@
 back to reading the files directly when git is unavailable or fails. Paths are
 project-relative: absolute paths and any ``..`` component are refused so the
 hook cannot read outside the working directory.
+
+Evidence covers both halves of a turn's work, because agents routinely commit
+before claiming completion: commits made since the turn started (``base``
+supplied by the caller) plus whatever is still uncommitted. A git ``--stat``
+line leads the block so a size cap degrades to a summary instead of hiding
+which files changed.
 """
 
 from __future__ import annotations
@@ -12,9 +18,17 @@ import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-__all__ = ["collect"]
+__all__ = ["collect", "head"]
 
 _GIT_TIMEOUT = 5
+_HARDENED = [
+    "git",
+    "-c",
+    "core.quotePath=false",
+    # Repo config must not colour the patch, invoke an external diff, or run
+    # a textconv driver from a repository the agent does not control.
+    "--no-pager",
+]
 
 
 def _read_text(path: Path) -> str | None:
@@ -79,6 +93,39 @@ def _stdout(result: object) -> str:
     return str(value or "")
 
 
+def head(cwd: str, *, run: Callable[..., object] | None = None) -> str:
+    """Return the commit HEAD points at, or ``""`` outside a usable repo."""
+    root = Path(cwd)
+    result = _git(run or subprocess.run, root, ["git", "rev-parse", "HEAD"])
+    if result is None or result.returncode != 0:
+        return ""
+    return _stdout(result).strip()
+
+
+def _diff(
+    runner: Callable[..., object],
+    root: Path,
+    rev: str,
+    paths: Sequence[str],
+    *,
+    stat: bool = False,
+) -> str:
+    argv = [
+        *_HARDENED,
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+    ]
+    if stat:
+        argv.append("--stat=100")
+    argv.extend([rev, "--", *paths])
+    result = _git(runner, root, argv)
+    if result is None or result.returncode != 0:
+        return ""
+    return _stdout(result)
+
+
 def _heads(
     root: Path,
     paths: Sequence[str],
@@ -101,15 +148,34 @@ def _heads(
     return "\n".join(parts)
 
 
+def _range_usable(runner: Callable[..., object], root: Path, base: str) -> bool:
+    """True when ``base`` is a commit and an ancestor of HEAD.
+
+    A rebase, amend, or unrelated base makes ``base..HEAD`` meaningless (or
+    huge), so the caller falls back to the worktree-only diff and says so.
+    """
+    check = _git(
+        runner, root, [*_HARDENED, "merge-base", "--is-ancestor", base, "HEAD"]
+    )
+    return check is not None and check.returncode == 0
+
+
 def collect(
     cwd: str,
     paths: Sequence[str],
     *,
+    base: str = "",
     max_chars: int = 8000,
     run: Callable[..., object] | None = None,
     read: Callable[[Path], str | None] | None = None,
 ) -> str:
-    """Return the changed-file evidence for ``paths`` under ``cwd``."""
+    """Return the changed-file evidence for ``paths`` under ``cwd``.
+
+    ``base`` is the commit HEAD pointed at when the turn started. When it is a
+    usable ancestor, the evidence is prefixed with the commits made during the
+    turn, which is where a completion claim's work usually lives after the
+    agent commits. Without a usable base the evidence is the worktree alone.
+    """
     root = Path(cwd)
     safe = _safe_paths(root, paths)
     if not safe:
@@ -135,42 +201,62 @@ def collect(
             *safe,
         ],
     )
-    diff = _git(
-        runner,
-        root,
-        [
-            "git",
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "HEAD",
-            "--",
-            *safe,
-        ],
-    )
-    if (
-        status is None
-        or status.returncode != 0
-        or diff is None
-        or diff.returncode != 0
-    ):
-        text = _heads(root, safe, reader)
-    else:
-        text = _stdout(diff)
-        safe_set = set(safe)
-        untracked: list[str] = []
-        for entry in _stdout(status).split("\0"):
-            if not entry.startswith("?? "):
-                continue
-            rel = entry[3:].removesuffix("/")
-            if rel and rel in safe_set:
-                untracked.append(rel)
-        if untracked:
-            extra = _heads(root, _safe_paths(root, untracked), reader)
-            if extra:
-                text = f"{text}\n{extra}" if text else extra
+    if status is None or status.returncode != 0:
+        return _heads(root, safe, reader)[: max(0, int(max_chars))]
 
-    return text[: max(0, int(max_chars))]
+    uncommitted = _diff(runner, root, "HEAD", safe)
+    untracked: list[str] = []
+    safe_set = set(safe)
+    for entry in _stdout(status).split("\0"):
+        if not entry.startswith("?? "):
+            continue
+        rel = entry[3:].removesuffix("/")
+        if rel and rel in safe_set:
+            untracked.append(rel)
+    new_files = _heads(root, _safe_paths(root, untracked), reader) if untracked else ""
+
+    committed = ""
+    base_note = "no turn base recorded"
+    base = str(base or "").strip()
+    if base and _range_usable(runner, root, base):
+        committed = _diff(runner, root, f"{base}..HEAD", safe)
+        if committed:
+            base_note = f"commits since turn start ({base[:12]}..HEAD)"
+    elif base:
+        base_note = "turn base is not an ancestor of HEAD; worktree only"
+
+    sections: list[str] = []
+    if committed or uncommitted or new_files:
+        if committed:
+            stat = _diff(runner, root, f"{base}..HEAD", safe, stat=True)
+        else:
+            stat = _diff(runner, root, "HEAD", safe, stat=True)
+        if stat:
+            sections.append(f"--- stat ({base_note}) ---\n{stat.rstrip()}")
+        if committed:
+            sections.append(f"--- committed during this turn ---\n{committed.rstrip()}")
+        if uncommitted:
+            sections.append(f"--- uncommitted ---\n{uncommitted.rstrip()}")
+        if new_files:
+            sections.append(f"--- new files ---\n{new_files.rstrip()}")
+    elif base:
+        # Nothing changed since the base: reviewing nothing is worse than
+        # skipping, and the caller turns an empty result into "no review".
+        return ""
+
+    text = "\n\n".join(sections)
+    limit = max(0, int(max_chars))
+    if len(text) <= limit:
+        return text
+    # Stat first, then as much patch as the budget allows: a truncated patch
+    # with no file list hides which files changed, and a file list with no
+    # patch hides what changed. Keep both, clipped.
+    first, _, rest = text.partition("\n\n")
+    if first.startswith("--- stat"):
+        note = "\n\n[diff truncated]"
+        budget = limit - len(first) - len(note) - 2
+        if budget > 0:
+            return f"{first}\n\n{rest[:budget].rstrip()}{note}"
+        keep = max(0, limit - len(note))
+        return first[:keep].rstrip() + note
+    return text[:limit]

@@ -67,7 +67,7 @@ def test_review_skipped_when_disabled(tmp_path):
 
 def test_report_authority_never_holds(tmp_path):
     p = _p(tmp_path, review_authority="report", llm=StructuredLlm(FINDING))
-    p.collect_evidence = lambda cwd, paths: "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
     out = p.on_pre_verify(**PAY)
     assert out is None or "action" not in out
     assert p._test_post
@@ -75,7 +75,7 @@ def test_report_authority_never_holds(tmp_path):
 
 def test_hold_is_capped_per_request(tmp_path):
     p = _p(tmp_path, review_authority="hold_once")
-    p.collect_evidence = lambda cwd, paths: "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
     p.review_now = lambda **kw: type(
         "F",
         (),
@@ -130,7 +130,7 @@ def test_review_now_uses_a_twenty_second_deadline(tmp_path):
 
 def test_non_blocker_is_reported_as_a_card(tmp_path):
     p = _p(tmp_path)
-    p.collect_evidence = lambda cwd, paths: "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
     p.review_now = lambda **kw: Finding(
         "concern", "Missing check", "No validation.", "a.py:1", "Validate."
     )
@@ -148,7 +148,7 @@ def test_evidence_uses_the_session_cwd(tmp_path):
         cwd=lambda: str(project),
     )
     seen = {}
-    p.collect_evidence = lambda cwd, paths: seen.setdefault("cwd", cwd) or ""
+    p.collect_evidence = lambda cwd, paths, base="": seen.setdefault("cwd", cwd) or ""
     p.review_now = lambda **kw: None
     p.on_pre_verify(**PAY)
     assert seen["cwd"] == str(project)
@@ -170,7 +170,7 @@ def test_review_uses_the_last_user_message_as_request(tmp_path):
         assistant_response="ok", conversation_history=[], model="m",
     )
     seen = {}
-    p.collect_evidence = lambda cwd, paths: "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
     p.review_now = lambda **kw: seen.update(kw) or None
     p.on_pre_verify(session_id="s", turn_id="t1", final_response="done",
                     changed_paths=["a.py"], cwd=str(tmp_path))

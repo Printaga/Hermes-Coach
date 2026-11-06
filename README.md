@@ -130,6 +130,19 @@ assembles what it sees — a bounded turn ledger, the diff of the files the agen
 changed for a completion review, and your guidance files. Calls go through
 Hermes' own model routing, so credentials stay in Hermes.
 
+The completion review covers the whole turn, not just what is still
+uncommitted: the plugin records `HEAD` when the turn starts, so the evidence is
+the commits the turn produced plus any worktree changes plus new files, led by
+a `git --stat` summary. Committing before saying "done" therefore no longer
+hides the work from the reviewer. When the range is unusable (rebase, amended
+history, no recorded base) the review falls back to the worktree and says so.
+The evidence block is capped at 8000 characters; past that the stat list
+survives and the patch is clipped.
+
+The per-turn (Active) review sees messages and one-line tool cards only, never
+file contents, and its prompt says so — completion evidence belongs to the
+completion review, which receives the diff.
+
 One review is one model call. The ledger is capped at 3500 tokens and replies at
 400 by default; session spend is priced from real usage against the budget you
 set.

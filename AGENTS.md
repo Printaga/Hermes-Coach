@@ -62,6 +62,11 @@ the runtime environment.
   because model ids contain slashes.
 - The coach gets no tools. The plugin assembles evidence and wraps it in tags;
   strip closing tags so model text cannot close its own block.
+- Completion evidence is turn-scoped: `pre_llm_call` snapshots `HEAD` once per
+  turn (`_snapshot_turn_base`), and `pre_verify` collects
+  `base..HEAD` + worktree + new files. Never snapshot per model call — a
+  mid-turn commit would move the base past the change. Worktree-only evidence
+  is the fallback, not the default.
 - Session state: atomic writes, `0600`, hashed file names, pruned by mtime.
 
 ## Verification
