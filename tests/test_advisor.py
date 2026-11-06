@@ -141,3 +141,62 @@ def test_a_mapping_usage_is_priced_by_the_fallback():
     )
     assert estimated in (True, False)
     assert cost >= 0.0
+
+
+def test_ask_passes_reasoning_when_the_host_supports_it():
+    from coach.advisor import Coach
+    from coach.settings import load_settings
+
+    class Llm:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, messages, **kwargs):
+            self.calls.append(kwargs)
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                text="ok", provider="p", model="m", usage=None
+            )
+
+    llm = Llm()
+    coach = Coach(
+        llm=llm,
+        settings=load_settings(
+            {
+                "coach_model": {"provider": "p", "model": "m"},
+                "reasoning_effort": "high",
+            }
+        ),
+    )
+    coach.ask([{"role": "user", "content": "q"}], mode="consult")
+    assert llm.calls[-1]["reasoning_effort"] == "high"
+
+
+def test_ask_omits_reasoning_on_an_old_host_without_the_kwarg():
+    from coach.advisor import Coach
+    from coach.settings import load_settings
+
+    class OldLlm:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, messages, model=None, provider=None, max_tokens=None, timeout=None):
+            self.calls.append({"model": model})
+            from types import SimpleNamespace
+
+            return SimpleNamespace(text="ok", provider="p", model="m", usage=None)
+
+    llm = OldLlm()
+    coach = Coach(
+        llm=llm,
+        settings=load_settings(
+            {
+                "coach_model": {"provider": "p", "model": "m"},
+                "reasoning_effort": "high",
+            }
+        ),
+    )
+    reply = coach.ask([{"role": "user", "content": "q"}], mode="consult")
+    assert reply.error == ""
+    assert llm.calls  # called without the kwarg

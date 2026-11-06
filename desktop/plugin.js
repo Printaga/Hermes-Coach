@@ -390,6 +390,41 @@ function NumberField(props) {
   )
 }
 
+// ---------------------------------------------------------------- reasoning
+
+// The app's own scale (REASONING_EFFORTS in @hermes/plugin-sdk). "" inherits
+// whatever level the main chat runs at.
+const REASONING_LABELS = [
+  ["", "Inherit app level", "Use the reasoning level your main chat is set to."],
+  ["none", "Off", "No thinking. Cheapest, and usually right for a one-line check."],
+  ["minimal", "Minimal", "A token or two of thought."],
+  ["low", "Low", "Fast, shallow reasoning."],
+  ["medium", "Medium", "The app default."],
+  ["high", "High", "Slower, deeper reasoning."],
+  ["xhigh", "Extra high", "For hard reviews; costs more output tokens."],
+  ["max", "Max", "The strongest level most routes accept."],
+  ["ultra", "Ultra", "Hermes' top step; routes clamp it to their own maximum."],
+]
+
+function reasoningOptions() {
+  return REASONING_LABELS.map(([value, label, description]) => ({
+    value,
+    label,
+    description,
+  }))
+}
+
+const REASONING_DEFAULTS = REASONING_LABELS.map(([value]) => value)
+
+function ReasoningChoice(props) {
+  return h(Choice, {
+    label: props.label,
+    value: props.value || "",
+    options: reasoningOptions(),
+    onChange: props.onChange,
+  })
+}
+
 // ---------------------------------------------------------------- model picker
 
 function ModelPicker(props) {
@@ -500,6 +535,13 @@ function ModelSection(props) {
     }
   }, [])
 
+  // Literal reads keep the coverage gate honest about which keys are used;
+  // the per-mode map below indexes this by key.
+  const reasoningValues = {
+    active_reasoning: values.active_reasoning,
+    review_reasoning: values.review_reasoning,
+    consult_reasoning: values.consult_reasoning,
+  }
   const warning = sameModel(values.coach_model, mainModel)
     ? "This is your main model. Pick a different one: the same model shares the same blind spots, and the plugin refuses to call it."
     : "Pick a model that differs from the one you work in. Everything else inherits it unless you override it."
@@ -522,6 +564,11 @@ function ModelSection(props) {
         onChange: (next) => state.save("coach_model", next),
       }),
     ),
+    h(ReasoningChoice, {
+      label: "Shared reasoning level",
+      value: values.reasoning_effort,
+      onChange: (next) => state.save("reasoning_effort", next),
+    }),
     mainModel
       ? h(
           "p",
@@ -536,19 +583,28 @@ function ModelSection(props) {
       "Leave these on inherit unless a mode deserves a different model. Active runs on every reviewed turn, so it is the one worth making cheap; Review runs rarely and can afford the strongest model you have.",
     ),
     [
-      ["active_model", "Active review model", "Used by the per-turn reviewer."],
-      ["review_model", "Completion review model", "Used when the agent is about to claim it is done."],
-      ["consult_model", "Consult model", "Used when the agent asks you for advice mid-task."],
-    ].map(([key, label, hint]) =>
+      ["active_model", "active_reasoning", "Active review", "Used by the per-turn reviewer."],
+      ["review_model", "review_reasoning", "Completion review", "Used when the agent is about to claim it is done."],
+      ["consult_model", "consult_reasoning", "Consult", "Used when the agent asks you for advice mid-task."],
+    ].map(([key, reasoningKey, label, hint]) =>
       h(
-        Field,
-        { key, label, hint },
-        h(ModelPicker, {
-          models: catalog,
-          catalogLoading,
-          value: values[key],
-          inherit: true,
-          onChange: (next) => state.save(key, next),
+        "div",
+        { key, style: { display: "grid", gap: 10 } },
+        h(
+          Field,
+          { label: `${label} model`, hint },
+          h(ModelPicker, {
+            models: catalog,
+            catalogLoading,
+            value: values[key],
+            inherit: true,
+            onChange: (next) => state.save(key, next),
+          }),
+        ),
+        h(ReasoningChoice, {
+          label: `${label} reasoning`,
+          value: reasoningValues[reasoningKey],
+          onChange: (next) => state.save(reasoningKey, next),
         }),
       ),
     ),

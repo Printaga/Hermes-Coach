@@ -33,9 +33,13 @@ class ModelChoice:
 DEFAULTS: dict[str, Any] = {
     # Models
     "coach_model": None,
+    "reasoning_effort": "",
     "active_model": None,
+    "active_reasoning": "",
     "review_model": None,
+    "review_reasoning": "",
     "consult_model": None,
+    "consult_reasoning": "",
     "max_reply_tokens": 400,
     # Modes
     "active_enabled": False,
@@ -73,12 +77,34 @@ DEFAULTS: dict[str, Any] = {
     "debug_log_decisions": False,
 }
 
+REASONING_LEVELS = (
+    "",
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+)
+_REASONING_FIELDS = {
+    "coach": "reasoning_effort",
+    "active": "active_reasoning",
+    "review": "review_reasoning",
+    "consult": "consult_reasoning",
+}
+
 _CHOICES: dict[str, tuple[str, ...]] = {
     "active_cadence": ("tool_turns_only", "every_turn", "every_n"),
     "review_authority": ("hold_once", "report"),
     "decide_backend": ("jev-openrouter", "jev-direct", "chat-model"),
     "delivery_policy": ("severity", "ambient", "corrective"),
     "budget_on_exceed": ("warn", "soft", "hard"),
+    "reasoning_effort": REASONING_LEVELS,
+    "active_reasoning": REASONING_LEVELS,
+    "review_reasoning": REASONING_LEVELS,
+    "consult_reasoning": REASONING_LEVELS,
 }
 
 _MODE_MODEL_FIELDS: dict[str, str] = {
@@ -137,9 +163,13 @@ class Settings:
 
     # Models
     coach_model: ModelChoice | None
+    reasoning_effort: str
     active_model: ModelChoice | None
+    active_reasoning: str
     review_model: ModelChoice | None
+    review_reasoning: str
     consult_model: ModelChoice | None
+    consult_reasoning: str
     max_reply_tokens: int
 
     # Modes
@@ -188,6 +218,13 @@ class Settings:
         if field is None:
             return None
         return getattr(self, field) or self.coach_model
+
+    def reasoning_for(self, mode: str) -> str:
+        """The mode's level, else the shared one, else "" (the app's level)."""
+        field = _REASONING_FIELDS.get(mode)
+        if field is None:
+            return self.reasoning_effort
+        return getattr(self, field) or self.reasoning_effort
 
     def is_configured(self) -> bool:
         """True when any model is available.
@@ -260,9 +297,21 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
     data = raw if isinstance(raw, Mapping) else {}
     settings = Settings(
         coach_model=_as_model(data.get("coach_model")),
+        reasoning_effort=_as_choice(
+            data.get("reasoning_effort"), "reasoning_effort", ""
+        ),
         active_model=_as_model(data.get("active_model")),
+        active_reasoning=_as_choice(
+            data.get("active_reasoning"), "active_reasoning", ""
+        ),
         review_model=_as_model(data.get("review_model")),
+        review_reasoning=_as_choice(
+            data.get("review_reasoning"), "review_reasoning", ""
+        ),
         consult_model=_as_model(data.get("consult_model")),
+        consult_reasoning=_as_choice(
+            data.get("consult_reasoning"), "consult_reasoning", ""
+        ),
         max_reply_tokens=_as_int(
             data.get("max_reply_tokens"), DEFAULTS["max_reply_tokens"]
         ),

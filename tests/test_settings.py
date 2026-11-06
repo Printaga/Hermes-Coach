@@ -53,3 +53,39 @@ def test_coercion_policies_reject_bools_and_non_finite():
     assert as_bool("maybe", default=False) is False
     assert as_text("  x  ") == "x"
     assert as_text(None, default="d") == "d"
+
+
+def test_reasoning_defaults_to_inherit_and_resolves_per_mode():
+    from coach.settings import REASONING_LEVELS, load_settings
+
+    settings = load_settings({"coach_model": {"provider": "p", "model": "m"}})
+    assert settings.reasoning_effort == ""
+    assert settings.reasoning_for("review") == ""
+    assert "" in REASONING_LEVELS and "high" in REASONING_LEVELS
+
+    settings = load_settings(
+        {
+            "coach_model": {"provider": "p", "model": "m"},
+            "reasoning_effort": "low",
+            "review_reasoning": "xhigh",
+        }
+    )
+    assert settings.reasoning_for("active") == "low"   # inherits the shared level
+    assert settings.reasoning_for("review") == "xhigh"  # mode override
+    assert settings.reasoning_for("consult") == "low"
+
+
+def test_an_unknown_reasoning_level_falls_back_to_inherit():
+    from coach.settings import load_settings
+
+    settings = load_settings(
+        {"coach_model": {"provider": "p", "model": "m"}, "reasoning_effort": "hgih"}
+    )
+    assert settings.reasoning_effort == ""
+
+
+def test_every_reasoning_setting_is_a_choice():
+    from coach.settings import _CHOICES
+
+    for key in ("reasoning_effort", "active_reasoning", "review_reasoning", "consult_reasoning"):
+        assert key in _CHOICES

@@ -324,6 +324,10 @@ under `plugins.entries.coach.llm`, not under `settings`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `budget_session_usd` | float | 1.00 | Coach spend per session, from real usage. `0` means no budget. |
+| `reasoning_effort` | str | "" | Shared reasoning level for every coach call; "" inherits the app's level. |
+| `active_reasoning` | str | "" | Per-mode override (same scale); "" inherits `reasoning_effort`. |
+| `review_reasoning` | str | "" | Per-mode override (same scale); "" inherits `reasoning_effort`. |
+| `consult_reasoning` | str | "" | Per-mode override (same scale); "" inherits `reasoning_effort`. |
 | `fallback_price_per_mtok` | float | 1.0 | Blended USD per million tokens for a call the host cannot price (e.g. `opencode-go` returns `amount_usd=None`). Without it an unpriced call costs 0.0 and the budget never fires. `0` disables the estimate. |
 | `budget_on_exceed` | enum `warn` `soft` `hard` | `soft` | `warn` keeps going; `soft` stops Active, Review and Decide but leaves explicit consults; `hard` stops everything. |
 

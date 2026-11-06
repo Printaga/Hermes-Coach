@@ -104,6 +104,7 @@ class Coach:
     ) -> None:
         self.llm = llm
         self.settings = settings
+        self._accepts_reasoning: dict[str, bool] = {}
         self.primary_model = primary_model
         self.primary_provider = primary_provider
         self.cost_fn = cost_fn
@@ -149,6 +150,7 @@ class Coach:
         if choice is None:
             return CoachReply(error="unconfigured")
         model, provider = choice.model, choice.provider
+        effort = self.settings.reasoning_for(mode) if mode else self.settings.reasoning_effort
 
         try:
             if structured:
@@ -165,6 +167,7 @@ class Coach:
                     provider=provider,
                     max_tokens=self.settings.max_reply_tokens,
                     timeout=timeout,
+                    **self._reasoning("complete_structured", effort),
                 )
             else:
                 result = self.llm.complete(
@@ -173,6 +176,7 @@ class Coach:
                     provider=provider,
                     max_tokens=self.settings.max_reply_tokens,
                     timeout=timeout,
+                    **self._reasoning("complete", effort),
                 )
         except Exception as exc:  # fail-open by contract
             return CoachReply(error=f"provider_error: {type(exc).__name__}")
@@ -210,6 +214,37 @@ class Coach:
         except Exception as exc:
             # A hostile result object must not escape the never-raise contract.
             return CoachReply(error=f"provider_error: {type(exc).__name__}")
+
+    def _reasoning(self, method: str, effort: str) -> dict[str, str]:
+        """Pass ``reasoning_effort`` only when the bound host callable has it.
+
+        The host gained the parameter in this change; an older host raises
+        TypeError on the kwarg, so a plugin update must not break there.
+        """
+        if not effort:
+            return {}
+        known = self._accepts_reasoning.get(method)
+        if known is None:
+            import inspect
+
+            func = getattr(self.llm, method, None)
+            try:
+                params = inspect.signature(func).parameters if func else {}
+                # A **kwargs host forwards it just as a named parameter does.
+                known = bool(
+                    func is not None
+                    and (
+                        "reasoning_effort" in params
+                        or any(
+                            p.kind is inspect.Parameter.VAR_KEYWORD
+                            for p in params.values()
+                        )
+                    )
+                )
+            except (TypeError, ValueError):
+                known = False
+            self._accepts_reasoning[method] = known
+        return {"reasoning_effort": effort} if known else {}
 
     def _price(
         self, model: str, usage: Any, provider: str

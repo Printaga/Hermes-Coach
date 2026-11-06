@@ -70,3 +70,16 @@ flowchart LR
 
 - [Prompt assembly](prompt-assembly.md) — the messages both clients receive.
 - [Plugin runtime](plugin-runtime.md) — budget, call caps, and who invokes them.
+
+## Reasoning level
+
+Each mode has a reasoning level alongside its model: `reasoning_effort` is the
+shared default and `active_reasoning` / `review_reasoning` / `consult_reasoning`
+override it per mode; an empty value inherits the app's level. The page renders
+the same scale and labels as the main model picker (off, minimal, low, medium,
+high, xhigh, max, ultra).
+
+Delivery needs the host: `ctx.llm.complete*` accepts `reasoning_effort` and
+forwards `reasoning_config` to `call_llm`. The plugin probes the bound method
+and omits the kwarg on a host that predates it, so an older install keeps
+working (the level is then inherited).

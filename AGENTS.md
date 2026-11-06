@@ -68,6 +68,9 @@ the runtime environment.
 - Values from config, JSON and models go through `coach/coerce.py`: one named
   policy per rule (`as_int` rejects bool, `as_finite_float` rejects non-finite),
   so readers cannot drift apart again.
+- Reasoning levels ride the app's own scale (`none`…`ultra`); a blank setting
+  inherits. `Coach.ask` probes the bound host method and only then passes
+  `reasoning_effort`, so a host without the kwarg keeps working.
 - Store models as `{provider, model}`; never parse a `provider/model` string,
   because model ids contain slashes.
 - The coach gets no tools. The plugin assembles evidence and wraps it in tags;
