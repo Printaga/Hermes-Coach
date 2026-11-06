@@ -277,3 +277,17 @@ def test_cards_can_be_switched_off_entirely(tmp_path):
     )
     assert p._test_post == []
     assert len(p.store.load("s").pending) == 1
+
+
+def test_a_second_claim_is_reviewed_after_a_hold(tmp_path):
+    """The claim that answers a held blocker must still be checked."""
+    llm = StructuredLlm({**_concern(), "severity": "blocker"})
+    p = _p(tmp_path, llm=llm)
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+
+    first = p.on_pre_verify(**PAY)
+    second = p.on_pre_verify(**PAY)
+
+    assert first and first["action"] == "continue"
+    assert len(llm.calls) == 2, "the answering claim was not reviewed"
+    assert second is None  # the hold cap still permits only one hold

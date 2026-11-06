@@ -14,14 +14,14 @@ from tests.support import plugin
 
 
 def test_status_reports_unconfigured(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     body = client.get("/status").json()
     assert body["configured"] is False
     assert body["permissions"]["model_overrides"] is False
 
 
 def test_guidance_roundtrip(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     project = tmp_path / "proj"
     project.mkdir()
     r = client.put(
@@ -38,7 +38,7 @@ def test_guidance_roundtrip(tmp_path):
 
 
 def test_guidance_rejects_unregistered_path(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     r = client.put(
         "/guidance", json={"scope": "project", "cwd": "/etc", "text": "x"}
     )
@@ -46,7 +46,7 @@ def test_guidance_rejects_unregistered_path(tmp_path):
 
 
 def test_settings_save_roundtrip(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     r = client.put("/config", json={"values": {
         "active_enabled": True,
         "coach_model": {"provider": "p", "model": "m"},
@@ -58,7 +58,7 @@ def test_settings_save_roundtrip(tmp_path):
 
 
 def test_settings_reject_unknown_key(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     assert client.put("/config", json={"values": {"nope": 1}}).status_code == 400
 
 
@@ -70,7 +70,7 @@ def test_recent_returns_newest_first(tmp_path):
         '{"at":"2026-02-01T00:00:00+00:00","title":"new","body":"b2","severity":"concern"}\n',
         encoding="utf-8",
     )
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     rows = client.get("/recent").json()["reviews"]
     assert [row["title"] for row in rows] == ["new", "old"]
 
@@ -86,7 +86,7 @@ def test_recent_can_filter_one_session(tmp_path):
         '{"at":"2026-02-01T00:00:00+00:00","title":"two","session_id":"s2"}\n',
         encoding="utf-8",
     )
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     rows = client.get("/recent", params={"session": "s1"}).json()["reviews"]
     assert [row["title"] for row in rows] == ["one"]
 
@@ -131,7 +131,7 @@ def test_recent_returns_only_the_tail_of_large_logs(tmp_path):
                 )
                 + "\n"
             )
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     payload = client.get("/recent", params={"limit": 5}).json()
     assert [row["title"] for row in payload["reviews"]] == [
         f"note {index}" for index in (199, 198, 197, 196, 195)
@@ -148,7 +148,7 @@ def test_project_scope_accepts_a_directory_the_plugin_has_seen(tmp_path):
     (home / "coach" / "state.json").write_text(
         json.dumps({"seen_cwds": [str(project)]}), encoding="utf-8"
     )
-    client = TestClient(app_for_tests(home=home))
+    client = TestClient(app_for_tests(home=home), base_url="http://127.0.0.1")
     r = client.put(
         "/guidance", json={"scope": "project", "cwd": str(project), "text": "x"}
     )
@@ -168,13 +168,13 @@ def test_recent_excludes_decision_rows(tmp_path):
         '"session_id":"s"}\n',
         encoding="utf-8",
     )
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     rows = client.get("/recent").json()["reviews"]
     assert [row.get("title") for row in rows] == ["kept"]
 
 
 def test_mutations_reject_a_foreign_origin(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     denied = client.post(
         "/permissions/grant", headers={"Origin": "https://evil.example"}
     )
@@ -191,7 +191,7 @@ def test_mutations_reject_a_foreign_origin(tmp_path):
 
 
 def test_dashboard_config_rejects_secret_empty_and_malformed_values(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     assert (
         client.put(
             "/config", json={"values": {"decide_typesafe_api_key": "x"}}
@@ -203,14 +203,14 @@ def test_dashboard_config_rejects_secret_empty_and_malformed_values(tmp_path):
 
 
 def test_dashboard_grant_reports_permissions(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     assert client.post("/permissions/grant", json={}).status_code == 200
     config = client.get("/config").json()
     assert config["permissions"]["model_overrides"] is True
 
 
 def test_dashboard_guidance_rejects_unknown_scope_and_oversize_text(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     assert (
         client.put(
             "/guidance",
@@ -228,7 +228,7 @@ def test_dashboard_guidance_rejects_unknown_scope_and_oversize_text(tmp_path):
 
 
 def test_dashboard_global_guidance_creates_its_parent(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     response = client.put(
         "/guidance", json={"scope": "global", "cwd": "", "text": "Be blunt."}
     )
@@ -256,7 +256,7 @@ def test_dashboard_recent_orders_and_filters(tmp_path):
         '"severity":"concern","session_id":"s2"}\n',
         encoding="utf-8",
     )
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     rows = client.get("/recent").json()["reviews"]
     assert [row["title"] for row in rows] == ["new", "old"]
     rows = client.get("/recent", params={"session": "s1"}).json()["reviews"]
@@ -266,3 +266,27 @@ def test_dashboard_recent_orders_and_filters(tmp_path):
 # ---------------------------------------------------------------------------
 # Grant, identity, and command model handling
 # ---------------------------------------------------------------------------
+
+
+def test_a_rebinding_host_is_refused(tmp_path):
+    client = TestClient(
+        app_for_tests(home=tmp_path), base_url="http://127.0.0.1"
+    )
+    # DNS rebinding: the page's own hostname reaches the loopback API.
+    denied = client.post(
+        "/permissions/grant",
+        headers={"Host": "evil.example:8765", "Origin": "http://evil.example:8765"},
+    )
+    assert denied.status_code == 403
+
+
+def test_a_loopback_host_with_a_foreign_origin_is_refused(tmp_path):
+    client = TestClient(
+        app_for_tests(home=tmp_path), base_url="http://127.0.0.1"
+    )
+    denied = client.put(
+        "/guidance",
+        json={"scope": "global", "text": "x"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert denied.status_code == 403

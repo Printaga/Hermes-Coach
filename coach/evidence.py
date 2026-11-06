@@ -40,6 +40,52 @@ _HARDENED = [
 ]
 
 
+_FILTER_CACHE: dict[tuple[str, float], list[str]] = {}
+_FILTER_KEY = r"^filter\..*\.(clean|smudge|process)$"
+
+
+def _filter_overrides(
+    root: Path, runner: Callable[..., object], timeout: float
+) -> list[str]:
+    """``-c filter.<name>.<kind>=`` for every driver the repo config defines.
+
+    A clean/smudge/process command runs whenever git hashes a worktree file, so
+    a repository's own config executes code during a diff (probe-confirmed).
+    An empty value disables the driver; enumerating config is enough because an
+    attribute naming a driver with no config entry runs nothing.
+    """
+    try:
+        stamp = (root / ".git" / "config").stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    key = (str(root), stamp)
+    cached = _FILTER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    overrides: list[str] = []
+    result = _git(
+        runner,
+        root,
+        ["git", "-c", "core.quotePath=false", "config", "--get-regexp", _FILTER_KEY],
+        timeout=timeout,
+    )
+    if result is not None and result.returncode == 0:
+        for line in _stdout(result).splitlines():
+            name = line.split(None, 1)[0].strip()
+            if name.count(".") >= 2:
+                overrides.extend(["-c", f"{name}="])
+    overrides = overrides[:120]
+    _FILTER_CACHE[key] = overrides
+    return overrides
+
+
+def _hardened(
+    root: Path, runner: Callable[..., object], timeout: float
+) -> list[str]:
+    """The hardened git prefix, including this repo's filter overrides."""
+    return [*_HARDENED, *_filter_overrides(root, runner, timeout)]
+
+
 def _read_text(path: Path, limit: int = _FILE_HEAD_CHARS) -> str | None:
     """Read at most ``limit`` characters from a regular file.
 
@@ -133,7 +179,7 @@ def _diff(
     timeout: float = _GIT_TIMEOUT,
 ) -> str:
     argv = [
-        *_HARDENED,
+        *_hardened(root, runner, timeout),
         "diff",
         "--no-color",
         "--no-ext-diff",
@@ -228,7 +274,15 @@ def _names(
     paths: Sequence[str],
     timeout: float,
 ) -> str:
-    argv = [*_HARDENED, "diff", "--name-status", "--no-color", rev, "--", *paths]
+    argv = [
+        *_hardened(root, runner, timeout),
+        "diff",
+        "--name-status",
+        "--no-color",
+        rev,
+        "--",
+        *paths,
+    ]
     result = _git(runner, root, argv, timeout=timeout)
     if result is None or result.returncode != 0:
         return ""
@@ -249,7 +303,7 @@ def _range_usable(
     check = _git(
         runner,
         root,
-        [*_HARDENED, "merge-base", "--is-ancestor", base, "HEAD"],
+        [*_hardened(root, runner, timeout), "merge-base", "--is-ancestor", base, "HEAD"],
         timeout=timeout,
     )
     return check is not None and check.returncode == 0
@@ -364,7 +418,7 @@ def _gather(
         runner,
         root,
         [
-            *_HARDENED,
+            *_hardened(root, runner, min(_GIT_TIMEOUT, remaining())),
             "status",
             "--porcelain",
             "-z",

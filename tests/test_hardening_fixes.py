@@ -274,7 +274,7 @@ def _api(tmp_path):
 def test_put_config_canonicalizes_values(tmp_path):
     from fastapi.testclient import TestClient
 
-    client = TestClient(_api(tmp_path))
+    client = TestClient(_api(tmp_path), base_url="http://127.0.0.1")
     response = client.put("/config", json={"values": {"budget_session_usd": -5}})
     assert response.status_code == 200
     assert response.json()["values"]["budget_session_usd"] == 0.0
@@ -283,7 +283,7 @@ def test_put_config_canonicalizes_values(tmp_path):
 def test_put_config_rejects_unknown_and_secret(tmp_path):
     from fastapi.testclient import TestClient
 
-    client = TestClient(_api(tmp_path))
+    client = TestClient(_api(tmp_path), base_url="http://127.0.0.1")
     assert client.put("/config", json={"values": {"nope": 1}}).status_code == 400
     assert client.put(
         "/config", json={"values": {"decide_typesafe_api_key": "x"}}
@@ -293,7 +293,7 @@ def test_put_config_rejects_unknown_and_secret(tmp_path):
 def test_revoke_endpoint_clears_flags(tmp_path):
     from fastapi.testclient import TestClient
 
-    client = TestClient(_api(tmp_path))
+    client = TestClient(_api(tmp_path), base_url="http://127.0.0.1")
     client.post("/permissions/grant")
     assert client.get("/config").json()["permissions"]["granted"] is True
     client.post("/permissions/revoke")
@@ -303,7 +303,7 @@ def test_revoke_endpoint_clears_flags(tmp_path):
 def test_status_reports_aggregate_and_per_session(tmp_path):
     from fastapi.testclient import TestClient
 
-    client = TestClient(_api(tmp_path))
+    client = TestClient(_api(tmp_path), base_url="http://127.0.0.1")
     body = client.get("/status").json()
     assert body["spend_total_usd"] == body["spend_usd"]
     assert isinstance(body["spend_sessions"], dict)

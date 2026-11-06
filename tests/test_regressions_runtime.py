@@ -291,8 +291,14 @@ def test_evidence_uses_nul_separated_unquoted_git_status(tmp_path):
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     text = collect(str(tmp_path), ["a file.py"], run=fake_run)
-    status_argv, status_kwargs = calls[0]
-    diff_argv = calls[1][0]
+    status_argv, status_kwargs = next(
+        (argv, kwargs)
+        for argv, kwargs in calls
+        if "status" in argv  # the first call enumerates filter drivers
+    )
+    diff_argv = next(
+        argv for argv, _ in calls if "diff" in argv and "--stat" not in argv
+    )
     assert status_argv[0] == "git"
     assert "core.quotePath=false" in status_argv
     assert "core.fsmonitor=false" in status_argv

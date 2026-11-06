@@ -307,25 +307,31 @@ def _guidance_payload(scope: str, cwd: str, path: Path, text: str) -> dict[str, 
     }
 
 
+_LOOPBACK_HOSTS = {"localhost", "::1"}
+_LOOPBACK_PREFIX = "127."
+
+
+def _is_loopback_host(name: str | None) -> bool:
+    value = str(name or "").strip("[]").lower()
+    return value in _LOOPBACK_HOSTS or value.startswith(_LOOPBACK_PREFIX)
+
+
 def _guard_origin(request: Request) -> None:
     """Refuse a mutating request that a browser page on another origin sent.
 
-    The dashboard is a local, unauthenticated API: a page open in the user's
-    browser can reach it. A cross-origin POST from a normal page carries
-    ``Origin``; a same-origin call from the desktop app does not carry a
-    foreign one, so rejecting a foreign Origin closes the drive-by write
-    without touching the local caller.
+    The dashboard is a local, unauthenticated API. Comparing ``Origin`` to
+    ``Host`` is not a defence: under DNS rebinding both are the attacker's
+    hostname. The Host itself must be loopback, and a present Origin must be
+    loopback too; a request with no Origin is a local tool, which already has
+    the same filesystem access.
     """
+    host = request.headers.get("host") or ""
+    host_name = urlparse(f"//{host}").hostname if host else None
+    if not _is_loopback_host(host_name):
+        raise HTTPException(status_code=403, detail="cross_origin_request")
     origin = str(request.headers.get("origin") or "").strip()
-    if not origin:
-        return
-    parsed = urlparse(origin)
-    host = str(request.headers.get("host") or "")
-    if parsed.netloc and parsed.netloc == host:
-        return
-    if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
-        return
-    raise HTTPException(status_code=403, detail="cross_origin_request")
+    if origin and not _is_loopback_host(urlparse(origin).hostname):
+        raise HTTPException(status_code=403, detail="cross_origin_request")
 
 
 # --------------------------------------------------------------------------

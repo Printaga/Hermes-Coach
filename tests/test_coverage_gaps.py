@@ -525,7 +525,7 @@ def test_evidence_helpers_handle_unreadable_inputs(tmp_path):
 
 
 def test_dashboard_config_shape_and_secret_flag(tmp_path):
-    client = TestClient(app_for_tests(home=tmp_path))
+    client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     body = client.get("/config").json()
     assert set(body["values"]) == set(DEFAULTS)
     assert body["values"]["decide_typesafe_api_key"] == ""
@@ -548,7 +548,7 @@ def test_dashboard_status_aggregates_sessions(tmp_path):
     second = store.load("two")
     second.spend_usd = 0.3
     store.save(second)
-    body = TestClient(app_for_tests(home=tmp_path)).get("/status").json()
+    body = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1").get("/status").json()
     assert body["spend_usd"] == 0.5
     assert body["pending_notes"] == 1
     assert body["sessions"] == 2
@@ -559,7 +559,7 @@ def test_dashboard_config_write_failure_is_a_500(tmp_path, monkeypatch):
     app = app_for_tests(home=tmp_path)
     app.state.config = None
     monkeypatch.setattr(api, "_save_host_config", lambda config: False)
-    response = TestClient(app).put("/config", json={"values": {"active_enabled": True}})
+    response = TestClient(app, base_url="http://127.0.0.1").put("/config", json={"values": {"active_enabled": True}})
     assert response.status_code == 500
 
 
@@ -567,7 +567,7 @@ def test_dashboard_grant_write_failure_is_a_500(tmp_path, monkeypatch):
     app = app_for_tests(home=tmp_path)
     app.state.config = None
     monkeypatch.setattr(api, "_save_host_config", lambda config: False)
-    response = TestClient(app).post("/permissions/grant", json={})
+    response = TestClient(app, base_url="http://127.0.0.1").post("/permissions/grant", json={})
     assert response.status_code == 500
 
 

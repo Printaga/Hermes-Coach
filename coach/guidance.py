@@ -12,6 +12,8 @@ one; it was deleted rather than kept in step.
 
 from __future__ import annotations
 
+import errno
+import os
 import re
 from pathlib import Path
 
@@ -52,13 +54,26 @@ class Guidance:
         Permission and I/O errors propagate so a denied or broken file is
         never silently treated as "no guidance".
         """
+        path = self._path(scope, cwd)
         try:
-            text = self._path(scope, cwd).read_text(
-                encoding="utf-8", errors="replace"
-            )
-        except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
-            return ""
-        return text[:GUIDANCE_MAX_CHARS]
+            if path.is_symlink():
+                # A cloned repo can carry COACH.md as a symlink to any readable
+                # file; reading it would put that file in every prompt.
+                return ""
+            # O_NOFOLLOW closes the swap between the check above and the open,
+            # and the bounded read refuses to decode a huge file.
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "r", encoding="utf-8", errors="replace") as handle:
+                return handle.read(GUIDANCE_MAX_CHARS)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return ""
+            if isinstance(
+                exc, (FileNotFoundError, NotADirectoryError, IsADirectoryError)
+            ):
+                return ""
+            raise
 
     def system_block(self, cwd: str) -> str:
         """Return both files as one bounded, tagged block, or ``""``."""

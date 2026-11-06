@@ -983,9 +983,8 @@ class CoachPlugin(CommandsMixin):
             return False
         if self.coach.check("active"):
             return False
-        if (
-            settings.budget_on_exceed in {"soft", "hard"}
-            and state.spend_usd >= settings.budget_session_usd
+        if settings.budget_on_exceed in {"soft", "hard"} and _at_budget(
+            settings, state.spend_usd
         ):
             return False
         cadence = settings.active_cadence
@@ -1180,8 +1179,9 @@ class CoachPlugin(CommandsMixin):
 
             holds_key = f"review_holds:{turn_id}"
             used = state.calls.get(holds_key, 0)
-            if used >= max(0, int(self.settings.review_max_holds)):
-                return None
+            # The cap is on HOLDS, not reviews: the claim that answers a held
+            # blocker must still be reviewed, or the fix is never checked.
+            can_hold = used < max(0, int(self.settings.review_max_holds))
 
         cwd = str(data.get("cwd") or self.cwd())
         base = ""
@@ -1205,6 +1205,7 @@ class CoachPlugin(CommandsMixin):
         if (
             finding.severity == "blocker"
             and self.settings.review_authority == "hold_once"
+            and can_hold
         ):
             # review_now saved its own copy with the spend added; reload under
             # the store lock so the hold counter does not overwrite that

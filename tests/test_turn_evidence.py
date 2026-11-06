@@ -347,3 +347,43 @@ def test_the_turn_range_is_described_in_full_not_by_reported_paths(tmp_path):
     # The patch itself stays scoped to what the host reported.
     assert "only.py" in text
     assert "+def test_x" not in text
+
+
+def test_repo_filter_drivers_are_disabled_for_every_git_call(tmp_path):
+    root = _repo(tmp_path)
+    (root / "README").write_text("hi\n")
+    _commit(root, "initial")
+    (root / ".gitattributes").write_text("*.dat filter=evil\n")
+    marker = root / "filter-ran"
+    script = root / "hook.sh"
+    script.write_text(f"#!/bin/sh\ntouch {marker}\ncat\n")
+    script.chmod(0o755)
+    _run(root, "config", "filter.evil.clean", str(script))
+    (root / "x.dat").write_text("payload\n")
+    if marker.exists():
+        marker.unlink()
+
+    text = collect(str(root), ["x.dat"])
+
+    assert "x.dat" in text
+    assert not marker.exists(), "the repo's clean filter executed during collect"
+
+
+def test_the_filter_override_reaches_the_git_argv(tmp_path):
+    import subprocess
+
+    root = _repo(tmp_path)
+    (root / "README").write_text("hi\n")
+    _run(root, "config", "filter.evil.clean", "cat")
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        if "config" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, "filter.evil.clean cat\n", ""
+            )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    collect(str(root), ["README"], run=fake_run)
+    assert any("filter.evil.clean=" in " ".join(argv) for argv in seen)

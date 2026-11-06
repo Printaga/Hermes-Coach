@@ -463,3 +463,16 @@ def test_build_plugin_reads_the_session_working_directory(tmp_path):
         assert plugin.cwd() == "/proj"
     finally:
         plugin.shutdown()
+
+
+def test_guidance_read_refuses_a_symlinked_COACH_md(tmp_path):
+    from coach.guidance import Guidance
+
+    secret = tmp_path / "outside.txt"
+    secret.write_text("TOP-SECRET", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "COACH.md").symlink_to(secret)
+    guidance = Guidance(tmp_path / "coach")
+    assert guidance.read("project", str(project)) == ""
+    assert "TOP-SECRET" not in guidance.system_block(str(project))
