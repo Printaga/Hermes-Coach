@@ -34,6 +34,7 @@ router = APIRouter()
 # One cap for reading and writing: an 8 000-char save reported success and
 # the prompt only ever saw the first 4 000.
 _GUIDANCE_WRITE_MAX = GUIDANCE_MAX_CHARS
+_RECENT_BYTES = 256 * 1024
 _GLOBAL_FILE = "guidance.md"
 _PROJECT_FILE = "COACH.md"
 _SECRET_KEY = "decide_typesafe_api_key"
@@ -480,10 +481,14 @@ def get_recent(
         paths = []
     for path in paths:
         try:
-            # The log is trimmed to 200 lines / 128 KB, so a full read is
-            # bounded; filtering before the tail is what keeps a busy other
-            # session from displacing this one's rows.
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            # Tail in bytes first: a log that outgrew the trim (or was written
+            # by another tool) must not be decoded whole per request.
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                if size > _RECENT_BYTES:
+                    handle.seek(size - _RECENT_BYTES)
+                    handle.readline()  # discard the partial first line
+                lines = handle.read().decode("utf-8", "replace").splitlines()
         except OSError:
             continue
         kept: list[dict[str, Any]] = []

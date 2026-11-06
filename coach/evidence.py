@@ -282,9 +282,9 @@ def _file_list(
     if range_names:
         add(range_names)
     elif base and remaining() > 0:
-        add(_names(runner, root, f"{base}..HEAD", (), remaining()))
+        add(_names(runner, root, f"{base}..HEAD", (), min(_GIT_TIMEOUT, remaining())))
     if remaining() > 0:
-        add(_names(runner, root, "HEAD", paths, remaining()))
+        add(_names(runner, root, "HEAD", paths, min(_GIT_TIMEOUT, remaining())))
     for rel in untracked:
         if rel not in seen and len(rows) < _MAX_LISTED_FILES:
             seen.add(rel)

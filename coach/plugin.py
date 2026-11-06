@@ -1038,21 +1038,21 @@ class CoachPlugin(CommandsMixin):
                     return
                 digest = str(turn.get("digest") or _turn_digest(turn))
                 cwd = str(turn.get("cwd") or self.cwd() or os.getcwd())
-                guidance = (
-                    self.guidance.system_block(cwd)
-                    if self.settings.guidance_enabled
-                    else ""
-                )
-                messages = build_messages(
-                    system=_SYSTEM,
-                    guidance=guidance,
-                    state=state,
-                    question=None,
-                    max_tokens=self.settings.ledger_max_tokens,
-                    tool_result_chars=self.settings.ledger_max_tool_result_chars,
-                    recent_turns=self.settings.ledger_max_recent_turns,
-                    note_max_chars=self.settings.ledger_note_max_chars,
-                )
+            # Prompt assembly reads guidance files: keep it out of the critical
+            # section so hooks are not serialised behind file I/O.
+            guidance = (
+                self.guidance.system_block(cwd) if self.settings.guidance_enabled else ""
+            )
+            messages = build_messages(
+                system=_SYSTEM,
+                guidance=guidance,
+                state=state,
+                question=None,
+                max_tokens=self.settings.ledger_max_tokens,
+                tool_result_chars=self.settings.ledger_max_tool_result_chars,
+                recent_turns=self.settings.ledger_max_recent_turns,
+                note_max_chars=self.settings.ledger_note_max_chars,
+            )
             reply = self.coach.ask(
                 messages,
                 mode="active",

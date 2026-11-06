@@ -72,25 +72,50 @@ function main() {
     .replace(/(^|[^:\\])\/\/.*$/gm, "$1")
 
   // Context APIs the host does not provide, in every access spelling.
+  // Member access is matched on `code` (comments/strings removed); bracket
+  // access necessarily quotes its key, so it is matched on a copy that keeps
+  // strings but drops comments.
+  const withStrings = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:\\])\/\/.*$/gm, "$1")
   const ctxName = String.raw`\bctx\s*(?:\?\.\s*|\.\s*)`
-  const bracket = (name) => String.raw`\bctx\s*\[\s*['"]${name}['"]\s*\]`
-  const forbidden = [
-    [/ctx\s*\.\s*jsx\b/.source, "ctx.jsx"],
-    [String.raw`\bctx\s*\.\s*jsxs\b`, "ctx.jsxs"],
-    [new RegExp(`${ctxName}useValue\\b`).source, "ctx.useValue"],
-    [new RegExp(`${ctxName}useEffect\\b`).source, "ctx.useEffect"],
-    [new RegExp(`${ctxName}host\\b|${bracket("host")}`).source, "ctx.host"],
-    [new RegExp(`${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)get\\b|${bracket("rest")}\\s*(?:\\?\\.\\s*|\\.\\s*)get\\b`).source, "ctx.rest.get"],
-    [new RegExp(`${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)put\\b`).source, "ctx.rest.put"],
-    [new RegExp(`${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)post\\b`).source, "ctx.rest.post"],
-    [new RegExp(`${ctxName}setConfig\\b|${bracket("setConfig")}`).source, "ctx.setConfig"],
-    [new RegExp(`${ctxName}useValue\\b|${bracket("useValue")}`).source, "ctx.useValue"],
-    [/\{\s*[^}]*\bhost\b[^}]*\}\s*=\s*ctx\b/.source, "destructured ctx.host"],
-    [/\{\s*[^}]*\b(rest|setConfig)\b[^}]*\}\s*=\s*ctx\b/.source, "destructured ctx.rest"],
+  const bracket = (name) =>
+    String.raw`\bctx\s*(?:\?\.\s*)?\[\s*['"]${name}['"]\s*\]`
+  const APIs = [
+    ["jsx", String.raw`\bctx\s*\.\s*jsx\b`, null],
+    ["jsxs", String.raw`\bctx\s*\.\s*jsxs\b`, null],
+    ["useValue", `${ctxName}useValue\\b`, bracket("useValue")],
+    ["useEffect", `${ctxName}useEffect\\b`, bracket("useEffect")],
+    ["host", `${ctxName}host\\b`, bracket("host")],
+    [
+      "rest.get",
+      `${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)get\\b`,
+      `${bracket("rest")}\\s*(?:\\?\\.\\s*|\\.\\s*)get\\b`,
+    ],
+    [
+      "rest.put",
+      `${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)put\\b`,
+      `${bracket("rest")}\\s*(?:\\?\\.\\s*|\\.\\s*)put\\b`,
+    ],
+    [
+      "rest.post",
+      `${ctxName}rest\\s*(?:\\?\\.\\s*|\\.\\s*)post\\b`,
+      `${bracket("rest")}\\s*(?:\\?\\.\\s*|\\.\\s*)post\\b`,
+    ],
+    ["setConfig", `${ctxName}setConfig\\b`, bracket("setConfig")],
   ]
-  const used = forbidden
-    .filter(([pattern]) => new RegExp(pattern).test(code))
-    .map(([, label]) => label)
+  const used = []
+  for (const [label, memberPattern, bracketPattern] of APIs) {
+    if (new RegExp(memberPattern).test(code)) used.push(`ctx.${label}`)
+    else if (bracketPattern && new RegExp(bracketPattern).test(withStrings))
+      used.push(`ctx[${label}]`)
+  }
+  for (const [pattern, label] of [
+    [/\{\s*[^}]*\bhost\b[^}]*\}\s*=\s*ctx\b/, "destructured ctx.host"],
+    [/\{\s*[^}]*\b(rest|setConfig)\b[^}]*\}\s*=\s*ctx\b/, "destructured ctx.rest"],
+  ]) {
+    if (pattern.test(code) || pattern.test(withStrings)) used.push(label)
+  }
   if (used.length) {
     fail(
       `desktop page uses APIs the plugin context does not provide: ${used.join(", ")}`,
@@ -211,9 +236,13 @@ function main() {
       continue
     }
     if (skipping) {
-      braces += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
-      const done =
-        (/\bfrom\b\s*["']/.test(line) || /;\s*$/.test(line)) && braces <= 0
+      // Braces inside strings/comments must not close the statement early.
+      const bare = line
+        .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""')
+        .replace(/`(?:[^`\\]|\\.)*`/g, '""')
+        .replace(/\/\/.*$/, "")
+      braces += (bare.match(/\{/g) || []).length - (bare.match(/\}/g) || []).length
+      const done = (/\bfrom\b\s*["']/.test(bare) || /;\s*$/.test(bare)) && braces <= 0
       if (done) skipping = false
       continue
     }

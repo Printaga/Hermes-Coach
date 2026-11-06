@@ -62,7 +62,15 @@ def bound_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
         ]
     else:
         bounded["tools"] = []
-    return bounded
+    # Only the known keys: an arbitrary payload key must not persist on disk.
+    return {
+        "turn_id": str(bounded.get("turn_id") or ""),
+        "user": bounded["user"],
+        "assistant": bounded["assistant"],
+        "tools": bounded["tools"],
+        "cwd": str(bounded.get("cwd") or ""),
+        "digest": str(bounded.get("digest") or ""),
+    }
 
 
 def append_turn(
