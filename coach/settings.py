@@ -57,7 +57,8 @@ DEFAULTS: dict[str, Any] = {
     "delivery_show_cards": True,
     "delivery_note_ttl_turns": 2,
     # Budget
-    "budget_session_usd": 0.50,
+    "budget_session_usd": 1.00,
+    "fallback_price_per_mtok": 1.0,
     "budget_on_exceed": "soft",
     # Guidance
     "guidance_enabled": True,
@@ -163,6 +164,7 @@ class Settings:
 
     # Budget
     budget_session_usd: float
+    fallback_price_per_mtok: float
     budget_on_exceed: str
 
     # Guidance
@@ -227,6 +229,7 @@ _MINIMUMS: dict[str, float] = {
     "delivery_max_corrective_per_request": 0,
     "delivery_note_ttl_turns": 0,
     "budget_session_usd": 0.0,
+    "fallback_price_per_mtok": 0.0,
     "worker_timeout_s": 5,
     "ledger_max_tool_result_chars": 50,
     "ledger_max_recent_turns": 1,
@@ -243,6 +246,7 @@ _MAXIMUMS: dict[str, float] = {
     "delivery_max_corrective_per_request": 10,
     "delivery_note_ttl_turns": 20,
     "budget_session_usd": 1000.0,
+    "fallback_price_per_mtok": 100.0,
     "worker_timeout_s": 120,
     "ledger_max_tool_result_chars": 5000,
     "ledger_max_recent_turns": 10,
@@ -311,6 +315,10 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
         ),
         delivery_note_ttl_turns=_as_int(
             data.get("delivery_note_ttl_turns"), DEFAULTS["delivery_note_ttl_turns"]
+        ),
+        fallback_price_per_mtok=_as_float(
+            data.get("fallback_price_per_mtok"),
+            DEFAULTS["fallback_price_per_mtok"],
         ),
         budget_session_usd=_as_float(
             data.get("budget_session_usd"), DEFAULTS["budget_session_usd"]

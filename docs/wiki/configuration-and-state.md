@@ -89,3 +89,12 @@ the dashboard rejects the key by name, so no route writes a credential to
 `logs/<state-safe-name>.jsonl`, the same percent-encoded-plus-hash encoding as
 session files; sanitising unsafe characters to `_` made `task/1` and `task_1`
 share a log.
+
+## Spend
+
+`budget_session_usd` defaults to 1.00 and `0` means no budget. The host prices
+each call from real usage; when its table cannot price a provider (some routes
+return `amount_usd=None`), the plugin estimates `tokens * fallback_price_per_mtok
+/ 1e6` and marks the review log row `cost_estimated: true`. Without that
+estimate the call costs 0.0 and the budget can never fire — which is why every
+review in the first sessions was logged as free.

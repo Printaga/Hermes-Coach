@@ -377,7 +377,8 @@ def test_price_never_negative():
         settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
         cost_fn=lambda *a: -2.5,
     )
-    assert coach._price("m", object(), "p") == 0.0
+    cost, estimated = coach._price("m", object(), "p")
+    assert (cost, estimated) == (0.0, False)
 
 
 def test_reply_cap_reaches_the_model(tmp_path):
@@ -459,8 +460,8 @@ def test_soft_budget_blocks_decide_but_not_consult(tmp_path):
 def test_manifest_versions_match():
     plugin_yaml = open("plugin.yaml", encoding="utf-8").read()
     manifest = json.load(open("dashboard/manifest.json", encoding="utf-8"))
-    assert 'version: "0.3.0"' in plugin_yaml
-    assert manifest["version"] == "0.3.0"
+    assert 'version: "0.3.1"' in plugin_yaml
+    assert manifest["version"] == "0.3.1"
 
 
 def test_hook_registration_matches_manifest():

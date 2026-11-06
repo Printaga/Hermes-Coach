@@ -33,6 +33,7 @@ class CoachReply:
     model: str = ""
     usage: Any = None
     cost_usd: float = 0.0
+    cost_estimated: bool = False
     error: str = ""
 
 
@@ -181,7 +182,11 @@ class Coach:
         actual_model = str(getattr(result, "model", "") or "")
         actual_provider = str(getattr(result, "provider", "") or "")
         usage = getattr(result, "usage", None)
-        cost = self._price(model, usage, provider)
+        # Price what served the call, not what was asked for: a host-side
+        # fallback is billed at the fallback model's rate.
+        cost, estimated = self._price(
+            actual_model or model, usage, actual_provider or provider
+        )
 
         if _differs(actual_model, model) or _differs(actual_provider, provider):
             return CoachReply(
@@ -189,6 +194,7 @@ class Coach:
                 model=actual_model,
                 usage=usage,
                 cost_usd=cost,
+                cost_estimated=estimated,
                 error="fallback_mismatch",
             )
 
@@ -200,22 +206,51 @@ class Coach:
             model=actual_model or model,
             usage=usage,
             cost_usd=cost,
+            cost_estimated=estimated,
         )
 
-    def _price(self, model: str, usage: Any, provider: str) -> float:
-        """Price one call, returning ``0.0`` when pricing is unavailable."""
+    def _price(
+        self, model: str, usage: Any, provider: str
+    ) -> tuple[float, bool]:
+        """Price one call; ``(cost, estimated)`` where estimated means guessed.
+
+        The host's table does not know every provider (``opencode-go`` returns
+        ``amount_usd=None``), and a None that becomes 0.0 makes the session
+        budget decorative: every review is free and the stop never fires. An
+        unpriced call is estimated from its token counts instead.
+        """
         if self.cost_fn is not None:
             try:
-                return max(0.0, float(self.cost_fn(model, usage, provider)))
+                return max(0.0, float(self.cost_fn(model, usage, provider))), False
             except Exception:
-                return 0.0
+                return 0.0, False
         if usage is None:
-            return 0.0
+            return 0.0, False
         try:
             from agent.usage_pricing import estimate_usage_cost
 
             priced = estimate_usage_cost(model, usage, provider=provider)
             amount = getattr(priced, "amount_usd", priced)
-            return max(0.0, float(amount or 0.0))
+            if amount is None:
+                return self._estimate(usage), True
+            return max(0.0, float(amount or 0.0)), False
         except Exception:
+            # No host pricing module at all (or it raised): the token estimate
+            # is still a better meter than a free call.
+            return self._estimate(usage), True
+
+    def _estimate(self, usage: Any) -> float:
+        """Fallback price from token counts, at the configured blended rate."""
+        rate = float(getattr(self.settings, "fallback_price_per_mtok", 1.0) or 0.0)
+        if rate <= 0:
             return 0.0
+        tokens = sum(
+            max(0, int(getattr(usage, field, 0) or 0))
+            for field in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            )
+        )
+        return round(tokens * rate / 1_000_000, 9)

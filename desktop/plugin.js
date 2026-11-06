@@ -778,6 +778,15 @@ function BudgetPage(props) {
       step: 0.1,
       onChange: (next) => state.save("budget_session_usd", next),
     }),
+    h(NumberField, {
+      label: "Unpriced models: fallback price per million tokens (USD)",
+      hint: "The host's price table does not know every provider. An unpriced call is costed from its tokens at this blended rate, so the budget still stops.",
+      value: values.fallback_price_per_mtok,
+      min: 0,
+      max: 100,
+      step: 0.1,
+      onChange: (next) => state.save("fallback_price_per_mtok", next),
+    }),
     h(Choice, {
       label: "When the budget is reached",
       value: values.budget_on_exceed,

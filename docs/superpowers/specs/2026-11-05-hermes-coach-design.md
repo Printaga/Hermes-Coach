@@ -323,7 +323,8 @@ under `plugins.entries.coach.llm`, not under `settings`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `budget_session_usd` | float | 0.50 | Coach spend per session, computed from real usage, not estimates of calls. |
+| `budget_session_usd` | float | 1.00 | Coach spend per session, from real usage. `0` means no budget. |
+| `fallback_price_per_mtok` | float | 1.0 | Blended USD per million tokens for a call the host cannot price (e.g. `opencode-go` returns `amount_usd=None`). Without it an unpriced call costs 0.0 and the budget never fires. `0` disables the estimate. |
 | `budget_on_exceed` | enum `warn` `soft` `hard` | `soft` | `warn` keeps going; `soft` stops Active, Review and Decide but leaves explicit consults; `hard` stops everything. |
 
 ### Guidance

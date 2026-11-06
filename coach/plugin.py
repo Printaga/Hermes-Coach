@@ -1095,6 +1095,9 @@ class CoachPlugin(CommandsMixin):
                 "input_tokens": int(getattr(reply.usage, "input_tokens", 0) or 0),
                 "output_tokens": int(getattr(reply.usage, "output_tokens", 0) or 0),
                 "cost_usd": reply.cost_usd,
+                "cost_estimated": bool(
+                    getattr(reply, "cost_estimated", False)
+                ),
                 "provider": reply.provider,
                 "model": reply.model,
                 "error": reply.error,

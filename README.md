@@ -28,6 +28,10 @@ Every mode uses one shared model unless you give it its own.
   never a claim about the work: it never holds a completion and never starts a
   turn.
 - A session budget of `0` means no budget. Set a positive value to cap spending.
+  Calls the host's price table cannot price (some provider routes return
+  `amount_usd=None`) are costed from their token counts at
+  `fallback_price_per_mtok`, so the budget still fires; set that to `0` to
+  leave unpriced calls free.
 - `decide_typesafe_api_key` is read from `.env`; `/coach set` refuses to write a
   key into `config.yaml`.
 - `ambient`: a card now, and the model sees the note next turn. No extra call.

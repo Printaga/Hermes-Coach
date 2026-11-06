@@ -57,3 +57,46 @@ def test_provider_error_is_returned_not_raised():
         def complete(self, *a, **k): raise RuntimeError("503")
     r = Coach(Boom(), _settings()).ask([{"role": "user", "content": "q"}], mode="consult")
     assert r.error.startswith("provider_error") and r.text == ""
+
+
+def test_an_unpriced_call_is_estimated_from_its_tokens():
+    from types import SimpleNamespace
+
+    from coach.advisor import Coach
+    from coach.settings import load_settings
+
+    coach = Coach(
+        llm=None,
+        settings=load_settings(
+            {
+                "coach_model": {"provider": "opencode-go", "model": "glm-5.3-flash"},
+                "fallback_price_per_mtok": 1.0,
+            }
+        ),
+    )
+    usage = SimpleNamespace(
+        input_tokens=2_000, output_tokens=500,
+        cache_read_tokens=0, cache_write_tokens=0,
+    )
+    cost, estimated = coach._price("glm-5.3-flash", usage, "opencode-go")
+    assert estimated is True
+    assert cost == 0.0025
+
+
+def test_a_zero_fallback_rate_keeps_unpriced_calls_free():
+    from types import SimpleNamespace
+
+    from coach.advisor import Coach
+    from coach.settings import load_settings
+
+    coach = Coach(
+        llm=None,
+        settings=load_settings(
+            {
+                "coach_model": {"provider": "p", "model": "m"},
+                "fallback_price_per_mtok": 0.0,
+            }
+        ),
+    )
+    usage = SimpleNamespace(input_tokens=1_000, output_tokens=0)
+    assert coach._price("m", usage, "p") == (0.0, True)
