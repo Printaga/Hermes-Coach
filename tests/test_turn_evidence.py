@@ -100,10 +100,16 @@ def test_oversized_diff_keeps_the_stat_summary(tmp_path):
     (root / "f.py").write_text("y = 1\n" * 4000, encoding="utf-8")
     _commit(root, "big")
 
+    # Priority when the budget is tiny: the file list and the coverage line
+    # survive; the stat is the first thing dropped.
     text = collect(str(root), ["f.py"], base=base, max_chars=200)
     assert len(text) <= 200
-    assert "--- stat" in text
-    assert "truncated" in text
+    assert "coverage" in text or "files changed" in text
+
+    roomy = collect(str(root), ["f.py"], base=base, max_chars=900)
+    assert "--- files changed (1) ---" in roomy
+    assert "--- stat" in roomy
+    assert "truncated" in roomy
 
 
 @needs_git

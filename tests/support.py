@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from coach.jev import Decision
@@ -59,6 +60,50 @@ class StructuredLlm:
         result.model = kwargs["model"]
         result.provider = kwargs["provider"]
         return result
+
+
+class AdvisorLlm:
+    """Plain completion refused; one structured payload returned."""
+
+    def __init__(self, payload=None):
+        self.calls = []
+        self.payload = payload or {"severity": "none"}
+
+    def complete(self, messages, **kwargs):
+        raise AssertionError("structured test must not use plain completion")
+
+    def complete_structured(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            text="ok",
+            provider=kwargs.get("provider", "p"),
+            model=kwargs.get("model", "m"),
+            usage=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=1,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            ),
+            parsed=self.payload,
+            audit={},
+        )
+
+
+class FakeWorker:
+    """Records submissions instead of running a thread."""
+
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, session_id, turn_id=""):
+        self.submitted.append((session_id, turn_id))
+        return True
+
+
+def product_text(relative_path):
+    """Read a file from the plugin checkout, for structure assertions."""
+    root = Path(__file__).resolve().parent.parent
+    return (root / relative_path).read_text(encoding="utf-8")
 
 
 class JevResp:

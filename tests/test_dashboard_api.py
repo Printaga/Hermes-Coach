@@ -1,10 +1,16 @@
 # tests/test_dashboard_api.py
+import copy
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from coach.findings import Finding
+from coach.plugin import _primary_identity
 from dashboard.plugin_api import router, app_for_tests
+from tests.support import plugin
 
 
 def test_status_reports_unconfigured(tmp_path):
@@ -177,3 +183,86 @@ def test_mutations_reject_a_foreign_origin(tmp_path):
         "/permissions/grant", headers={"Origin": "http://localhost:3000"}
     )
     assert allowed.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Dashboard API guards
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_config_rejects_secret_empty_and_malformed_values(tmp_path):
+    client = TestClient(app_for_tests(home=tmp_path))
+    assert (
+        client.put(
+            "/config", json={"values": {"decide_typesafe_api_key": "x"}}
+        ).status_code
+        == 400
+    )
+    assert client.put("/config", json={"values": {}}).status_code == 400
+    assert client.put("/config", json={"values": ["x"]}).status_code == 400
+
+
+def test_dashboard_grant_reports_permissions(tmp_path):
+    client = TestClient(app_for_tests(home=tmp_path))
+    assert client.post("/permissions/grant", json={}).status_code == 200
+    config = client.get("/config").json()
+    assert config["permissions"]["model_overrides"] is True
+
+
+def test_dashboard_guidance_rejects_unknown_scope_and_oversize_text(tmp_path):
+    client = TestClient(app_for_tests(home=tmp_path))
+    assert (
+        client.put(
+            "/guidance",
+            json={"scope": "everywhere", "cwd": "", "text": "x"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.put(
+            "/guidance",
+            json={"scope": "global", "cwd": "", "text": "x" * 8001},
+        ).status_code
+        == 400
+    )
+
+
+def test_dashboard_global_guidance_creates_its_parent(tmp_path):
+    client = TestClient(app_for_tests(home=tmp_path))
+    response = client.put(
+        "/guidance", json={"scope": "global", "cwd": "", "text": "Be blunt."}
+    )
+    assert response.status_code == 200
+    assert (tmp_path / "coach" / "guidance.md").read_text(
+        encoding="utf-8"
+    ) == "Be blunt."
+
+
+# ---------------------------------------------------------------------------
+# Dashboard endpoint behavior
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_recent_orders_and_filters(tmp_path):
+    logs = tmp_path / "coach" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "a.jsonl").write_text(
+        '{"at":"2026-01-01T00:00:00+00:00","title":"old","body":"b",'
+        '"severity":"nit","session_id":"s1"}\n',
+        encoding="utf-8",
+    )
+    (logs / "b.jsonl").write_text(
+        '{"at":"2026-02-01T00:00:00+00:00","title":"new","body":"b2",'
+        '"severity":"concern","session_id":"s2"}\n',
+        encoding="utf-8",
+    )
+    client = TestClient(app_for_tests(home=tmp_path))
+    rows = client.get("/recent").json()["reviews"]
+    assert [row["title"] for row in rows] == ["new", "old"]
+    rows = client.get("/recent", params={"session": "s1"}).json()["reviews"]
+    assert [row["title"] for row in rows] == ["old"]
+
+
+# ---------------------------------------------------------------------------
+# Grant, identity, and command model handling
+# ---------------------------------------------------------------------------

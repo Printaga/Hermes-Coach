@@ -41,9 +41,11 @@ the runtime environment.
 - `dashboard/plugin_api.py` — `/config`, `/status`, `/guidance`,
   `/permissions/grant` for the settings page.
 - `desktop/plugin.js` — the settings page: plain ESM, no build step.
-- `tests/` — one file per module, fakes instead of a live host. It has no
+- `tests/` — one file per module, plus theme files for cross-cutting
+  regressions (`test_regressions_host|runtime|hooks`, `test_command_surface`,
+  `test_suite_quality`). Shared fakes live in `tests/support.py`. It has no
   `__init__.py`; cross-test imports use the namespace form
-  `from tests.test_plugin_ask import Llm`.
+  `from tests.support import plugin`.
 - `docs/superpowers/` — approved design and implementation plan.
 
 ## Conventions

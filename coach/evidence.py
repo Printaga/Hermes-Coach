@@ -211,7 +211,7 @@ def _file_list(
     if range_names:
         add(range_names)
     elif base and remaining() > 0:
-        add(_names(runner, root, f"{base}..HEAD", paths, remaining()))
+        add(_names(runner, root, f"{base}..HEAD", (), remaining()))
     if remaining() > 0:
         add(_names(runner, root, "HEAD", paths, remaining()))
     for rel in untracked:
@@ -255,6 +255,13 @@ def _range_usable(
     return check is not None and check.returncode == 0
 
 
+def _cap(text: str, chars: int, note: str) -> str:
+    """Clip one header block so a huge stat cannot displace the file list."""
+    if chars <= 0 or len(text) <= chars:
+        return text
+    return text[:chars].rstrip() + f"\n[{note}]"
+
+
 def _coverage(
     listed: int,
     reported: int,
@@ -282,9 +289,9 @@ def _coverage(
         )
     if truncated:
         lines.append(
-            "The patch below is truncated. The stat, file list and coverage are "
-            "complete, but a file whose patch is missing here has NOT been shown "
-            "to be unchanged."
+            "The patch below is truncated. The file list and coverage are complete, "
+            "but a file whose patch is missing here has NOT been shown to be "
+            "unchanged."
         )
     lines.append(
         "The stat and file list describe every file changed since the turn "
@@ -296,8 +303,27 @@ def _coverage(
 
 
 def _assemble(header: Sequence[str], body: Sequence[str], limit: int) -> str:
-    """Join the sections, keeping the header whole when the patch must clip."""
-    head = "\n\n".join(section for section in header if section)
+    """Join the sections: coverage, then the file list, then the stat.
+
+    When even the header cannot fit, the least load-bearing block goes first —
+    a stat is a convenience, the list and the coverage line are the evidence.
+    """
+    sections = [section for section in header if section]
+    head = "\n\n".join(sections)
+    if len(head) > limit:
+        kept: list[str] = []
+        for section in reversed(sections):
+            candidate = [section, *kept]
+            if len("\n\n".join(candidate)) + 2 <= limit:
+                kept = candidate
+            else:
+                break
+        if kept:
+            head = "\n\n".join(kept)
+        elif sections:
+            # Nothing fits whole: keep the head of the highest-priority block
+            # (the coverage line names the counts) rather than nothing at all.
+            head = sections[-1][: max(0, limit - 20)].rstrip() + "\n[clipped]"
     rest = "\n\n".join(section for section in body if section)
     text = f"{head}\n\n{rest}" if rest else head
     if len(text) <= limit:
@@ -464,8 +490,10 @@ def collect(
         range_names=gathered.range_names,
     )
     listed = len(files.splitlines())
-    stat = (
-        _diff(
+    if gathered.base_ok:
+        # Unconditional: the range's description must never fall back to the
+        # host's path list, or a commit again reads as smaller than it is.
+        stat = _diff(
             runner,
             root,
             f"{base}..HEAD",
@@ -473,12 +501,11 @@ def collect(
             stat=True,
             timeout=min(_GIT_TIMEOUT, remaining()),
         )
-        if gathered.committed or gathered.range_names
-        else _diff(
+    else:
+        stat = _diff(
             runner, root, "HEAD", safe, stat=True,
             timeout=min(_GIT_TIMEOUT, remaining()),
         )
-    )
 
     body: list[str] = []
     if gathered.committed:
@@ -490,7 +517,10 @@ def collect(
 
     header: list[str] = []
     if stat:
-        header.append(f"--- stat ({gathered.base_note}) ---\n{stat.rstrip()}")
+        header.append(
+            f"--- stat ({gathered.base_note}) ---\n"
+            f"{_cap(stat.rstrip(), max(400, limit // 2), 'stat truncated')}"
+        )
     if files:
         header.append(f"--- files changed ({listed}) ---\n{files}")
     rest = "\n\n".join(body)
