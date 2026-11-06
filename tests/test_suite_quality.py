@@ -4,54 +4,33 @@
 # plugin during development or live verification. Unit tests next to each
 # module cover the happy paths; these tests cover the failure modes.
 
-import copy
 import json
 import os
-import re
-import subprocess
 import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
-from fastapi.testclient import TestClient
 
-from coach.advisor import Coach, _content_text, _differs, _split_messages
-from coach.delivery import format_ambient, format_card, format_corrective, route
+from coach.advisor import _content_text, _differs, _split_messages
 from coach.commands import _bool_arg, _coerce_setting, _parse_model
-from coach.evidence import collect
-from coach.findings import Finding, is_deliverable, parse_finding
-from coach.jev import Decision, _inner, _probabilities, decide
-from coach.ledger import append_turn, build_messages, tool_card
+from coach.findings import Finding
+from coach.jev import _inner, _probabilities, decide
 from coach.plugin import (
-    ASK_DESCRIPTION,
-    ASK_SCHEMA,
-    DECIDE_DESCRIPTION,
-    DECIDE_SCHEMA,
     CoachPlugin,
     _as_turn,
     _child_id,
     _find_turn,
     _last_reviewed_digest,
     _payload,
-    _primary_identity,
-    _record_turn,
     _request_text,
     _result_text,
     _tool_arg,
     _turns_since_review,
-    build_plugin,
 )
 from coach.settings import DEFAULTS, load_settings
 from coach.state import Store
-from dashboard.plugin_api import app_for_tests
-from tests.support import AdvisorLlm as _StructuredLlmForAdvisor
 from tests.support import ConsultLlm as _ConsultLlm
-from tests.support import FakeWorker as _FakeWorker
-from tests.support import StructuredLlm as _StructuredLlm
-from tests.support import product_text as _product_text
 
 REPO = Path(__file__).resolve().parent.parent
 

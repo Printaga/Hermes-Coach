@@ -16,8 +16,8 @@ import json
 import math
 import logging
 import os
+import tempfile
 import threading
-import re
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -828,10 +828,22 @@ class CoachPlugin(CommandsMixin):
                 if cwd not in seen:
                     data["seen_cwds"] = [*seen, cwd][-_SEEN_CWDS_MAX:]
                     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    temporary = path.with_name(f".{path.name}.tmp")
-                    temporary.write_text(json.dumps(data), encoding="utf-8")
-                    os.chmod(temporary, 0o600)
-                    os.replace(temporary, path)
+                    # mkstemp + replace, like Store.save: a fixed tmp name lets
+                    # two writers (desktop and CLI) drop each other's update.
+                    descriptor, temporary = tempfile.mkstemp(
+                        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+                    )
+                    try:
+                        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                            json.dump(data, handle)
+                        os.chmod(temporary, 0o600)
+                        os.replace(temporary, path)
+                    except BaseException:
+                        try:
+                            os.unlink(temporary)
+                        except OSError:
+                            pass
+                        raise
             self._seen_cwds.add(cwd)
         except Exception:
             return

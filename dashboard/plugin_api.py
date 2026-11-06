@@ -265,9 +265,11 @@ def _read_guidance(path: Path, *, root: Path | None = None) -> str:
             return ""
         if root is not None and path.parent.resolve() != Path(root).resolve():
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")[
-            :_GUIDANCE_WRITE_MAX
-        ]
+        # O_NOFOLLOW closes the swap between the checks above and the read.
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(_GUIDANCE_WRITE_MAX)
     except OSError:
         return ""
 

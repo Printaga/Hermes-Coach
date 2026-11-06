@@ -13,8 +13,6 @@ import json
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
-
 from typing import Any, Callable
 
 from .coerce import as_finite_float
@@ -209,10 +207,13 @@ def _decide_chat(
             context = "\n\nState:\n" + json.dumps(
                 dict(state), ensure_ascii=False, sort_keys=True, default=str
             )
-        except (TypeError, ValueError):
+        except Exception:
             # Circular or otherwise unserializable state must not escape the
             # fail-open contract; the question and options still decide.
-            context = "\n\nState:\n" + str(dict(state))
+            try:
+                context = "\n\nState:\n" + str(dict(state))
+            except Exception:
+                context = ""
     messages = [
         {"role": "system", "content": _CHAT_SYSTEM},
         {

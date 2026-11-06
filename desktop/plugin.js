@@ -804,7 +804,7 @@ function BudgetPage(props) {
     {
       title: "Budget",
       description:
-        "Coach spend is priced from real usage, including cached tokens. This is a ceiling for the whole profile, not a prediction.",
+        "Coach spend is priced from real usage, including cached tokens. The budget applies per session; hover the Status tab for this chat versus the total.",
     },
     h(NumberField, {
       label: "Budget per session (USD)",
@@ -869,6 +869,9 @@ function GuidancePage(props) {
   const seq = useRef(0)
 
   const load = async (nextScope) => {
+    // Bump first: an in-flight fetch from the previous scope must not land
+    // after this early return cleared the editor.
+    const id = ++seq.current
     if (nextScope === "project" && !cwd) {
       setText("")
       setPath("")
@@ -876,7 +879,6 @@ function GuidancePage(props) {
       setLoading(false)
       return
     }
-    const id = ++seq.current
     setNotice("")
     setLoading(true)
     try {
@@ -903,7 +905,8 @@ function GuidancePage(props) {
     }
     // Capture what the user sees now: if the scope or cwd changes while the
     // PUT is in flight, the result below must not overwrite the new editor.
-    const id = seq.current
+    // A save gets its own id so two overlapping saves are distinguishable.
+    const id = ++seq.current
     const saveScope = scope
     const saveCwd = cwd
     const saveText = text

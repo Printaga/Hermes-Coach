@@ -203,6 +203,13 @@ function main() {
     if (!skipping && /^\s*export\b[^;]*\bfrom\b/.test(line)) {
       continue
     }
+    if (!skipping && /^\s*export\s*\{[^}]*$/.test(line)) {
+      // A multiline re-export (`export { a,\n b } from "x"`) would execute on
+      // import just like an import; skip it to its closing brace and `from`.
+      skipping = true
+      braces = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
+      continue
+    }
     if (skipping) {
       braces += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
       const done =

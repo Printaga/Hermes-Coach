@@ -108,5 +108,5 @@ def parse_finding(parsed: Any, text: str = "") -> Finding | None:
 
 
 def is_deliverable(finding: Finding | None) -> bool:
-    """True only for a parsed nit, concern or blocker."""
+    """True only for a parsed nit, concern, unverifiable or blocker."""
     return finding is not None and finding.severity in _DELIVERABLE

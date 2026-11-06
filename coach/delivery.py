@@ -100,8 +100,13 @@ def _text(value: object) -> str:
     inner whitespace) before the note is assembled.
     """
     text = str(value or "")
-    text = _NOTE_CLOSE.sub("", text)
-    return _NOTE_OPEN.sub("", text)
+    # One pass is not enough: removing a close tag can join the halves of
+    # another ("</coach-note </coach-note>>"), so iterate to a fixpoint.
+    while True:
+        cleaned = _NOTE_OPEN.sub("", _NOTE_CLOSE.sub("", text))
+        if cleaned == text:
+            return cleaned
+        text = cleaned
 
 
 def sanitize(value: object) -> str:

@@ -305,6 +305,8 @@ class CommandsMixin:
         try:
             line = path.read_text(encoding="utf-8", errors="replace").splitlines()[-1]
             row = json.loads(line)
+            if not isinstance(row, Mapping):
+                return ""
         except (OSError, IndexError, ValueError):
             return ""
         if str(row.get("kind") or "") == "decide":
@@ -447,7 +449,9 @@ class CommandsMixin:
             return "No pending coach notes."
         lines = [f"{len(notes)} pending coach note(s):"]
         for note in notes:
-            body = str(note.get("body") or "").strip()
+            # Show what _send_pending will inject: text, or body when an older
+            # writer left the text empty.
+            body = str(note.get("text") or note.get("body") or "").strip()
             snippet = f" — {body[:160]}" if body else ""
             lines.append(
                 f"- [{note.get('severity') or 'note'}] "
@@ -466,27 +470,32 @@ class CommandsMixin:
         if self.inject is None:
             return "No injection channel available; notes stay pending."
         sent = 0
-        sent_texts: set[str] = set()
-        remaining: list[dict[str, Any]] = []
-        for note in notes:
-            text = str(note.get("text") or "").strip()
+        sent_ids: set[int] = set()
+        for index, note in enumerate(notes):
+            text = str(note.get("text") or note.get("body") or "").strip()
             if text and self._inject(text):
                 sent += 1
-                sent_texts.add(text)
-            else:
-                remaining.append(dict(note))
+                sent_ids.add(index)
         if not sent:
             return "Could not deliver pending notes; they stay pending."
+        delivered = [note for index, note in enumerate(notes) if index in sent_ids]
         with self._store_lock:
-            # Re-load and drop by text: another thread may have appended notes
-            # while the injections above were in flight.
+            # Drop by identity, not text value: two notes can carry the same
+            # text, and a failed retry must not be discarded as a duplicate.
             state = self.store.load(session_id)
-            state.pending = [
-                note
-                for note in state.pending
-                if not isinstance(note, Mapping)
-                or str(note.get("text") or "").strip() not in sent_texts
-            ]
+            keep: list[Any] = []
+            dropped = 0
+            for note in state.pending:
+                if (
+                    isinstance(note, Mapping)
+                    and dropped < len(delivered)
+                    and str(note.get("text") or note.get("body") or "").strip()
+                    == str(delivered[dropped].get("text") or "").strip()
+                ):
+                    dropped += 1
+                    continue
+                keep.append(note)
+            state.pending = keep
             state.updated_at = self.clock()
             self.store.save(state)
         return f"Delivered {sent} pending coach note(s)."

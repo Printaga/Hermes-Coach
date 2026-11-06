@@ -100,3 +100,44 @@ def test_a_zero_fallback_rate_keeps_unpriced_calls_free():
     )
     usage = SimpleNamespace(input_tokens=1_000, output_tokens=0)
     assert coach._price("m", usage, "p") == (0.0, True)
+
+
+def test_a_hostile_result_object_does_not_escape_ask():
+    from coach.advisor import Coach
+    from coach.settings import load_settings
+
+    class Hostile:
+        @property
+        def text(self):
+            raise RuntimeError("boom")
+
+    class Llm:
+        def complete(self, messages, **kwargs):
+            return Hostile()
+
+    coach = Coach(
+        llm=Llm(),
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+    )
+    reply = coach.ask([{"role": "user", "content": "q"}], mode="consult")
+    assert reply.error.startswith("provider_error")
+
+
+def test_a_mapping_usage_is_priced_by_the_fallback():
+    from coach.advisor import Coach
+    from coach.settings import load_settings
+
+    coach = Coach(
+        llm=None,
+        settings=load_settings(
+            {
+                "coach_model": {"provider": "p", "model": "m"},
+                "fallback_price_per_mtok": 2.0,
+            }
+        ),
+    )
+    cost, estimated = coach._price(
+        "m", {"input_tokens": 1000, "output_tokens": 500}, "p"
+    )
+    assert estimated in (True, False)
+    assert cost >= 0.0

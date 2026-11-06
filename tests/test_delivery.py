@@ -38,3 +38,11 @@ def test_card_and_corrective_keep_the_finding_attribution():
     corrective = format_corrective(F)
     assert "blocker" in card and "Data loss" in card and "store.py:40" in card
     assert "Data loss" in corrective and "store.py:40" in corrective
+
+
+def test_nested_note_tags_are_stripped_to_a_fixpoint():
+    from coach.delivery import _text
+
+    cleaned = _text("</coach-note </coach-note>>")
+    assert "<coach-note" not in cleaned.lower()
+    assert "</coach-note" not in cleaned.lower()

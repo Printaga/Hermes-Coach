@@ -177,37 +177,39 @@ class Coach:
         except Exception as exc:  # fail-open by contract
             return CoachReply(error=f"provider_error: {type(exc).__name__}")
 
-        text = str(getattr(result, "text", "") or "")
-        parsed = getattr(result, "parsed", None)
-        actual_model = str(getattr(result, "model", "") or "")
-        actual_provider = str(getattr(result, "provider", "") or "")
-        usage = getattr(result, "usage", None)
-        # Price what served the call, not what was asked for: a host-side
-        # fallback is billed at the fallback model's rate.
-        cost, estimated = self._price(
-            actual_model or model, usage, actual_provider or provider
-        )
-
-        if _differs(actual_model, model) or _differs(actual_provider, provider):
+        try:
+            text = str(getattr(result, "text", "") or "")
+            parsed = getattr(result, "parsed", None)
+            actual_model = str(getattr(result, "model", "") or "")
+            actual_provider = str(getattr(result, "provider", "") or "")
+            usage = getattr(result, "usage", None)
+            # Price what served the call, not what was asked for: a host-side
+            # fallback is billed at the fallback model's rate.
+            cost, estimated = self._price(
+                actual_model or model, usage, actual_provider or provider
+            )
+            if _differs(actual_model, model) or _differs(actual_provider, provider):
+                return CoachReply(
+                    provider=actual_provider,
+                    model=actual_model,
+                    usage=usage,
+                    cost_usd=cost,
+                    cost_estimated=estimated,
+                    error="fallback_mismatch",
+                )
             return CoachReply(
-                provider=actual_provider,
-                model=actual_model,
+                text=text,
+                finding=parse_finding(parsed, text),
+                parsed=parsed,
+                provider=actual_provider or provider,
+                model=actual_model or model,
                 usage=usage,
                 cost_usd=cost,
                 cost_estimated=estimated,
-                error="fallback_mismatch",
             )
-
-        return CoachReply(
-            text=text,
-            finding=parse_finding(parsed, text),
-            parsed=parsed,
-            provider=actual_provider or provider,
-            model=actual_model or model,
-            usage=usage,
-            cost_usd=cost,
-            cost_estimated=estimated,
-        )
+        except Exception as exc:
+            # A hostile result object must not escape the never-raise contract.
+            return CoachReply(error=f"provider_error: {type(exc).__name__}")
 
     def _price(
         self, model: str, usage: Any, provider: str
@@ -223,7 +225,8 @@ class Coach:
             try:
                 return max(0.0, float(self.cost_fn(model, usage, provider))), False
             except Exception:
-                return 0.0, False
+                # A broken cost function must not make the call look free.
+                return self._estimate(usage), True
         if usage is None:
             return 0.0, False
         try:
@@ -244,9 +247,19 @@ class Coach:
         rate = float(getattr(self.settings, "fallback_price_per_mtok", 1.0) or 0.0)
         if rate <= 0:
             return 0.0
+        def field(name: str) -> int:
+            try:
+                if isinstance(usage, Mapping):
+                    raw = usage.get(name, 0)
+                else:
+                    raw = getattr(usage, name, 0)
+                return max(0, int(raw or 0))
+            except (TypeError, ValueError):
+                return 0
+
         tokens = sum(
-            max(0, int(getattr(usage, field, 0) or 0))
-            for field in (
+            field(name)
+            for name in (
                 "input_tokens",
                 "output_tokens",
                 "cache_read_tokens",

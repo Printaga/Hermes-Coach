@@ -565,7 +565,12 @@ def collect(
         )
         return _assemble([listing, coverage], [read_files], limit)
 
-    if not (gathered.committed or gathered.uncommitted or gathered.new_files):
+    if not (
+        gathered.committed
+        or gathered.uncommitted
+        or gathered.new_files
+        or gathered.range_names
+    ):
         # Nothing changed: reviewing nothing is worse than skipping, and the
         # caller turns an empty result into "no review".
         return ""
