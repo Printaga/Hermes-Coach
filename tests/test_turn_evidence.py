@@ -5,6 +5,7 @@ exactly the moment the gate runs. These tests pin the range-based collector and
 the turn-base snapshot that feeds it.
 """
 
+import os
 import shutil
 import subprocess
 
@@ -118,7 +119,7 @@ def test_a_partially_truncated_diff_keeps_hunks_after_the_stat(tmp_path):
     assert "--- stat" in text
     assert "committed during this turn" in text
     assert "diff --git" in text
-    assert text.endswith("[diff truncated]")
+    assert text.endswith("[patch truncated]")
 
 
 @needs_git
@@ -240,6 +241,81 @@ def test_active_prompt_does_not_ask_for_diffs():
     assert "turn summary" in _SYSTEM
 
 
-def test_review_prompt_caps_missing_evidence_at_a_nit():
-    assert "at most as a nit" in _REVIEW_SYSTEM
-    assert "coverage limit of the plugin" in _REVIEW_SYSTEM
+def test_review_prompt_gives_missing_evidence_its_own_severity():
+    assert "unverifiable" in _REVIEW_SYSTEM
+    assert "coverage limit" in _REVIEW_SYSTEM
+    assert "never" in _REVIEW_SYSTEM
+
+
+
+def _run(root, *args):
+    subprocess.run(["git", *args], cwd=root, check=True)
+
+
+def _commit_add(root):
+    _run(root, "add", "-A")
+
+def test_the_file_list_survives_a_clipped_patch(tmp_path):
+    root = _repo(tmp_path)
+    (root / "README").write_text("hi\n")
+    _commit(root, "initial")
+    (root / "small.py").write_text("x = 1\n")
+    (root / "huge.py").write_text("y = 1\n" * 4000)
+    _run(root, "add", "-A")
+
+    text = collect(str(root), ["small.py", "huge.py"], max_chars=900)
+
+    assert "--- files changed (2) ---" in text
+    assert "small.py" in text
+    assert "huge.py" in text
+    assert text.endswith("[patch truncated]")
+    assert "has NOT been shown to be unchanged" in text
+
+
+def test_the_header_leads_with_stat_then_a_counted_file_list(tmp_path):
+    root = _repo(tmp_path)
+    (root / "README").write_text("hi\n")
+    _commit(root, "initial")
+    (root / "a.py").write_text("x = 1\n")
+    (root / "b.py").write_text("y = 2\n")
+    _run(root, "add", "-A")
+
+    text = collect(str(root), ["a.py", "b.py"])
+
+    assert text.index("--- stat") < text.index("--- files changed")
+    assert text.index("--- files changed") < text.index("--- coverage ---")
+    assert "2 changed file(s) listed; 2 path(s) supplied by the host" in text
+    assert "has NOT been shown to be unchanged" not in text
+
+
+def test_a_repo_fsmonitor_never_runs_during_collect(tmp_path):
+    root = _repo(tmp_path)
+    (root / "f.py").write_text("x = 1\n")
+    marker = root / "fsmonitor-ran"
+    script = root / "hook.sh"
+    script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    script.chmod(0o755)
+    _run(root, "config", "core.fsmonitor", str(script))
+    _run(root, "add", "f.py")
+    if marker.exists():
+        marker.unlink()
+
+    collect(str(root), ["f.py"])
+
+    assert not marker.exists()
+
+
+def test_evidence_reads_refuse_non_regular_files(tmp_path):
+    from coach.evidence import _read_text
+
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    assert _read_text(fifo) is None
+
+
+def test_evidence_reads_are_bounded(tmp_path):
+    from coach.evidence import _read_text
+
+    big = tmp_path / "big.txt"
+    big.write_text("x" * 100_000)
+    assert len(_read_text(big, 50)) == 50

@@ -92,8 +92,9 @@ def test_command_guidance_send_pause_and_model_show(tmp_path):
         post=lambda text: None,
         inject=lambda text: True,
     )
-    coach_plugin.guidance.write("global", "", "Be blunt.")
-    coach_plugin.guidance.write("project", str(project), "Use tabs.")
+    (tmp_path / "coach").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "coach" / "guidance.md").write_text("Be blunt.")
+    (project / "COACH.md").write_text("Use tabs.")
     guidance = coach_plugin.command("guidance")
     assert "Be blunt." in guidance and "Use tabs." in guidance
 
@@ -287,7 +288,7 @@ def test_decide_validation_rejects_bad_inputs(tmp_path, monkeypatch):
 
 
 def test_review_paths_stay_fail_open(tmp_path):
-    target = review_plugin(tmp_path) if False else plugin(tmp_path)
+    target = plugin(tmp_path)
 
     def fail(**kwargs):
         raise RuntimeError("review exploded")
@@ -659,6 +660,8 @@ def test_trim_log_keeps_small_files_and_log_names_are_safe(tmp_path):
     finally:
         target.unlink(missing_ok=True)
     assert _log_name("") == "session"
+    assert _log_name("task/1") != _log_name("task_1")
+    assert _log_name("task/1") == _log_name("task/1")
     assert "/" not in _log_name("../../etc/passwd")
 
 
@@ -932,12 +935,13 @@ def test_long_session_ids_do_not_grow_file_names(tmp_path):
     assert store.load(long_id).session_id == long_id
 
 
-def test_guidance_write_truncates_and_names_unknown_scopes(tmp_path):
+def test_guidance_read_truncates_and_names_unknown_scopes(tmp_path):
     from coach.guidance import GUIDANCE_MAX_CHARS, Guidance
 
     guidance = Guidance(tmp_path)
-    message = guidance.write("global", "", "x" * (GUIDANCE_MAX_CHARS + 10))
-    assert "limit" in message
+    # The dashboard route is the only writer; read() still caps what a file
+    # of any length contributes to the prompt.
+    (tmp_path / "guidance.md").write_text("x" * (GUIDANCE_MAX_CHARS + 10))
     assert len(guidance.read("global", "")) == GUIDANCE_MAX_CHARS
     with pytest.raises(ValueError):
         guidance._path("everywhere", "")

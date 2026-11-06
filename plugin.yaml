@@ -1,5 +1,5 @@
 name: coach
-version: "0.2.0"
+version: "0.3.0"
 description: "Four modes: Consult on demand, Active per-turn review, Review before claiming done, and Decide for forks with Jev."
 author: Nous user
 kind: standalone

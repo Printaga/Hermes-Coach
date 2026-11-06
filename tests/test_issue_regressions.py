@@ -300,8 +300,9 @@ def test_advice_ring_keeps_only_the_newest_entries(tmp_path):
     plugin = _plugin(tmp_path)
     for index in range(6):
         plugin.tool_ask(
-            {"question": f"question {index}", "turn_id": f"t{index}"},
+            {"question": f"question {index}"},
             session_id="s",
+            turn_id=f"t{index}",
         )
     advice = plugin.store.load("s").advice
     assert [row["question"] for row in advice] == [f"question {index}" for index in range(1, 6)]
@@ -318,6 +319,7 @@ def test_last_advice_never_leaks_across_known_sessions(tmp_path):
 
 def test_log_entries_carry_kind_timestamp_and_evidence(tmp_path):
     from coach.plugin import Finding as PluginFinding
+    from coach.plugin import _log_name
 
     plugin = CoachPlugin(
         llm=_ConsultLlm(),
@@ -339,7 +341,7 @@ def test_log_entries_carry_kind_timestamp_and_evidence(tmp_path):
         ),
     )
     record = json.loads(
-        (tmp_path / "logs" / "s1.jsonl").read_text(encoding="utf-8").strip()
+        (tmp_path / "logs" / f"{_log_name('s1')}.jsonl").read_text(encoding="utf-8").strip()
     )
     assert record["kind"] == "review"
     assert record["severity"] == "concern"
@@ -516,7 +518,11 @@ def test_evidence_uses_nul_separated_unquoted_git_status(tmp_path):
     text = collect(str(tmp_path), ["a file.py"], run=fake_run)
     status_argv, status_kwargs = calls[0]
     diff_argv = calls[1][0]
-    assert status_argv[:4] == ["git", "-c", "core.quotePath=false", "status"]
+    assert status_argv[0] == "git"
+    assert "core.quotePath=false" in status_argv
+    assert "core.fsmonitor=false" in status_argv
+    assert "status" in status_argv
+    assert status_argv.index("status") > status_argv.index("core.fsmonitor=false")
     assert "--porcelain" in status_argv and "-z" in status_argv
     assert "--untracked-files=all" in status_argv
     assert status_kwargs["timeout"] == 2
@@ -1294,9 +1300,11 @@ def test_send_pending_reports_a_missing_channel(tmp_path):
 
 
 def test_recent_log_skips_malformed_lines(tmp_path):
+    from coach.plugin import _log_name
+
     logs = tmp_path / "logs"
     logs.mkdir(parents=True)
-    (logs / "s.jsonl").write_text(
+    (logs / f"{_log_name('s')}.jsonl").write_text(
         "not json\n"
         '{"at":"2026-01-01T00:00:00+00:00","title":"kept","body":"b",'
         '"severity":"nit","session_id":"s"}\n',
@@ -1338,12 +1346,20 @@ def test_model_supplied_session_id_cannot_override_dispatcher_ids():
     assert merged["turn_id"] == "task-9"
 
 
-def test_model_supplied_ids_kept_when_dispatcher_has_none():
+def test_model_supplied_ids_are_ignored_without_a_dispatcher():
+    """The model must not be able to name a session, and so read another one."""
     from coach.plugin import _with_host_ids
 
     merged = _with_host_ids({"session_id": "child-1", "turn_id": "t1"}, {})
-    assert merged["session_id"] == "child-1"
-    assert merged["turn_id"] == "t1"
+    assert merged["session_id"] == "current"
+    assert merged["turn_id"] == "current"
+
+    host = _with_host_ids(
+        {"session_id": "child-1", "turn_id": "t1"},
+        {"session_id": "s-real", "task_id": "turn-real"},
+    )
+    assert host["session_id"] == "s-real"
+    assert host["turn_id"] == "turn-real"
 
 
 def test_record_turn_caps_ledger_and_prunes_stale_call_counters():

@@ -43,6 +43,11 @@ def route(
     """Choose ``ambient``, ``corrective`` or ``drop`` for one finding."""
     if not is_deliverable(finding):
         return "drop"
+    if finding.severity == "unverifiable":
+        # "I could not see it" is a coverage limit, not a defect in the work:
+        # it never starts a turn and never holds completion, whatever the
+        # policy says.
+        return "ambient"
     if str(surface or "").strip().lower() in _MESSAGING_SURFACES:
         return "ambient"
 
@@ -56,6 +61,20 @@ def route(
     if finding.severity == "blocker" and not capped:
         return "corrective"
     return "ambient"
+
+
+_LEADS = {
+    "nit": "Coach review found a nit",
+    "concern": "Coach review found a concern",
+    "blocker": "Coach review found a blocker",
+    "unverifiable": "Coach review could not verify",
+}
+
+
+def _lead(finding: Finding) -> str:
+    """One opening line per severity; "unverifiable" is not a defect claim."""
+    lead = _LEADS.get(finding.severity, "Coach review found a finding")
+    return f"{lead}: {_text(finding.title)}"
 
 
 def _attr(value: object) -> str:
@@ -103,7 +122,7 @@ def format_ambient(finding: Finding, turn_id: str) -> str:
             f'<coach-note turn="{_attr(turn_id)}" '
             f'severity="{_attr(finding.severity)}" source="coach">'
         ),
-        f"Coach review found a {finding.severity}: {_text(finding.title)}",
+        _lead(finding),
         _text(finding.body),
         _text(evidence),
         _text(fix),
@@ -117,7 +136,7 @@ def format_corrective(finding: Finding) -> str:
     evidence = f"Evidence: {finding.evidence}" if finding.evidence else ""
     fix = f"Suggested fix: {finding.fix}" if finding.fix else ""
     return _lines(
-        f"Coach review found a {finding.severity}: {_text(finding.title)}",
+        _lead(finding),
         _text(finding.body),
         _text(evidence),
         _text(fix),

@@ -102,3 +102,15 @@ def test_prune_sweeps_stale_tmp_files(tmp_path):
     store.prune()
     assert not stale.exists()
     assert fresh.exists()
+
+
+def test_a_huge_integer_in_a_session_file_does_not_raise(tmp_path):
+    store = Store(tmp_path)
+    store.root.mkdir(parents=True, exist_ok=True)
+    (store.root / store._path("s").name).write_text(
+        '{"session_id": "s", "spend_usd": ' + "9" * 400 + "}",
+        encoding="utf-8",
+    )
+    state = store.load("s")  # "never raises" is the contract
+    assert state.spend_usd == 0.0
+    assert state.session_id == "s"

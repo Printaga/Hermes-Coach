@@ -30,3 +30,49 @@ def test_old_tool_cards_collapse_first():
 
 def test_estimate_is_roughly_quarter_of_chars():
     assert 2 <= estimate_tokens("abcdefgh") <= 4
+
+
+def test_bound_turn_caps_every_text_field():
+    from coach.ledger import bound_turn
+
+    bounded = bound_turn(
+        {
+            "turn_id": "t",
+            "user": "u" * 50_000,
+            "assistant": "a" * 50_000,
+            "tools": [
+                {"name": "x", "arg": "y" * 500, "status": "ok", "preview": "z" * 900}
+            ]
+            * 40,
+        }
+    )
+    assert len(bounded["user"]) <= 4000
+    assert len(bounded["assistant"]) <= 600
+    assert len(bounded["tools"]) <= 20
+    from coach.ledger import _ARG_CHARS
+
+    assert len(bounded["tools"][0]["arg"]) <= _ARG_CHARS
+
+
+def test_record_turn_bounds_text_and_keeps_earlier_tool_cards():
+    from coach.plugin import _record_turn
+    from coach.state import SessionState
+
+    state = SessionState(session_id="s")
+    card = {"name": "read_file", "arg": "a.py", "status": "ok", "preview": "x"}
+    _record_turn(
+        state,
+        {"turn_id": "t", "user": "u" * 9000, "assistant": "a" * 9000,
+         "tools": [card], "cwd": "/repo"},
+    )
+    # A later model call in the same turn buffered no cards.
+    _record_turn(
+        state,
+        {"turn_id": "t", "user": "u2", "assistant": "done", "tools": [],
+         "cwd": "/repo"},
+    )
+    record = state.ledger[-1]
+    assert record["assistant"] == "done"
+    assert [c["name"] for c in record["tools"]] == ["read_file"]
+    assert record["tools"][0]["arg"] == "a.py"
+    assert record["user"] == "u2"  # the later call replaces the text

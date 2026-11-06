@@ -473,3 +473,18 @@ a hold is stored in session state, not in the page's memory.
   on `none`, never on a fabricated finding.
 - Held advice can outlive its relevance; TTL and the dedupe hash are the
   guards, not good intentions.
+
+## 12. Review severities and evidence coverage
+
+The review ladder is `none`, `nit`, `concern`, `unverifiable`, `blocker`.
+`unverifiable` means the evidence supplied to the reviewer was incomplete — a
+clipped patch or a claimed path absent from the change set. It is a coverage
+limit of the plugin, not a defect in the work: it routes to `ambient` before
+delivery policy is consulted, so it can never hold a completion or start a turn.
+
+The evidence bundle always leads with a git stat, a complete changed-file list
+(`--name-status` plus untracked paths) and a coverage line; only the patch is
+clipped by `max_chars`, and the coverage line states when that happened. Every
+git invocation carries `-c core.fsmonitor=false` (repo config must not execute
+code inside the gate) and the diff flags that disable paging, external diffs and
+textconv drivers.

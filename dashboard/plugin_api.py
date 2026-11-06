@@ -16,6 +16,7 @@ from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
@@ -31,7 +32,9 @@ __all__ = ["app_for_tests", "router"]
 
 router = APIRouter()
 
-_GUIDANCE_WRITE_MAX = 8000
+# One cap for reading and writing: an 8 000-char save reported success and
+# the prompt only ever saw the first 4 000.
+_GUIDANCE_WRITE_MAX = GUIDANCE_MAX_CHARS
 _GLOBAL_FILE = "guidance.md"
 _PROJECT_FILE = "COACH.md"
 _SECRET_KEY = "decide_typesafe_api_key"
@@ -112,22 +115,39 @@ def _mapping_section(parent: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
+def _mutate_config(request: Request, mutate: Any) -> None:
+    """Apply *mutate* to the host config and persist it once.
+
+    The branch between the in-memory test config and the on-disk one was
+    re-implemented in every mutating route, so a validation fix could land in
+    one and be hidden by the other.
+    """
+    state_config = getattr(request.app.state, "config", None)
+    if isinstance(state_config, dict):
+        mutate(state_config)
+        return
+    config = _load_host_config()
+    mutate(config)
+    if not _save_host_config(config):
+        raise HTTPException(status_code=500, detail="config_write_failed")
+
+
+def _coach_root(config: dict[str, Any]) -> dict[str, Any]:
+    return _mapping_section(
+        _mapping_section(_mapping_section(config, "plugins"), "entries"), "coach"
+    )
+
+
 def _apply_grant(config: dict[str, Any]) -> None:
     """Set both trust flags; the host still owns the actual write."""
-    plugins = _mapping_section(config, "plugins")
-    entries = _mapping_section(plugins, "entries")
-    coach = _mapping_section(entries, "coach")
-    llm = _mapping_section(coach, "llm")
+    llm = _mapping_section(_coach_root(config), "llm")
     llm["allow_provider_override"] = True
     llm["allow_model_override"] = True
 
 
 def _apply_revoke(config: dict[str, Any]) -> None:
     """Clear both trust flags; the host still owns the actual write."""
-    plugins = _mapping_section(config, "plugins")
-    entries = _mapping_section(plugins, "entries")
-    coach = _mapping_section(entries, "coach")
-    llm = _mapping_section(coach, "llm")
+    llm = _mapping_section(_coach_root(config), "llm")
     llm["allow_provider_override"] = False
     llm["allow_model_override"] = False
 
@@ -287,15 +307,34 @@ def _guidance_payload(scope: str, cwd: str, path: Path, text: str) -> dict[str, 
     }
 
 
+def _guard_origin(request: Request) -> None:
+    """Refuse a mutating request that a browser page on another origin sent.
+
+    The dashboard is a local, unauthenticated API: a page open in the user's
+    browser can reach it. A cross-origin POST from a normal page carries
+    ``Origin``; a same-origin call from the desktop app does not carry a
+    foreign one, so rejecting a foreign Origin closes the drive-by write
+    without touching the local caller.
+    """
+    origin = str(request.headers.get("origin") or "").strip()
+    if not origin:
+        return
+    parsed = urlparse(origin)
+    host = str(request.headers.get("host") or "")
+    if parsed.netloc and parsed.netloc == host:
+        return
+    if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+        return
+    raise HTTPException(status_code=403, detail="cross_origin_request")
+
+
 # --------------------------------------------------------------------------
 # Status
 # --------------------------------------------------------------------------
 
 
 def _model_dict(choice: ModelChoice | None) -> dict[str, str] | None:
-    if choice is None:
-        return None
-    return {"provider": choice.provider, "model": choice.model}
+    return choice.as_dict() if choice is not None else None
 
 
 def _status_payload(request: Request) -> dict[str, Any]:
@@ -307,12 +346,11 @@ def _status_payload(request: Request) -> dict[str, Any]:
     spend = 0.0
     pending = 0
     last_error = ""
-    sessions = store.sessions_on_disk()
+    states = store.states_on_disk()
     spend_sessions: dict[str, float] = {}
-    for name in sessions:
-        state = store.load(name)
+    for state in states:
         spend += state.spend_usd
-        spend_sessions[name] = round(state.spend_usd, 6)
+        spend_sessions[state.session_id] = round(state.spend_usd, 6)
         pending += len(state.pending)
         if state.last_error:
             last_error = state.last_error
@@ -334,7 +372,7 @@ def _status_payload(request: Request) -> dict[str, Any]:
         "budget_per_session_usd": settings.budget_session_usd,
         "budget_on_exceed": settings.budget_on_exceed,
         "pending_notes": pending,
-        "sessions": len(sessions),
+        "sessions": len(states),
         "last_error": last_error,
         "permissions": _permissions(config),
     }
@@ -379,6 +417,7 @@ def get_config(request: Request) -> dict[str, Any]:
 @router.put("/config")
 def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Save settings values for the keys declared in the manifest."""
+    _guard_origin(request)
     body = payload if isinstance(payload, Mapping) else {}
     incoming = body.get("values")
     if not isinstance(incoming, Mapping):
@@ -392,24 +431,14 @@ def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[st
     if not clean:
         raise HTTPException(status_code=400, detail="values_required")
 
-    state_config = getattr(request.app.state, "config", None)
-    if isinstance(state_config, dict):
-        coach = _mapping_section(_mapping_section(_mapping_section(
-            state_config, "plugins"), "entries"), "coach")
-        merged = dict(_coach_settings(state_config))
-        merged.update(clean)
-        canonical = _canonical_values(merged)
-        _mapping_section(coach, "settings").update(canonical)
-    else:
-        config = _load_host_config()
-        coach = _mapping_section(_mapping_section(_mapping_section(
-            config, "plugins"), "entries"), "coach")
+    def mutate(config: dict[str, Any]) -> None:
         merged = dict(_coach_settings(config))
         merged.update(clean)
-        canonical = _canonical_values(merged)
-        _mapping_section(coach, "settings").update(canonical)
-        if not _save_host_config(config):
-            raise HTTPException(status_code=500, detail="config_write_failed")
+        _mapping_section(_coach_root(config), "settings").update(
+            _canonical_values(merged)
+        )
+
+    _mutate_config(request, mutate)
     return get_config(request)
 
 
@@ -431,23 +460,29 @@ def get_recent(
         paths = []
     for path in paths:
         try:
-            # Tail only: full-file reads are O(file size) per request, and
-            # logs grow without bound. A deque keeps at most `limit` lines.
-            with path.open(encoding="utf-8", errors="replace") as handle:
-                tail = deque(handle, maxlen=max(1, limit))
+            # The log is trimmed to 200 lines / 128 KB, so a full read is
+            # bounded; filtering before the tail is what keeps a busy other
+            # session from displacing this one's rows.
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for line in tail:
+        kept: list[dict[str, Any]] = []
+        for line in lines:
             try:
                 record = json.loads(line)
             except ValueError:
                 continue
             if not isinstance(record, dict):
                 continue
+            # A decision row has no severity or title; the page rendered it as
+            # "none — no finding". Only reviews belong in this list.
+            if str(record.get("kind") or "review") != "review":
+                continue
             if wanted and str(record.get("session_id") or "") not in wanted:
                 continue
             record["session"] = str(record.get("session_id") or "")[:12]
-            rows.append(record)
+            kept.append(record)
+        rows.extend(kept[-max(1, limit):])
     rows.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
     return {"reviews": rows[:limit]}
 
@@ -475,6 +510,7 @@ def put_guidance(
     request: Request, payload: dict[str, Any] = Body(...)
 ) -> dict[str, Any]:
     """Replace one guidance file after validating its target."""
+    _guard_origin(request)
     body = payload if isinstance(payload, Mapping) else {}
     name = _clean_scope(body.get("scope"))
     text = body.get("text")
@@ -501,28 +537,16 @@ def put_guidance(
 @router.post("/permissions/grant")
 def grant_permissions(request: Request) -> dict[str, Any]:
     """Write both model-override trust flags, then return the new status."""
-    state_config = getattr(request.app.state, "config", None)
-    if isinstance(state_config, dict):
-        _apply_grant(state_config)
-    else:
-        config = _load_host_config()
-        _apply_grant(config)
-        if not _save_host_config(config):
-            raise HTTPException(status_code=500, detail="config_write_failed")
+    _guard_origin(request)
+    _mutate_config(request, _apply_grant)
     return _status_payload(request)
 
 
 @router.post("/permissions/revoke")
 def revoke_permissions(request: Request) -> dict[str, Any]:
     """Clear both model-override trust flags, then return the new status."""
-    state_config = getattr(request.app.state, "config", None)
-    if isinstance(state_config, dict):
-        _apply_revoke(state_config)
-    else:
-        config = _load_host_config()
-        _apply_revoke(config)
-        if not _save_host_config(config):
-            raise HTTPException(status_code=500, detail="config_write_failed")
+    _guard_origin(request)
+    _mutate_config(request, _apply_revoke)
     return _status_payload(request)
 
 

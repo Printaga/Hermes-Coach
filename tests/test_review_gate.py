@@ -4,27 +4,7 @@ from coach.plugin import CoachPlugin
 from coach.settings import load_settings
 from coach.state import Store
 from tests.support import ConsultLlm as Llm
-
-
-class StructuredLlm:
-    def __init__(self, payload):
-        self.payload = payload
-        self.calls = []
-
-    def complete_structured(self, **kw):
-        self.calls.append(kw)
-        payload = self.payload
-
-        class R:
-            text = ""
-            usage = None
-            parsed = None
-
-        result = R()
-        result.parsed = payload
-        result.model = kw["model"]
-        result.provider = kw["provider"]
-        return result
+from tests.support import StructuredLlm
 
 
 def _p(tmp_path, *, llm=None, **cfg):
@@ -157,7 +137,9 @@ def test_evidence_uses_the_session_cwd(tmp_path):
 def test_review_now_logs_one_line(tmp_path):
     p = _p(tmp_path, llm=StructuredLlm(FINDING))
     p.review_now(session_id="s", turn_id="t1", request="r", claim="c", evidence="e")
-    lines = (tmp_path / "logs" / "s.jsonl").read_text().splitlines()
+    from coach.plugin import _log_name
+
+    lines = (tmp_path / "logs" / f"{_log_name('s')}.jsonl").read_text().splitlines()
     assert len(lines) == 1
     assert '"severity": "blocker"' in lines[0]
     assert '"body": "The copy happens after the delete."' in lines[0]

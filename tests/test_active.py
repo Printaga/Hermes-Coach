@@ -7,6 +7,7 @@ from coach.settings import load_settings
 from coach.state import Store
 from coach.worker import Worker
 from tests.support import ConsultLlm as Llm
+from tests.support import StructuredLlm
 
 
 class FakeWorker:
@@ -16,29 +17,6 @@ class FakeWorker:
     def submit(self, session_id, turn_id=""):
         self.submitted.append(session_id)
         return True
-
-
-class StructuredLlm:
-    """A client that returns one structured finding and counts calls."""
-
-    def __init__(self, payload):
-        self.payload = payload
-        self.calls = []
-
-    def complete_structured(self, **kw):
-        self.calls.append(kw)
-        payload = self.payload
-
-        class R:
-            text = ""
-            usage = None
-            parsed = None
-
-        result = R()
-        result.parsed = payload
-        result.model = kw["model"]
-        result.provider = kw["provider"]
-        return result
 
 
 def _p(tmp_path, *, llm=None, **cfg):
@@ -151,7 +129,9 @@ def test_run_review_records_spend_logs_and_delivers(tmp_path):
     assert state.last_error == ""
     assert state.pending and state.pending[0]["title"] == "Unchecked write"
 
-    log = tmp_path / "logs" / "s.jsonl"
+    from coach.plugin import _log_name
+
+    log = tmp_path / "logs" / f"{_log_name('s')}.jsonl"
     assert log.exists()
     lines = log.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1

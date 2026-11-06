@@ -88,7 +88,12 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
     number: float | None = None
     if isinstance(value, (int, float)):
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError:
+            # A JSON integer beyond float range would otherwise escape _read
+            # and break load()'s "never raises" contract.
+            return default
     elif isinstance(value, str):
         try:
             number = float(value.strip())
@@ -204,6 +209,9 @@ class Store:
             # silent failure would pretend otherwise.
             log.warning("coach store root not private: %s: %s", self.root, exc)
         state.updated_at = time.time()
+        # A non-finite spend would be written as Infinity and read back as 0.0,
+        # resetting the budget stop. Clamp before serialising.
+        state.spend_usd = _as_float(state.spend_usd, 0.0)
         path = self._path(state.session_id)
         descriptor, temporary = tempfile.mkstemp(
             dir=self.root, prefix=f".{path.name}.", suffix=".tmp"
@@ -211,19 +219,9 @@ class Store:
         tmp_path = Path(temporary)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(asdict(state), handle, ensure_ascii=False)
+                json.dump(asdict(state), handle, ensure_ascii=False, allow_nan=False)
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, path)
-            self._saves += 1
-            # Pruning on session end never fires for a crash or a killed
-            # process; sweep occasionally so the cap also holds in practice.
-            if self._saves % 25 == 0:
-                try:
-                    if len(self._state_paths()) > self.max_sessions:
-                        self.prune()
-                except OSError as exc:
-                    # A persistent prune failure silently un-caps the directory.
-                    log.warning("coach store prune failed: %s", exc)
         except BaseException:
             try:
                 tmp_path.unlink(missing_ok=True)
@@ -231,6 +229,16 @@ class Store:
                 # Cleanup must never mask the exception that caused it.
                 pass
             raise
+        # The commit landed: everything below is best-effort, so a failure here
+        # must not report the write as failed.
+        self._saves += 1
+        if self._saves % 25 == 0:
+            try:
+                if len(self._state_paths()) > self.max_sessions:
+                    self.prune()
+            except OSError as exc:
+                # A persistent prune failure silently un-caps the directory.
+                log.warning("coach store prune failed: %s", exc)
 
     def prune(self) -> None:
         """Delete the oldest sessions beyond the cap, ordered by file mtime."""
@@ -299,6 +307,15 @@ class Store:
             if state is not None:
                 ids.append(state.session_id)
         return ids
+
+    def states_on_disk(self) -> list[SessionState]:
+        """Read every session file once, skipping unreadable ones."""
+        states: list[SessionState] = []
+        for path in self._state_paths():
+            state = self._read_quiet(path)
+            if state is not None:
+                states.append(state)
+        return states
 
     def sessions_on_disk(self) -> list[str]:
         """Original session ids with a readable state file, in a stable order."""

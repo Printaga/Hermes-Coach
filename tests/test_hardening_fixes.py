@@ -128,7 +128,7 @@ def test_set_masks_api_key(tmp_path):
     plugin = _plugin(tmp_path)
     out = plugin.command("set decide_typesafe_api_key hunter2")
     assert "hunter2" not in out
-    assert "***" in out
+    assert ".env" in out and "hunter2" not in out
 
 
 def test_revoke_command(tmp_path):
@@ -388,7 +388,7 @@ def test_reply_cap_reaches_the_model(tmp_path):
 
 def test_forget_deletes_session_state(tmp_path):
     plugin = _plugin(tmp_path)
-    plugin.tool_ask({"question": "q", "session_id": "s"})
+    plugin.tool_ask({"question": "q"}, session_id="s")
     assert plugin.store.has("s") is True
     assert "Forgot" in plugin.command("forget", session_id="s")
     assert plugin.store.has("s") is False
@@ -433,30 +433,32 @@ def test_collect_shares_one_git_budget(tmp_path):
 
 
 def test_soft_budget_blocks_decide_but_not_consult(tmp_path):
-    plugin = _plugin(tmp_path, budget_on_exceed="soft", budget_session_usd=0.0,
+    plugin = _plugin(tmp_path, budget_on_exceed="soft", budget_session_usd=0.5,
                      decide_enabled=True)
     state = plugin.store.load("s")
     state.spend_usd = 1.0
     plugin.store.save(state)
-    decide_args = {"question": "q", "options": ["a", "b"], "session_id": "s"}
-    assert json.loads(plugin.tool_decide(decide_args))["error"] == (
+    decide_args = {"question": "q", "options": ["a", "b"]}
+    assert json.loads(plugin.tool_decide(decide_args, session_id="s"))["error"] == (
         "budget_exhausted"
     )
-    assert json.loads(plugin.tool_ask({"question": "q", "session_id": "s"}))["ok"] is True
-    plugin.settings = load_settings(
-        {"coach_model": {"provider": "openrouter", "model": "x"},
-         "budget_on_exceed": "hard", "budget_session_usd": 0.0}
-    )
+    assert json.loads(plugin.tool_ask({"question": "q"}, session_id="s"))["ok"] is True
+    # refresh_settings() re-reads the loader, so the hard policy needs its own
+    # plugin rather than an assignment the next call would overwrite.
+    hard = _plugin(tmp_path, budget_on_exceed="hard", budget_session_usd=0.5)
+    state = hard.store.load("s")
+    state.spend_usd = 1.0
+    hard.store.save(state)
     assert json.loads(
-        plugin.tool_ask({"question": "q", "session_id": "s"})
+        hard.tool_ask({"question": "q"}, session_id="s")
     )["error"] == ("budget_exhausted")
 
 
 def test_manifest_versions_match():
     plugin_yaml = open("plugin.yaml", encoding="utf-8").read()
     manifest = json.load(open("dashboard/manifest.json", encoding="utf-8"))
-    assert 'version: "0.2.0"' in plugin_yaml
-    assert manifest["version"] == "0.2.0"
+    assert 'version: "0.3.0"' in plugin_yaml
+    assert manifest["version"] == "0.3.0"
 
 
 def test_hook_registration_matches_manifest():
@@ -480,3 +482,11 @@ def test_hook_registration_matches_manifest():
     ]
     for name in calls:
         assert name in manifest_hooks, name
+
+
+def test_a_zero_budget_means_no_budget(tmp_path):
+    plugin = _plugin(tmp_path, budget_on_exceed="hard", budget_session_usd=0.0)
+    state = plugin.store.load("s")
+    state.spend_usd = 5.0
+    plugin.store.save(state)
+    assert json.loads(plugin.tool_ask({"question": "q"}, session_id="s"))["ok"] is True

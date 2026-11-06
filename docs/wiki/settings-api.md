@@ -42,11 +42,20 @@ user's `config.yaml`. Production falls through to `_load_host_config()` /
 - **Writes are explicit.** `PUT /config` accepts only keys present in
   `DEFAULTS`, rejects `decide_typesafe_api_key` (it belongs in `.env`), and
   refuses an empty payload. A failed `save_config` is a 500, not a silent no-op.
-- **Project guidance is scoped.** A project path must already be recorded in
-  `$HERMES_HOME/coach/seen_cwds`; the parent is resolved and compared, and the
-  file is opened with `O_NOFOLLOW`. A symlink swap between check and write fails
-  instead of writing through it. Reads apply the same guard — a planted
+- **One cap for read and write.** `GUIDANCE_MAX_CHARS` (4 000) bounds both the
+  prompt block and the largest accepted save; the route used to accept 8 000 and
+  report success for text the prompt never saw.
+- **Mutating routes check `Origin`.** A cross-origin request is refused with
+  `403 cross_origin_request`; local callers send no foreign origin.
+- **Project guidance is scoped.** A project path must already appear in
+  `$HERMES_HOME/coach/state.json` under `seen_cwds`, which the plugin writes on
+  every turn from `ctx.session_cwd`; the parent is resolved and compared, and
+  the file is opened with `O_NOFOLLOW`. A symlink swap between check and write
+  fails instead of writing through it. Reads apply the same guard — a planted
   `COACH.md` symlink returns empty rather than the file it points at.
+- **Log reads are bounded.** `/recent` reads one trimmed log (≤ 200 lines /
+  128 KB), filters by `kind = review` and by session, then takes the newest
+  `limit` rows — so a busy other chat cannot displace this one's findings.
 - **Log reads are bounded.** `/recent` keeps a `deque(maxlen=limit)` per file
   instead of loading whole logs, so a year of findings cannot turn one page
   refresh into an out-of-memory read.

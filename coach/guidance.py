@@ -1,8 +1,13 @@
 """Guidance files the coach carries into every call.
 
 Global guidance lives at ``$HERMES_HOME/coach/guidance.md``; project guidance
-is ``<cwd>/COACH.md``. Each file is capped at 4000 characters and the combined
-block is wrapped in tags so the model can tell guidance from evidence.
+is ``<cwd>/COACH.md``. Each file is read up to ``GUIDANCE_MAX_CHARS`` and the
+combined block is wrapped in tags so the model can tell guidance from evidence.
+
+The dashboard route is the only writer: it owns the symlink refusal, the
+project allowlist and the ``O_NOFOLLOW`` open. This module used to carry a
+second writer that none of it had, so a future caller could pick the weaker
+one; it was deleted rather than kept in step.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ _OPEN_TAG = re.compile(r"<\s*coach-guidance(?:\s[^>]*)?>", re.IGNORECASE)
 
 
 class Guidance:
-    """Reads and writes the two guidance files."""
+    """Reads the two guidance files."""
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -54,20 +59,6 @@ class Guidance:
         except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
             return ""
         return text[:GUIDANCE_MAX_CHARS]
-
-    def write(self, scope: str, cwd: str, text: str) -> str:
-        """Replace one guidance file, creating its directory if needed."""
-        path = self._path(scope, cwd)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        body = str(text or "")
-        capped = body[:GUIDANCE_MAX_CHARS]
-        path.write_text(capped, encoding="utf-8")
-        if len(capped) < len(body):
-            return (
-                f"saved {len(capped)} of {len(body)} chars to {path} "
-                f"(limit {GUIDANCE_MAX_CHARS})"
-            )
-        return f"saved {len(capped)} chars to {path}"
 
     def system_block(self, cwd: str) -> str:
         """Return both files as one bounded, tagged block, or ``""``."""

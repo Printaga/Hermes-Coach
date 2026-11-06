@@ -975,48 +975,94 @@ function GuidancePage(props) {
   )
 }
 
+function useRecent(ctx, sessionParam) {
+  // One fetch, one error path: the page had two copies and only one of them
+  // reported a failure, so "no reviews" could mean "the request failed".
+  const [recent, setRecent] = useState([])
+  const [recentError, setRecentError] = useState("")
+  const pull = (alive) =>
+    ctx
+      .rest(`/recent?limit=8${sessionParam}`)
+      .then((result) => {
+        if (alive()) setRecent((unwrap(result) || {}).reviews || [])
+      })
+      .catch((err) => {
+        if (alive()) setRecentError(messageOf(err))
+      })
+  useEffect(() => {
+    let live = true
+    setRecentError("")
+    pull(() => live)
+    return () => {
+      live = false
+    }
+  }, [sessionParam])
+  const refresh = () => {
+    setRecentError("")
+    pull(() => true)
+  }
+  return { recent, recentError, refresh }
+}
+
+function usePermissions(ctx, state, setNotice) {
+  const [busy, setBusy] = useState(false)
+  const apply = async (path, done) => {
+    setBusy(true)
+    setNotice("")
+    try {
+      await ctx.rest(path, { method: "POST", body: {} })
+      setNotice(done)
+      await state.reload()
+    } catch (err) {
+      setNotice(messageOf(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return {
+    busy,
+    grant: () => apply("/permissions/grant", "Model overrides granted."),
+    revoke: () => apply("/permissions/revoke", "Model overrides revoked."),
+  }
+}
+
+function Segmented({ value, options, onChange }) {
+  return h(
+    "div",
+    { style: { display: "flex", gap: 8 } },
+    options.map((option) =>
+      h(
+        "button",
+        {
+          key: option.value,
+          type: "button",
+          style: {
+            ...BUTTON,
+            fontWeight: value === option.value ? 700 : 400,
+            borderColor:
+              value === option.value
+                ? "color-mix(in srgb, currentColor 55%, transparent)"
+                : "color-mix(in srgb, currentColor 24%, transparent)",
+          },
+          onClick: () => onChange(option.value),
+        },
+        option.label,
+      ),
+    ),
+  )
+}
+
 function StatusPage(props) {
   const { ctx, state } = props
   const status = state.status || {}
   const permissions = status.permissions || {}
-  const [granting, setGranting] = useState(false)
   const [notice, setNotice] = useState("")
-  const [recent, setRecent] = useState([])
-  const [recentError, setRecentError] = useState("")
   const [scope, setScope] = useState("chat")
   const focused = useValue(host.state.focusedSessionId)
   const sessionParam =
     scope === "chat" && focused ? `&session=${encodeURIComponent(focused)}` : ""
-
-  useEffect(() => {
-    let alive = true
-    setRecentError("")
-    ctx
-      .rest(`/recent?limit=8${sessionParam}`)
-      .then((result) => {
-        if (alive) setRecent((unwrap(result) || {}).reviews || [])
-      })
-      .catch((err) => {
-        // A failed fetch must not look like "no reviews": surface it so an
-        // empty list is only ever a genuinely empty log.
-        if (alive) setRecentError(messageOf(err))
-      })
-    return () => {
-      alive = false
-    }
-  }, [sessionParam])
-
-  const refreshRecent = () => {
-    setRecentError("")
-    ctx
-      .rest(`/recent?limit=8${sessionParam}`)
-      .then((result) => {
-        setRecent((unwrap(result) || {}).reviews || [])
-      })
-      .catch((err) => {
-        setRecentError(messageOf(err))
-      })
-  }
+  const { recent, recentError, refresh: refreshRecent } = useRecent(ctx, sessionParam)
+  const { busy: granting, grant, revoke } = usePermissions(ctx, state, setNotice)
 
   // The host renders plugin cards as notifications, which cannot carry
   // buttons. The composer IS scriptable, so the click lives here instead.
@@ -1030,34 +1076,6 @@ function StatusPage(props) {
       setNotice("Sent to this chat.")
     } else {
       setNotice("Could not reach this chat's composer.")
-    }
-  }
-
-  const grant = async () => {
-    setGranting(true)
-    setNotice("")
-    try {
-      await ctx.rest("/permissions/grant", { method: "POST", body: {} })
-      setNotice("Model overrides granted.")
-      await state.reload()
-    } catch (err) {
-      setNotice(messageOf(err))
-    } finally {
-      setGranting(false)
-    }
-  }
-
-  const revoke = async () => {
-    setGranting(true)
-    setNotice("")
-    try {
-      await ctx.rest("/permissions/revoke", { method: "POST", body: {} })
-      setNotice("Model overrides revoked.")
-      await state.reload()
-    } catch (err) {
-      setNotice(messageOf(err))
-    } finally {
-      setGranting(false)
     }
   }
 
@@ -1118,25 +1136,14 @@ function StatusPage(props) {
       h(
         "div",
         { style: { display: "flex", gap: 8 } },
-        ["chat", "all"].map((value) =>
-          h(
-            "button",
-            {
-              key: value,
-              type: "button",
-              style: {
-                ...BUTTON,
-                fontWeight: scope === value ? 700 : 400,
-                borderColor:
-                  scope === value
-                    ? "color-mix(in srgb, currentColor 55%, transparent)"
-                    : "color-mix(in srgb, currentColor 24%, transparent)",
-              },
-              onClick: () => setScope(value),
-            },
-            value === "chat" ? "This chat" : "All sessions",
-          ),
-        ),
+        h(Segmented, {
+          value: scope,
+          options: [
+            { value: "chat", label: "This chat" },
+            { value: "all", label: "All sessions" },
+          ],
+          onChange: setScope,
+        }),
         h(
           "button",
           { type: "button", style: BUTTON, onClick: refreshRecent },

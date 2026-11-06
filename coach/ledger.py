@@ -9,11 +9,14 @@ oldest first, so the newest context always survives.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from typing import Any
 
 from .state import SessionState
 
-__all__ = ["_bound_card", "append_turn", "build_messages", "estimate_tokens", "tool_card"]
+__all__ = [
+    "bound_turn","_bound_card", "append_turn", "build_messages", "estimate_tokens", "tool_card"]
 
 _ASSISTANT_CHARS = 600
 _USER_CHARS = 4000
@@ -42,6 +45,24 @@ def _bound_card(card: Any) -> dict:
     }
 
 
+def bound_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy with the ledger's write-time caps applied.
+
+    Every write path goes through this. The plugin's own recorder used to copy
+    the host payload verbatim, so the documented bound held only for the
+    consult path and a single large turn could leave a 254 KB session file.
+    """
+    bounded = dict(turn)
+    bounded["user"] = str(bounded.get("user") or "")[:_USER_CHARS]
+    bounded["assistant"] = str(bounded.get("assistant") or "")[:_ASSISTANT_CHARS]
+    tools = bounded.get("tools")
+    if isinstance(tools, list):
+        bounded["tools"] = [
+            _bound_card(card) for card in tools[:_CARDS_PER_TURN_MAX]
+        ]
+    return bounded
+
+
 def append_turn(
     state: SessionState,
     *,
@@ -57,12 +78,14 @@ def append_turn(
     is not enough, because the raw values persist in the session file.
     """
     state.ledger.append(
-        {
-            "turn_id": turn_id,
-            "user": str(user or "")[:_USER_CHARS],
-            "assistant": str(assistant or "")[:_ASSISTANT_CHARS],
-            "tools": [_bound_card(card) for card in list(tools or [])[:_CARDS_PER_TURN_MAX]],
-        }
+        bound_turn(
+            {
+                "turn_id": turn_id,
+                "user": user,
+                "assistant": assistant,
+                "tools": tools,
+            }
+        )
     )
     if len(state.ledger) > _MAX_TURNS:
         del state.ledger[: len(state.ledger) - _MAX_TURNS]
@@ -112,24 +135,13 @@ def _summary_line(count: int) -> str:
     return f"- {count} tool call{'s' if count != 1 else ''}"
 
 
-def build_messages(
-    *,
-    system: str,
-    guidance: str,
-    state: SessionState,
-    question: str | None,
-    max_tokens: int,
-    tool_result_chars: int,
-    recent_turns: int,
-    note_max_chars: int = 1000,
-) -> list[dict[str, str]]:
-    """Assemble the coach prompt from the bounded ledger."""
+def _turn_lines(
+    ledger: Sequence[Any], *, keep_cards: int, preview_chars: int
+) -> list[dict[str, Any]]:
+    """Render the ledger as one line per field, tagged for the drop tiers."""
     lines: list[dict[str, Any]] = []
-    preview_chars = max(0, int(tool_result_chars))
-    keep_cards = max(0, int(recent_turns))
-    total = len(state.ledger)
-
-    for index, turn in enumerate(state.ledger):
+    total = len(ledger)
+    for index, turn in enumerate(ledger):
         if not isinstance(turn, dict):
             continue
         assistant_text = str(turn.get("assistant") or "")
@@ -174,17 +186,16 @@ def build_messages(
                     "dropped": False,
                 }
             )
+    return lines
 
-    note_cap = max(0, int(note_max_chars))
-    note_body = str(state.note or "")[:note_cap] if note_cap else ""
-    note_text = (
-        f"Session note (the coach's own interpretation):\n{note_body}"
-        if note_body
-        else ""
-    )
-    fixed = len(str(system or "")) + len(str(guidance or "")) + len(note_text)
-    fixed += len(str(question or ""))
-    budget = max(0, int(max_tokens) * 4 - fixed)
+
+def _fit_to_budget(lines: list[dict[str, Any]], budget: int) -> str:
+    """Drop by tier until the text fits, then cut the tail on a line boundary.
+
+    Tier order is the policy: cards go first, then assistant text, then turn
+    headings; user history survives longest because the reviewer needs the
+    request. The last resort keeps the newest user line and cuts the front.
+    """
 
     def render() -> str:
         return "\n".join(line["text"] for line in lines if not line["dropped"])
@@ -201,10 +212,7 @@ def build_messages(
                 ledger_text = render()
 
     if len(ledger_text) > budget:
-        # Last resort: the user history alone is oversized. Drop the oldest
-        # user lines first so the newest context survives, but always keep at
-        # least one user line; only then keep the tail, cut on a line boundary.
-        def _kept_user_lines() -> list[Any]:
+        def kept_users() -> list[dict[str, Any]]:
             return [
                 line
                 for line in lines
@@ -212,19 +220,51 @@ def build_messages(
             ]
 
         for line in lines:
-            if len(ledger_text) <= budget or len(_kept_user_lines()) <= 1:
+            if len(ledger_text) <= budget or len(kept_users()) <= 1:
                 break
             if line["kind"] == "user" and not line["dropped"]:
                 line["dropped"] = True
                 ledger_text = render()
-    if len(ledger_text) > budget:
-        if budget <= 0:
-            ledger_text = ""
-        else:
-            start = max(0, len(ledger_text) - budget)
-            cut = ledger_text.find("\n", start)
-            ledger_text = ledger_text[cut + 1 :] if cut != -1 else ledger_text[-budget:]
-            ledger_text = ledger_text.lstrip()
+
+    if len(ledger_text) <= budget:
+        return ledger_text
+    if budget <= 0:
+        return ""
+    start = max(0, len(ledger_text) - budget)
+    cut = ledger_text.find("\n", start)
+    clipped = ledger_text[cut + 1 :] if cut != -1 else ledger_text[-budget:]
+    return clipped.lstrip()
+
+
+def build_messages(
+    *,
+    system: str,
+    guidance: str,
+    state: SessionState,
+    question: str | None,
+    max_tokens: int,
+    tool_result_chars: int,
+    recent_turns: int,
+    note_max_chars: int = 1000,
+) -> list[dict[str, str]]:
+    """Assemble the coach prompt from the bounded ledger."""
+    preview_chars = max(0, int(tool_result_chars))
+    keep_cards = max(0, int(recent_turns))
+    lines = _turn_lines(
+        state.ledger, keep_cards=keep_cards, preview_chars=preview_chars
+    )
+
+    note_cap = max(0, int(note_max_chars))
+    note_body = str(state.note or "")[:note_cap] if note_cap else ""
+    note_text = (
+        f"Session note (the coach's own interpretation):\n{note_body}"
+        if note_body
+        else ""
+    )
+    fixed = len(str(system or "")) + len(str(guidance or "")) + len(note_text)
+    fixed += len(str(question or ""))
+    budget = max(0, int(max_tokens) * 4 - fixed)
+    ledger_text = _fit_to_budget(lines, budget)
 
     system_parts = [str(system or ""), str(guidance or "")]
     if note_text:

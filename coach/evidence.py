@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from dataclasses import dataclass
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -23,19 +24,33 @@ __all__ = ["collect", "head"]
 
 _GIT_TIMEOUT = 2
 _GIT_TOTAL_BUDGET = 8.0
+_MAX_LISTED_FILES = 200
+_FILE_HEAD_CHARS = 4000
 _HARDENED = [
     "git",
     "-c",
     "core.quotePath=false",
-    # Repo config must not colour the patch, invoke an external diff, or run
-    # a textconv driver from a repository the agent does not control.
+    # Repo config must not run code. fsmonitor is a command git executes on
+    # status and diff (probe-confirmed: a repo's core.fsmonitor ran during the
+    # gate), and the diff flags below cover the pager, external diffs and
+    # textconv drivers.
+    "-c",
+    "core.fsmonitor=false",
     "--no-pager",
 ]
 
 
-def _read_text(path: Path) -> str | None:
+def _read_text(path: Path, limit: int = _FILE_HEAD_CHARS) -> str | None:
+    """Read at most ``limit`` characters from a regular file.
+
+    The gate runs inside the host's hook callback, so a database dump or a
+    FIFO in the change set must not be decoded whole or block the read.
+    """
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        if not path.is_file():
+            return None
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit)
     except OSError:
         return None
 
@@ -134,6 +149,8 @@ def _heads(
     root: Path,
     paths: Sequence[str],
     reader: Callable[[Path], str | None],
+    *,
+    limit: int = _FILE_HEAD_CHARS,
 ) -> str:
     parts: list[str] = []
     base = root.resolve()
@@ -148,8 +165,68 @@ def _heads(
         body = reader(target)
         if body is None:
             continue
-        parts.append(f"--- {rel} (new file) ---\n{body}")
+        marker = "\n[file truncated]" if len(body) >= limit else ""
+        parts.append(f"--- {rel} (new file) ---\n{body}{marker}")
     return "\n".join(parts)
+
+
+def _file_list(
+    runner: Callable[..., object],
+    root: Path,
+    paths: Sequence[str],
+    *,
+    base: str = "",
+    untracked: Sequence[str] = (),
+    remaining: Callable[[], float],
+) -> str:
+    """One line per changed file, independent of the patch budget.
+
+    The rewrite this replaced let a truncated patch look like a complete one:
+    a claim naming a file the clipped patch no longer contained was escalated
+    to "your claim is unsupported". The list is the part of the evidence that
+    survives truncation, so it is always emitted, complete and countable.
+    """
+    rows: list[str] = []
+    seen: set[str] = set()
+
+    def add(output: str) -> None:
+        if len(rows) >= _MAX_LISTED_FILES:
+            return
+        for line in output.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            status, path = parts[0].strip(), parts[-1].strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            rows.append(f"{status} {path}")
+            if len(rows) >= _MAX_LISTED_FILES:
+                return
+
+    if base and remaining() > 0:
+        add(_names(runner, root, f"{base}..HEAD", paths, remaining()))
+    if remaining() > 0:
+        add(_names(runner, root, "HEAD", paths, remaining()))
+    for rel in untracked:
+        if rel not in seen and len(rows) < _MAX_LISTED_FILES:
+            seen.add(rel)
+            rows.append(f"?? {rel}")
+    return "\n".join(rows)
+
+
+def _names(
+    runner: Callable[..., object],
+    root: Path,
+    rev: str,
+    paths: Sequence[str],
+    timeout: float,
+) -> str:
+    argv = [*_HARDENED, "diff", "--name-status", "--no-color", rev, "--", *paths]
+    result = _git(runner, root, argv, timeout=timeout)
+    if result is None or result.returncode != 0:
+        return ""
+    return _stdout(result)
 
 
 def _range_usable(
@@ -170,6 +247,131 @@ def _range_usable(
         timeout=timeout,
     )
     return check is not None and check.returncode == 0
+
+
+def _coverage(
+    listed: int,
+    reported: int,
+    limit: int,
+    *,
+    git: bool,
+    truncated: bool,
+) -> str:
+    """State what the evidence covers, so a partial patch cannot read as a lie.
+
+    Without this line the reviewer saw a clipped diff and a claim naming a file
+    the clip had removed, and escalated the gap to "your claim is unsupported".
+    """
+    lines = [
+        "--- coverage ---",
+        (
+            f"{listed} changed file(s) listed; {reported} path(s) supplied by "
+            f"the host; patch budget {limit} chars."
+        ),
+    ]
+    if not git:
+        lines.append(
+            "git was unavailable: file contents were read directly and the list "
+            "above is the host's report, not a complete change set."
+        )
+    if truncated:
+        lines.append(
+            "The patch below is truncated. The stat, file list and coverage are "
+            "complete, but a file whose patch is missing here has NOT been shown "
+            "to be unchanged."
+        )
+    return "\n".join(lines)
+
+
+def _assemble(header: Sequence[str], body: Sequence[str], limit: int) -> str:
+    """Join the sections, keeping the header whole when the patch must clip."""
+    head = "\n\n".join(section for section in header if section)
+    rest = "\n\n".join(section for section in body if section)
+    text = f"{head}\n\n{rest}" if rest else head
+    if len(text) <= limit:
+        return text
+    note = "\n\n[patch truncated]"
+    budget = limit - len(head) - len(note) - 2
+    if budget > 0 and rest:
+        return f"{head}\n\n{rest[:budget].rstrip()}{note}"
+    if not head:
+        return text[:limit]
+    keep = max(0, limit - len(note))
+    return head[:keep].rstrip() + note
+
+
+@dataclass(frozen=True)
+class _Gathered:
+    """What git could tell us about one change set, or why it could not."""
+
+    committed: str
+    uncommitted: str
+    new_files: str
+    base_ok: bool
+    base_note: str
+    untracked: tuple[str, ...] = ()
+
+
+def _gather(
+    root: Path,
+    safe: Sequence[str],
+    base: str,
+    runner: Callable[..., object],
+    reader: Callable[[Path], str | None],
+    remaining: Callable[[], float],
+) -> _Gathered | None:
+    """Run the git queries; ``None`` means git is unusable here."""
+    status = _git(
+        runner,
+        root,
+        [
+            *_HARDENED,
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            *safe,
+        ],
+        timeout=min(_GIT_TIMEOUT, remaining()),
+    )
+    if status is None or status.returncode != 0:
+        return None
+
+    uncommitted = _diff(
+        runner, root, "HEAD", safe, timeout=min(_GIT_TIMEOUT, remaining())
+    )
+    safe_set = set(safe)
+    untracked: list[str] = []
+    for entry in _stdout(status).split("\0"):
+        if not entry.startswith("?? "):
+            continue
+        rel = entry[3:].removesuffix("/")
+        if rel and rel in safe_set:
+            untracked.append(rel)
+    new_files = _heads(root, _safe_paths(root, untracked), reader) if untracked else ""
+
+    committed = ""
+    base_note = "no turn base recorded"
+    base_ok = bool(base) and _range_usable(
+        runner, root, base, timeout=min(_GIT_TIMEOUT, remaining())
+    )
+    if base_ok:
+        committed = _diff(
+            runner, root, f"{base}..HEAD", safe, timeout=min(_GIT_TIMEOUT, remaining())
+        )
+        if committed:
+            base_note = f"commits since turn start ({base[:12]}..HEAD)"
+    elif base:
+        base_note = "turn base is not an ancestor of HEAD; worktree only"
+    return _Gathered(
+        committed=committed,
+        uncommitted=uncommitted,
+        new_files=new_files,
+        base_ok=base_ok,
+        base_note=base_note,
+        untracked=tuple(untracked),
+    )
 
 
 def collect(
@@ -193,6 +395,10 @@ def collect(
     at most ``_GIT_TIMEOUT`` and whatever is left. Hung git plus the Review
     model call must stay under the host's hook timeout, so the budget
     degrades to partial evidence instead of a killed hook.
+
+    The output always leads with the stat, a complete file list and a coverage
+    line; only the patch is clipped. A partial patch therefore cannot read as a
+    complete one.
     """
     root = Path(cwd)
     safe = _safe_paths(root, paths)
@@ -202,93 +408,66 @@ def collect(
     reader = read or _read_text
     now = clock or time.monotonic
     deadline = now() + _GIT_TOTAL_BUDGET
+    limit = max(0, int(max_chars))
 
     def remaining() -> float:
         return max(0.0, deadline - now())
 
-    def gcall(argv: list[str]) -> subprocess.CompletedProcess | None:
-        return _git(runner, root, argv, timeout=min(_GIT_TIMEOUT, remaining()))
-
-    def gdiff(rev: str, *, stat: bool = False) -> str:
-        return _diff(runner, root, rev, safe, stat=stat,
-                     timeout=min(_GIT_TIMEOUT, remaining()))
-
-    def gusable(ref: str) -> bool:
-        return _range_usable(runner, root, ref,
-                             timeout=min(_GIT_TIMEOUT, remaining()))
-
-    # -z keeps paths unquoted and unescaped (no C-style octal for non-ASCII).
-    # --untracked-files=all lists new files individually instead of collapsing
-    # new directories to a trailing-slash "dir/" entry git diff would miss.
-    status = gcall(
-        [
-            "git",
-            "-c",
-            "core.quotePath=false",
-            "status",
-            "--porcelain",
-            "-z",
-            "--untracked-files=all",
-            "--",
-            *safe,
-        ],
-    )
-    if status is None or status.returncode != 0:
-        return _heads(root, safe, reader)[: max(0, int(max_chars))]
-
-    uncommitted = gdiff("HEAD")
-    untracked: list[str] = []
-    safe_set = set(safe)
-    for entry in _stdout(status).split("\0"):
-        if not entry.startswith("?? "):
-            continue
-        rel = entry[3:].removesuffix("/")
-        if rel and rel in safe_set:
-            untracked.append(rel)
-    new_files = _heads(root, _safe_paths(root, untracked), reader) if untracked else ""
-
-    committed = ""
-    base_note = "no turn base recorded"
     base = str(base or "").strip()
-    if base and gusable(base):
-        committed = gdiff(f"{base}..HEAD")
-        if committed:
-            base_note = f"commits since turn start ({base[:12]}..HEAD)"
-    elif base:
-        base_note = "turn base is not an ancestor of HEAD; worktree only"
+    gathered = _gather(root, safe, base, runner, reader, remaining)
+    if gathered is None:
+        # git is unusable here: still say what was read and that the list is
+        # the host's report, never a complete change set.
+        read_files = _heads(root, safe, reader)
+        listing = "--- files (git unavailable; host-reported paths) ---\n" + "\n".join(
+            f"? {rel}" for rel in safe
+        )
+        coverage = _coverage(
+            len(safe), len(safe), limit, git=False, truncated=len(read_files) > limit
+        )
+        return _assemble([listing, coverage], [read_files], limit)
 
-    sections: list[str] = []
-    if committed or uncommitted or new_files:
-        if committed:
-            stat = gdiff(f"{base}..HEAD", stat=True)
-        else:
-            stat = gdiff("HEAD", stat=True)
-        if stat:
-            sections.append(f"--- stat ({base_note}) ---\n{stat.rstrip()}")
-        if committed:
-            sections.append(f"--- committed during this turn ---\n{committed.rstrip()}")
-        if uncommitted:
-            sections.append(f"--- uncommitted ---\n{uncommitted.rstrip()}")
-        if new_files:
-            sections.append(f"--- new files ---\n{new_files.rstrip()}")
-    elif base:
-        # Nothing changed since the base: reviewing nothing is worse than
-        # skipping, and the caller turns an empty result into "no review".
+    if not (gathered.committed or gathered.uncommitted or gathered.new_files):
+        # Nothing changed: reviewing nothing is worse than skipping, and the
+        # caller turns an empty result into "no review".
         return ""
 
-    text = "\n\n".join(sections)
-    limit = max(0, int(max_chars))
-    if len(text) <= limit:
-        return text
-    # Stat first, then as much patch as the budget allows: a truncated patch
-    # with no file list hides which files changed, and a file list with no
-    # patch hides what changed. Keep both, clipped.
-    first, _, rest = text.partition("\n\n")
-    if first.startswith("--- stat"):
-        note = "\n\n[diff truncated]"
-        budget = limit - len(first) - len(note) - 2
-        if budget > 0:
-            return f"{first}\n\n{rest[:budget].rstrip()}{note}"
-        keep = max(0, limit - len(note))
-        return first[:keep].rstrip() + note
-    return text[:limit]
+    files = _file_list(
+        runner,
+        root,
+        safe,
+        base=base if gathered.base_ok else "",
+        untracked=gathered.untracked,
+        remaining=remaining,
+    )
+    listed = len(files.splitlines())
+    stat = (
+        _diff(
+            runner,
+            root,
+            f"{base}..HEAD",
+            safe,
+            stat=True,
+            timeout=min(_GIT_TIMEOUT, remaining()),
+        )
+        if gathered.committed
+        else _diff(runner, root, "HEAD", safe, stat=True, timeout=min(_GIT_TIMEOUT, remaining()))
+    )
+
+    body: list[str] = []
+    if gathered.committed:
+        body.append(f"--- committed during this turn ---\n{gathered.committed.rstrip()}")
+    if gathered.uncommitted:
+        body.append(f"--- uncommitted ---\n{gathered.uncommitted.rstrip()}")
+    if gathered.new_files:
+        body.append(f"--- new files ---\n{gathered.new_files.rstrip()}")
+
+    header: list[str] = []
+    if stat:
+        header.append(f"--- stat ({gathered.base_note}) ---\n{stat.rstrip()}")
+    if files:
+        header.append(f"--- files changed ({listed}) ---\n{files}")
+    rest = "\n\n".join(body)
+    truncated = bool(rest) and (sum(len(section) for section in header) + len(rest) + 48 > limit)
+    header.append(_coverage(listed, len(safe), limit, git=True, truncated=truncated))
+    return _assemble(header, body, limit)

@@ -71,3 +71,21 @@ original error.
 
 - [Prompt assembly](prompt-assembly.md) — how ledger entries become a prompt.
 - [Plugin runtime](plugin-runtime.md) — who calls `load`/`save`, and when.
+
+## `coach/state.json`
+
+`{"seen_cwds": [...]}` records the working directories the plugin has seen, so
+the dashboard can allow project-scope guidance for them. Written once per
+directory per process, 0600, capped at 20 entries.
+
+## Secrets
+
+`decide_typesafe_api_key` is read from `.env` only. `/coach set` refuses it and
+the dashboard rejects the key by name, so no route writes a credential to
+`config.yaml`.
+
+## Log names
+
+`logs/<state-safe-name>.jsonl`, the same percent-encoded-plus-hash encoding as
+session files; sanitising unsafe characters to `_` made `task/1` and `task_1`
+share a log.

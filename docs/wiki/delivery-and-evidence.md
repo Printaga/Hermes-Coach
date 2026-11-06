@@ -28,6 +28,25 @@ flowchart TD
 | `corrective` | A message in the conversation, which starts a turn | A full turn, often with tools |
 | `drop` | Nothing delivered | — |
 
+`unverifiable` is routed to `ambient` before the policy is consulted: an
+incomplete evidence block must never hold a completion or start a turn.
+
+The evidence bundle is assembled so a clipped patch cannot be mistaken for the
+whole change set:
+
+```
+--- stat (commits since turn start (<base>..HEAD)) ---
+--- files changed (<N>) ---          # git diff --name-status, plus ?? untracked
+--- coverage ---                     # counts, patch budget, truncation notice
+--- committed during this turn ---   # patch, clipped to the budget
+--- uncommitted ---
+--- new files ---                    # bounded heads, [file truncated] markers
+```
+
+The header survives truncation; only the patch is clipped, and the coverage
+line says so. Every git call runs with `-c core.fsmonitor=false` so a
+repository's own config cannot execute code inside the gate.
+
 The completion gate hands its finding to `deliver()` too, with
 `allow_corrective=False`: the gate has its own single-hold authority, so
 delivery policy must not open a second, uncapped turn from there. A held

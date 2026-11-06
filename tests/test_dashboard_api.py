@@ -130,3 +130,50 @@ def test_recent_returns_only_the_tail_of_large_logs(tmp_path):
     assert [row["title"] for row in payload["reviews"]] == [
         f"note {index}" for index in (199, 198, 197, 196, 195)
     ]
+
+
+def test_project_scope_accepts_a_directory_the_plugin_has_seen(tmp_path):
+    """The plugin records seen_cwds; without it project scope always refused."""
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "real-project"
+    project.mkdir()
+    (home / "coach").mkdir()
+    (home / "coach" / "state.json").write_text(
+        json.dumps({"seen_cwds": [str(project)]}), encoding="utf-8"
+    )
+    client = TestClient(app_for_tests(home=home))
+    r = client.put(
+        "/guidance", json={"scope": "project", "cwd": str(project), "text": "x"}
+    )
+    assert r.status_code == 200
+    assert (project / "COACH.md").read_text() == "x"
+
+
+def test_recent_excludes_decision_rows(tmp_path):
+    from coach.plugin import _log_name
+
+    logs = tmp_path / "coach" / "logs"
+    logs.mkdir(parents=True)
+    (logs / f"{_log_name('s')}.jsonl").write_text(
+        '{"kind":"review","title":"kept","severity":"nit","at":"2026-01-01T00:00:01",'
+        '"session_id":"s"}\n'
+        '{"kind":"decide","decision":"stay","at":"2026-01-01T00:00:02",'
+        '"session_id":"s"}\n',
+        encoding="utf-8",
+    )
+    client = TestClient(app_for_tests(home=tmp_path))
+    rows = client.get("/recent").json()["reviews"]
+    assert [row.get("title") for row in rows] == ["kept"]
+
+
+def test_mutations_reject_a_foreign_origin(tmp_path):
+    client = TestClient(app_for_tests(home=tmp_path))
+    denied = client.post(
+        "/permissions/grant", headers={"Origin": "https://evil.example"}
+    )
+    assert denied.status_code == 403
+    allowed = client.post(
+        "/permissions/grant", headers={"Origin": "http://localhost:3000"}
+    )
+    assert allowed.status_code == 200

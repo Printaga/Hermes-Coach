@@ -22,9 +22,9 @@ __all__ = [
     "parse_finding",
 ]
 
-SEVERITIES = ("none", "nit", "concern", "blocker")
+SEVERITIES = ("none", "nit", "concern", "unverifiable", "blocker")
 
-_DELIVERABLE = ("nit", "concern", "blocker")
+_DELIVERABLE = ("nit", "concern", "unverifiable", "blocker")
 _TITLE_MAX = 80
 _BODY_MAX = 600
 _EVIDENCE_MAX = 1000

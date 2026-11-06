@@ -43,17 +43,17 @@ def test_budget_hard_stop_refuses_consult(tmp_path):
 def test_subagent_hooks_track_child_sessions(tmp_path):
     p = _plugin(tmp_path)
     p.on_subagent_start(session_id="child-1")
-    refused = json.loads(p.tool_ask({"question": "q", "session_id": "child-1"}))
+    refused = json.loads(p.tool_ask({"question": "q"}, session_id="child-1"))
     assert refused["ok"] is False and refused["error"] == "child_session"
     p.on_subagent_stop(session_id="child-1")
-    assert json.loads(p.tool_ask({"question": "q", "session_id": "child-1"}))["ok"] is True
+    assert json.loads(p.tool_ask({"question": "q"}, session_id="child-1"))["ok"] is True
 
 def test_allow_in_subagents_bypasses_both_guards(tmp_path):
     p = _plugin(tmp_path, surface=lambda: "subagent", settings=load_settings(
         {"coach_model": {"provider": "openrouter", "model": "x"},
          "allow_in_subagents": True}))
     p.on_subagent_start(session_id="child-1")
-    assert json.loads(p.tool_ask({"question": "q", "session_id": "child-1"}))["ok"] is True
+    assert json.loads(p.tool_ask({"question": "q"}, session_id="child-1"))["ok"] is True
 
 def test_guidance_block_wraps_global_and_project_files(tmp_path):
     root = tmp_path / "coach"
@@ -124,3 +124,12 @@ def test_advice_card_truncates_a_huge_answer(tmp_path):
     card = _advice_card("x" * 5000, "advice", "p", "m")
     assert len(card) < 1200
     assert " ..." in card
+
+
+def test_pre_llm_call_records_the_working_directory(tmp_path):
+    p = _plugin(tmp_path, surface=lambda: "cli")
+    p.home = tmp_path / "coach"
+    p.cwd = lambda: str(tmp_path)
+    p.on_pre_llm_call({"session_id": "s", "turn_id": "t"})
+    data = json.loads((tmp_path / "coach" / "state.json").read_text())
+    assert str(tmp_path) in data["seen_cwds"]

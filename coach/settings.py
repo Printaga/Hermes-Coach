@@ -16,10 +16,16 @@ __all__ = ["DEFAULTS", "ModelChoice", "Settings", "load_settings"]
 
 @dataclass(frozen=True)
 class ModelChoice:
-    """The provider and model one mode should call."""
+    """The provider and model one mode should call.
+
+    ``as_dict`` is the single wire shape the host, page and manifest share.
+    """
 
     provider: str
     model: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"provider": self.provider, "model": self.model}
 
 
 DEFAULTS: dict[str, Any] = {

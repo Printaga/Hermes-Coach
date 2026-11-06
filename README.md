@@ -22,6 +22,14 @@ Every mode uses one shared model unless you give it its own.
 
 - `severity` (default): blockers start a turn so the agent can fix them; notes
   and concerns become a card and reach the model at the start of its next turn.
+  The review ladder has four values besides `none`: `nit` (optional), `concern`
+  (a defect it can point at), `blocker` (must not ship) and **`unverifiable`** —
+  the evidence block itself was incomplete. `unverifiable` is a coverage limit,
+  never a claim about the work: it never holds a completion and never starts a
+  turn.
+- A session budget of `0` means no budget. Set a positive value to cap spending.
+- `decide_typesafe_api_key` is read from `.env`; `/coach set` refuses to write a
+  key into `config.yaml`.
 - `ambient`: a card now, and the model sees the note next turn. No extra call.
 - `corrective`: every note starts a turn.
 
@@ -152,6 +160,11 @@ set.
 State lives in `$HERMES_HOME/coach/`: one JSON file per session (atomic,
 `0600`), a JSONL review log, and the global guidance file. Sessions are pruned
 to the newest twenty.
+
+The review evidence always leads with the `git --stat`, a complete
+changed-file list and a `--- coverage ---` line; only the patch is clipped when
+it exceeds the budget. A file whose patch is missing has not been shown to be
+unchanged, and the reviewer is told so.
 
 Every piece of advice is also posted as a card in the conversation, so the
 coach's work is visible even when the agent does not relay it. Cards can be
