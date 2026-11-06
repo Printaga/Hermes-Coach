@@ -34,7 +34,9 @@ the runtime environment.
 - `plugin.yaml` — manifest and the tools/hooks the host registers. No `config_schema`.
 - `__init__.py` — `register(ctx)`; imports the package lazily and fails open.
 - `coach/` — pure core: `settings`, `state`, `ledger`, `findings`, `advisor`,
-  `jev`, `delivery`, `evidence`, `guidance`, `worker`, `plugin`.
+  `jev`, `delivery`, `evidence`, `guidance`, `worker`, `commands`, `plugin`.
+  `plugin` holds lifecycle, hooks and the model surfaces; `commands` holds the
+  `/coach` surface (a mixin) so the class does not carry four jobs.
 - `dashboard/plugin_api.py` — `/config`, `/status`, `/guidance`,
   `/permissions/grant` for the settings page.
 - `desktop/plugin.js` — the settings page: plain ESM, no build step.

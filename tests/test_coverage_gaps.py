@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from coach.advisor import Coach
 from coach.delivery import format_ambient
+from coach.commands import _bool_arg, _coerce_setting, _parse_model
 from coach.evidence import _git, _heads, _read_text, _safe_paths, _stdout, collect
 from coach.findings import Finding, is_deliverable, parse_finding
 from coach.ledger import _summary_line, append_turn, build_messages, tool_card
@@ -24,13 +25,10 @@ from coach.plugin import (
     ASK_SCHEMA,
     CoachPlugin,
     _as_turn,
-    _bool_arg,
     _child_id,
-    _coerce_setting,
     _find_turn,
     _last_reviewed_digest,
     _log_name,
-    _parse_model,
     _payload,
     _primary_identity,
     _record_turn,
@@ -447,7 +445,7 @@ def test_chat_model_failure_modes_stay_errors():
 
 
 def test_settings_coercion_helpers():
-    from coach.plugin import _bool_arg
+    from coach.commands import _bool_arg
 
     assert _as_bool(1, False) is False
     assert _as_bool("on", False) is True

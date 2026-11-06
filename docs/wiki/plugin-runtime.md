@@ -1,9 +1,14 @@
 # Plugin runtime
 
 `coach/plugin.py` is the orchestrator: it owns the tools, every hook, the
-command surface, the worker, and the decision of when to spend. `coach/worker.py`
+worker, and the decision of when to spend. The `/coach` surface lives in
+`coach/commands.py`. `coach/worker.py`
 is the single background thread that keeps reviews off the turn path, and the
 root `__init__.py` is the thin registration seam the host calls.
+
+`coach/commands.py` holds the `/coach` command surface as a mixin: status,
+log, pending, send, model and set, plus their formatters. It imports the core
+modules only, never `plugin`, so the dependency runs one way.
 
 ## Registration
 

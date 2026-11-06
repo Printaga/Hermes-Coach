@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from coach.advisor import Coach, _content_text, _differs, _split_messages
 from coach.delivery import format_ambient, format_card, format_corrective, route
+from coach.commands import _bool_arg, _coerce_setting, _parse_model
 from coach.evidence import collect
 from coach.findings import Finding, is_deliverable, parse_finding
 from coach.jev import Decision, _inner, _probabilities, decide
@@ -31,12 +32,9 @@ from coach.plugin import (
     DECIDE_SCHEMA,
     CoachPlugin,
     _as_turn,
-    _bool_arg,
     _child_id,
-    _coerce_setting,
     _find_turn,
     _last_reviewed_digest,
-    _parse_model,
     _payload,
     _primary_identity,
     _record_turn,

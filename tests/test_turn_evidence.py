@@ -319,3 +319,25 @@ def test_evidence_reads_are_bounded(tmp_path):
     big = tmp_path / "big.txt"
     big.write_text("x" * 100_000)
     assert len(_read_text(big, 50)) == 50
+
+
+def test_the_turn_range_is_described_in_full_not_by_reported_paths(tmp_path):
+    """A 29-file commit filtered to two paths looked like a two-file commit."""
+    root = _repo(tmp_path)
+    (root / "README").write_text("hi\n")
+    base = _commit(root, "initial")
+    (root / "only.py").write_text("x = 1\n")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_x.py").write_text("def test_x(): assert True\n")
+    (root / "docs.md").write_text("# docs\n")
+    _commit(root, "turn work")
+
+    text = collect(str(root), ["only.py"], base=base)
+
+    assert "--- files changed (3) ---" in text
+    assert "tests/test_x.py" in text
+    assert "docs.md" in text
+    assert "the patch shows only the paths the host reported" in text
+    # The patch itself stays scoped to what the host reported.
+    assert "only.py" in text
+    assert "+def test_x" not in text

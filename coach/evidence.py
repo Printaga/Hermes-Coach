@@ -178,6 +178,7 @@ def _file_list(
     base: str = "",
     untracked: Sequence[str] = (),
     remaining: Callable[[], float],
+    range_names: str = "",
 ) -> str:
     """One line per changed file, independent of the patch budget.
 
@@ -204,7 +205,9 @@ def _file_list(
             if len(rows) >= _MAX_LISTED_FILES:
                 return
 
-    if base and remaining() > 0:
+    if range_names:
+        add(range_names)
+    elif base and remaining() > 0:
         add(_names(runner, root, f"{base}..HEAD", paths, remaining()))
     if remaining() > 0:
         add(_names(runner, root, "HEAD", paths, remaining()))
@@ -280,6 +283,12 @@ def _coverage(
             "complete, but a file whose patch is missing here has NOT been shown "
             "to be unchanged."
         )
+    lines.append(
+        "The stat and file list describe every file changed since the turn "
+        "started; the patch shows only the paths the host reported, so a file "
+        "with no patch may still have changed. Judge the work from the list, "
+        "and report any gap as severity \"unverifiable\"."
+    )
     return "\n".join(lines)
 
 
@@ -310,6 +319,7 @@ class _Gathered:
     base_ok: bool
     base_note: str
     untracked: tuple[str, ...] = ()
+    range_names: str = ""
 
 
 def _gather(
@@ -352,15 +362,23 @@ def _gather(
     new_files = _heads(root, _safe_paths(root, untracked), reader) if untracked else ""
 
     committed = ""
+    range_names = ""
     base_note = "no turn base recorded"
     base_ok = bool(base) and _range_usable(
         runner, root, base, timeout=min(_GIT_TIMEOUT, remaining())
     )
     if base_ok:
+        # The patch follows the host's paths (relevance and size), but the
+        # description of the range must not: filtering it once made a 29-file
+        # commit look like a 2-file commit, and the reviewer rightly called the
+        # claim unsupported.
         committed = _diff(
             runner, root, f"{base}..HEAD", safe, timeout=min(_GIT_TIMEOUT, remaining())
         )
-        if committed:
+        range_names = _names(
+            runner, root, f"{base}..HEAD", (), remaining()
+        )
+        if committed or range_names:
             base_note = f"commits since turn start ({base[:12]}..HEAD)"
     elif base:
         base_note = "turn base is not an ancestor of HEAD; worktree only"
@@ -371,6 +389,7 @@ def _gather(
         base_ok=base_ok,
         base_note=base_note,
         untracked=tuple(untracked),
+        range_names=range_names,
     )
 
 
@@ -439,6 +458,7 @@ def collect(
         base=base if gathered.base_ok else "",
         untracked=gathered.untracked,
         remaining=remaining,
+        range_names=gathered.range_names,
     )
     listed = len(files.splitlines())
     stat = (
@@ -446,12 +466,15 @@ def collect(
             runner,
             root,
             f"{base}..HEAD",
-            safe,
+            (),
             stat=True,
             timeout=min(_GIT_TIMEOUT, remaining()),
         )
-        if gathered.committed
-        else _diff(runner, root, "HEAD", safe, stat=True, timeout=min(_GIT_TIMEOUT, remaining()))
+        if gathered.committed or gathered.range_names
+        else _diff(
+            runner, root, "HEAD", safe, stat=True,
+            timeout=min(_GIT_TIMEOUT, remaining()),
+        )
     )
 
     body: list[str] = []

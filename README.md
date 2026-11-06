@@ -237,7 +237,7 @@ hermes plugins doctor .                 # host contract
 `COACH_PYTHON` overrides the interpreter; `SKIP_DESKTOP_CHECK=1` skips the node
 check. On Windows use `scripts/test.ps1`.
 
-Layout: `coach/` (pure Python core), `dashboard/plugin_api.py` (settings API),
+Layout: `coach/` (pure Python core; `commands.py` is the `/coach` surface), `dashboard/plugin_api.py` (settings API),
 `desktop/plugin.js` (settings page), `tests/`, `scripts/`.
 
 - Design: [docs/superpowers/specs/2026-11-05-hermes-coach-design.md](docs/superpowers/specs/2026-11-05-hermes-coach-design.md)
