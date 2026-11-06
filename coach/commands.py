@@ -470,32 +470,27 @@ class CommandsMixin:
         if self.inject is None:
             return "No injection channel available; notes stay pending."
         sent = 0
-        sent_ids: set[int] = set()
-        for index, note in enumerate(notes):
+        delivered: set[tuple[str, str]] = set()
+        for note in notes:
             text = str(note.get("text") or note.get("body") or "").strip()
             if text and self._inject(text):
                 sent += 1
-                sent_ids.add(index)
+                delivered.add(
+                    (str(note.get("turn_id") or ""), str(note.get("title") or ""))
+                )
         if not sent:
             return "Could not deliver pending notes; they stay pending."
-        delivered = [note for index, note in enumerate(notes) if index in sent_ids]
         with self._store_lock:
-            # Drop by identity, not text value: two notes can carry the same
-            # text, and a failed retry must not be discarded as a duplicate.
+            # Drop by (turn, title), not text value: duplicate texts are legal
+            # and a failed retry must not be discarded as a duplicate.
             state = self.store.load(session_id)
-            keep: list[Any] = []
-            dropped = 0
-            for note in state.pending:
-                if (
-                    isinstance(note, Mapping)
-                    and dropped < len(delivered)
-                    and str(note.get("text") or note.get("body") or "").strip()
-                    == str(delivered[dropped].get("text") or "").strip()
-                ):
-                    dropped += 1
-                    continue
-                keep.append(note)
-            state.pending = keep
+            state.pending = [
+                note
+                for note in state.pending
+                if not isinstance(note, Mapping)
+                or (str(note.get("turn_id") or ""), str(note.get("title") or ""))
+                not in delivered
+            ]
             state.updated_at = self.clock()
             self.store.save(state)
         return f"Delivered {sent} pending coach note(s)."
