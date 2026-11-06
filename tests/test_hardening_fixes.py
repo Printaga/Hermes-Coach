@@ -432,6 +432,30 @@ def test_collect_shares_one_git_budget(tmp_path):
     assert all(0 < t <= 2 for t in timeouts)
 
 
+def test_every_git_call_keeps_the_per_call_cap(tmp_path):
+    """The range file-list call used the whole remaining budget as its timeout."""
+    import subprocess
+
+    from coach.evidence import collect
+
+    (tmp_path / "a.py").write_text("print(1)\n", encoding="utf-8")
+    timeouts = []
+    now = [0.0]
+
+    def fake_run(argv, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        now[0] += 0.5
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    collect(
+        str(tmp_path), ["a.py"], base="abc123", run=fake_run, clock=lambda: now[0]
+    )
+    assert timeouts, "expected at least one git call"
+    # Each call is capped at _GIT_TIMEOUT even while the shared budget has
+    # seconds left: one hung call must not eat the window the review needs.
+    assert max(timeouts) <= 2.0, timeouts
+
+
 # --- manifests ------------------------------------------------------------------------
 
 

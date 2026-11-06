@@ -495,7 +495,11 @@ def _gather(
             runner, root, f"{base}..HEAD", safe, timeout=min(_GIT_TIMEOUT, remaining())
         )
         range_names = _names(
-            runner, root, f"{base}..HEAD", (), remaining()
+            runner,
+            root,
+            f"{base}..HEAD",
+            (),
+            min(_GIT_TIMEOUT, remaining()),
         )
         if committed or range_names:
             base_note = f"commits since turn start ({base[:12]}..HEAD)"

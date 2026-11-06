@@ -282,7 +282,7 @@ const useEffect = (fn) => {
 const useValue = () => "";
 const host = { state: { model: "", cwd: "", focusedSessionId: "" }, request: async () => ({ providers: [{ slug: "p", name: "P", models: ["m"] }] }), composer: { submit: () => true } };
 const __resetHooks = () => { __hookIndex = 0; };
-const __resetAll = () => { __hookIndex = 0; __hooks = []; };
+const __resetAll = () => { __hookIndex = 0; __hooks = []; globalThis.__effectError = null; };
 globalThis.__resetHooks = __resetHooks;
 globalThis.__resetAll = __resetAll;
 `
@@ -447,7 +447,16 @@ globalThis.__resetAll = __resetAll;
           await new Promise((resolve) => setTimeout(resolve, 0))
           globalThis.__resetHooks()
           tree = child.render({})
+          if (globalThis.__effectError) {
+            const err = globalThis.__effectError
+            fail(
+              `settings tab ${child.id} threw inside an effect: ${err && err.message ? err.message : err}`,
+            )
+          }
         } catch (err) {
+          if (String(err && err.message).startsWith("desktop page check failed")) {
+            throw err
+          }
           fail(`settings tab ${child.id} threw while rendering: ${err.message}`)
         }
         if (!tree || !tree.type) {

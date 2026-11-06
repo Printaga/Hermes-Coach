@@ -331,14 +331,13 @@ class CommandsMixin:
             lines.append(body or "(empty)")
         return "\n".join(lines)
 
-    def _state_with(self, session_id: str, has) -> tuple[Any, str]:
+    def _state_with(self, session_id: str) -> Any:
         """Load the session state; never leak another session's content.
 
         A read-only command stays in its own session: other chats' advice
         must not surface in the current context.
         """
-        state = self.store.load(session_id)
-        return state, ""
+        return self.store.load(session_id)
 
     def _last_advice_text(
         self, session_id: str = "current", args: list[str] | None = None
@@ -347,9 +346,7 @@ class CommandsMixin:
             count = max(1, min(5, int((args or ["1"])[0])))
         except (TypeError, ValueError):
             count = 1
-        state, label = self._state_with(
-            session_id, lambda st: bool(st.advice or st.last_advice)
-        )
+        state = self._state_with(session_id)
         rows = [row for row in state.advice if isinstance(row, Mapping)]
         if not rows and isinstance(state.last_advice, Mapping) and state.last_advice:
             rows = [state.last_advice]
@@ -372,8 +369,6 @@ class CommandsMixin:
             )
             if meta:
                 lines.append(f"({meta})")
-            if label:
-                lines.append(f"(from {label})")
             return "\n".join(lines)
         out = [f"Last {min(count, len(rows))} advice entries (newest first):"]
         for index, row in enumerate(reversed(rows[-count:]), 1):
@@ -383,8 +378,6 @@ class CommandsMixin:
             out.append(f"{index}. [{intent}] {question}")
             if text:
                 out.append(f"   {text}")
-        if label:
-            out.append(f"(from {label})")
         return "\n".join(out)
 
     @staticmethod
