@@ -155,6 +155,34 @@ def test_root_register_imports_the_package_lazily():
     assert "from .coach.plugin import" in body
 
 
+def test_dashboard_module_loads_from_its_own_file_without_repo_on_path(tmp_path):
+    """The host loads plugin_api.py by path, so it must fix sys.path itself."""
+    module_path = (REPO / "dashboard" / "plugin_api.py").as_posix()
+    script = (
+        "import importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('coach_dashboard_api', r'''{module_path}''')\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "paths = {getattr(route, 'path', None) for route in module.router.routes}\n"
+        "required = {'/status', '/config', '/guidance', '/recent', '/permissions/grant'}\n"
+        "assert required <= paths, paths\n"
+        "assert callable(module.app_for_tests)\n"
+        "print('dashboard file load ok')\n"
+    )
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+
 def test_register_wires_tools_hooks_command_and_shutdown():
     text = _product_text("__init__.py")
     for token in (
