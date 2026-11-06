@@ -58,8 +58,10 @@ def bound_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
     tools = bounded.get("tools")
     if isinstance(tools, list):
         bounded["tools"] = [
-            _bound_card(card) for card in tools[:_CARDS_PER_TURN_MAX]
+            _bound_card(card) for card in tools[-_CARDS_PER_TURN_MAX:]
         ]
+    else:
+        bounded["tools"] = []
     return bounded
 
 
@@ -102,12 +104,16 @@ def tool_card(
 ) -> dict:
     """Build one compact tool record, truncating its preview."""
     limit = max(0, int(max_chars))
+    try:
+        size_int = max(0, int(size or 0))
+    except (TypeError, ValueError):
+        size_int = 0
     return {
-        "name": name,
-        "arg": arg,
-        "status": status,
-        "size": size,
-        "preview": str(preview)[:limit],
+        "name": str(name or "tool")[:_NAME_CHARS],
+        "arg": str(arg or "")[:_ARG_CHARS],
+        "status": str(status or "")[:_STATUS_CHARS],
+        "size": size_int,
+        "preview": str(preview or "")[:limit],
     }
 
 
@@ -120,8 +126,11 @@ def _card_line(card: dict[str, Any], max_chars: int) -> str:
     name = str(card.get("name") or "tool")[:_NAME_CHARS]
     arg = str(card.get("arg") or "").strip()[:_ARG_CHARS]
     status = str(card.get("status") or "").strip()[:_STATUS_CHARS]
-    size = card.get("size", 0)
-    preview = str(card.get("preview") or "")[:max_chars]
+    try:
+        size = max(0, int(card.get("size", 0) or 0))
+    except (TypeError, ValueError):
+        size = 0
+    preview = str(card.get("preview") or "")[: max(0, max_chars)]
     line = f"- {name}"
     if arg:
         line += f" {arg}"
@@ -157,7 +166,7 @@ def _turn_lines(
         lines.append(
             {
                 "kind": "user",
-                "text": f"user: {turn.get('user') or ''}",
+                "text": f"user: {str(turn.get('user') or '')[:_USER_CHARS]}",
                 "dropped": False,
             }
         )
@@ -200,31 +209,32 @@ def _fit_to_budget(lines: list[dict[str, Any]], budget: int) -> str:
     def render() -> str:
         return "\n".join(line["text"] for line in lines if not line["dropped"])
 
-    ledger_text = render()
+    # Track the joined length incrementally: re-rendering per dropped line is
+    # O(n^2) on a ledger with hundreds of lines.
+    total = sum(len(line["text"]) + 1 for line in lines)
     for kind in ("card", "assistant", "heading"):
-        if len(ledger_text) <= budget:
+        if total <= budget:
             break
         for line in lines:
-            if len(ledger_text) <= budget:
+            if total <= budget:
                 break
             if line["kind"] == kind and not line["dropped"]:
                 line["dropped"] = True
-                ledger_text = render()
+                total -= len(line["text"]) + 1
+    ledger_text = render() if total <= budget else render()
 
-    if len(ledger_text) > budget:
-        def kept_users() -> list[dict[str, Any]]:
-            return [
-                line
-                for line in lines
-                if line["kind"] == "user" and not line["dropped"]
-            ]
-
+    kept_users = sum(
+        1 for line in lines if line["kind"] == "user" and not line["dropped"]
+    )
+    if total > budget:
         for line in lines:
-            if len(ledger_text) <= budget or len(kept_users()) <= 1:
+            if total <= budget or kept_users <= 1:
                 break
             if line["kind"] == "user" and not line["dropped"]:
                 line["dropped"] = True
-                ledger_text = render()
+                kept_users -= 1
+                total -= len(line["text"]) + 1
+        ledger_text = render()
 
     if len(ledger_text) <= budget:
         return ledger_text

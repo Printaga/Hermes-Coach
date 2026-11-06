@@ -92,7 +92,6 @@ _CONTEXT_MAX = 4000
 _OPTIONS_MIN = 2
 _OPTIONS_MAX = 6
 _INTENTS = {"advice", "plan", "review"}
-_LOG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _CHILD_SURFACES = {"subagent", "delegate"}
 _CHILD_KEYS = (
     "session_id",
@@ -1385,6 +1384,11 @@ class CoachPlugin(CommandsMixin):
             used = state.calls.get(turn_id, 0)
             if used >= self.settings.consult_max_calls_per_turn:
                 return _error("call_cap")
+            # Reserve under the same lock as the check: a later section could
+            # otherwise admit two concurrent asks.
+            state.calls[turn_id] = used + 1
+            state.updated_at = self.clock()
+            self.store.save(state)
         prompt = question
         context = str(args.get("context") or "").strip()[:_CONTEXT_MAX]
         if context:
@@ -1406,14 +1410,6 @@ class CoachPlugin(CommandsMixin):
             recent_turns=self.settings.ledger_max_recent_turns,
             note_max_chars=self.settings.ledger_note_max_chars,
         )
-        # Charge the attempt, then call: nothing between the counter and the
-        # provider can fail and burn an attempt without one.
-        with self._store_lock:
-            fresh = self.store.load(session_id)
-            fresh.calls[turn_id] = fresh.calls.get(turn_id, 0) + 1
-            fresh.updated_at = self.clock()
-            self.store.save(fresh)
-
         reply = self.coach.ask(
             messages,
             mode="consult",

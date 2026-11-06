@@ -26,6 +26,7 @@ _GIT_TIMEOUT = 2
 _GIT_TOTAL_BUDGET = 8.0
 _MAX_LISTED_FILES = 200
 _FILE_HEAD_CHARS = 4000
+_MAX_PATHS = 300
 _HARDENED = [
     "git",
     "-c",
@@ -107,6 +108,7 @@ def _safe_paths(root: Path, paths: Sequence[str]) -> list[str]:
     except (OSError, ValueError, RuntimeError):
         return []
     safe: list[str] = []
+    seen: set[str] = set()
     for raw in paths or []:
         text = str(raw or "").strip()
         if not text:
@@ -126,7 +128,13 @@ def _safe_paths(root: Path, paths: Sequence[str]) -> list[str]:
             (base / candidate).resolve().relative_to(base)
         except (OSError, ValueError, RuntimeError):
             continue
-        safe.append(candidate.as_posix())
+        value = candidate.as_posix()
+        if value in seen:
+            continue
+        seen.add(value)
+        if len(safe) >= _MAX_PATHS:
+            break
+        safe.append(value)
     return safe
 
 
@@ -408,7 +416,9 @@ def _assemble(header: Sequence[str], body: Sequence[str], limit: int) -> str:
     if not head:
         return text[:limit]
     keep = max(0, limit - len(note))
-    return head[:keep].rstrip() + note
+    # Sections are ordered stat → list → coverage, so the tail is the part
+    # that must survive; keeping the prefix dropped the coverage line.
+    return (head[len(head) - keep :].lstrip() + note) if keep else note.lstrip()
 
 
 @dataclass(frozen=True)

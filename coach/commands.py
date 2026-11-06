@@ -181,11 +181,7 @@ class CommandsMixin:
         """Persist one setting and re-validate the in-memory copy."""
         if key not in DEFAULTS:
             return False
-        stored = (
-            {"provider": value.provider, "model": value.model}
-            if isinstance(value, ModelChoice)
-            else value
-        )
+        stored = value.as_dict() if isinstance(value, ModelChoice) else value
         raw = _raw_settings(self.settings)
         raw[key] = stored
         # Store what the loader would use, not what was typed: the dashboard
@@ -193,7 +189,7 @@ class CommandsMixin:
         canonical = load_settings(raw)
         saved = getattr(canonical, key, value)
         if isinstance(saved, ModelChoice):
-            saved = {"provider": saved.provider, "model": saved.model}
+            saved = saved.as_dict()
         if self.set_setting is not None:
             result = self.set_setting(key, saved)
             if result is False:
@@ -543,9 +539,14 @@ class CommandsMixin:
         return "Revoked per-mode model overrides for the coach plugin."
 
     def _forget(self, session_id: str) -> str:
-        """Delete this session's coach state file; never raise."""
+        """Delete this session's state file and review log; never raise."""
         try:
             self.store.forget(session_id)
         except Exception:
             return "Coach: could not forget this session."
+        log_path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
+        try:
+            log_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return "Forgot this session's coach state."

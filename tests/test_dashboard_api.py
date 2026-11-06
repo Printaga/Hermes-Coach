@@ -20,10 +20,18 @@ def test_status_reports_unconfigured(tmp_path):
     assert body["permissions"]["model_overrides"] is False
 
 
+def _remember(home, project):
+    (home / "coach").mkdir(parents=True, exist_ok=True)
+    (home / "coach" / "state.json").write_text(
+        json.dumps({"seen_cwds": [str(project)]}), encoding="utf-8"
+    )
+
+
 def test_guidance_roundtrip(tmp_path):
     client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
     project = tmp_path / "proj"
     project.mkdir()
+    _remember(tmp_path, project)
     r = client.put(
         "/guidance",
         json={"scope": "project", "cwd": str(project), "text": "no regex"},
@@ -66,8 +74,8 @@ def test_recent_returns_newest_first(tmp_path):
     logs = tmp_path / "coach" / "logs"
     logs.mkdir(parents=True)
     (logs / "a.jsonl").write_text(
-        '{"at":"2026-01-01T00:00:00+00:00","title":"old","body":"b","severity":"nit"}\n'
-        '{"at":"2026-02-01T00:00:00+00:00","title":"new","body":"b2","severity":"concern"}\n',
+        '{"kind":"review","at":"2026-01-01T00:00:00+00:00","title":"old","body":"b","severity":"nit"}\n'
+        '{"kind":"review","at":"2026-02-01T00:00:00+00:00","title":"new","body":"b2","severity":"concern"}\n',
         encoding="utf-8",
     )
     client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
@@ -79,11 +87,11 @@ def test_recent_can_filter_one_session(tmp_path):
     logs = tmp_path / "coach" / "logs"
     logs.mkdir(parents=True)
     (logs / "a.jsonl").write_text(
-        '{"at":"2026-01-01T00:00:00+00:00","title":"one","session_id":"s1"}\n',
+        '{"kind":"review","at":"2026-01-01T00:00:00+00:00","title":"one","session_id":"s1"}\n',
         encoding="utf-8",
     )
     (logs / "b.jsonl").write_text(
-        '{"at":"2026-02-01T00:00:00+00:00","title":"two","session_id":"s2"}\n',
+        '{"kind":"review","at":"2026-02-01T00:00:00+00:00","title":"two","session_id":"s2"}\n',
         encoding="utf-8",
     )
     client = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1")
@@ -124,6 +132,7 @@ def test_recent_returns_only_the_tail_of_large_logs(tmp_path):
                         "kind": "review",
                         "session_id": "s",
                         "turn_id": "t",
+                        "kind": "review",
                         "severity": "nit",
                         "title": f"note {index}",
                         "at": f"2026-11-06T00:00:{index:02d}",
@@ -247,12 +256,12 @@ def test_dashboard_recent_orders_and_filters(tmp_path):
     logs = tmp_path / "coach" / "logs"
     logs.mkdir(parents=True)
     (logs / "a.jsonl").write_text(
-        '{"at":"2026-01-01T00:00:00+00:00","title":"old","body":"b",'
+        '{"kind":"review","at":"2026-01-01T00:00:00+00:00","title":"old","body":"b",'
         '"severity":"nit","session_id":"s1"}\n',
         encoding="utf-8",
     )
     (logs / "b.jsonl").write_text(
-        '{"at":"2026-02-01T00:00:00+00:00","title":"new","body":"b2",'
+        '{"kind":"review","at":"2026-02-01T00:00:00+00:00","title":"new","body":"b2",'
         '"severity":"concern","session_id":"s2"}\n',
         encoding="utf-8",
     )

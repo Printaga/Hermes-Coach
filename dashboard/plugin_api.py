@@ -12,7 +12,6 @@ import copy
 import json
 import os
 import sys
-from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -227,8 +226,14 @@ def _project_dir(home: Path, cwd: str) -> Path:
         raise HTTPException(status_code=400, detail="cwd_not_found") from None
     if not resolved.is_dir():
         raise HTTPException(status_code=400, detail="cwd_not_directory")
-    roots = [home.expanduser().resolve()]
-    roots.extend(path.resolve() for path in _seen_cwds(home))
+    roots: list[Path] = []
+    # Only directories the plugin has recorded: the home directory itself used
+    # to be an implicit root, so every path under ~ was writable.
+    for entry in _seen_cwds(home):
+        try:
+            roots.append(entry.resolve())
+        except (OSError, RuntimeError):
+            continue
     if any(_within(resolved, root) for root in roots):
         return resolved
     raise HTTPException(status_code=400, detail="cwd_not_registered")
@@ -290,7 +295,7 @@ def _write_guidance(
             handle.write(text)
     except OSError as exc:
         raise HTTPException(
-            status_code=400, detail=f"guidance_write_failed: {type(exc).__name__}"
+            status_code=500, detail=f"guidance_write_failed: {type(exc).__name__}"
         ) from None
     return f"saved {len(text)} chars to {path}"
 
@@ -462,9 +467,13 @@ def get_recent(
     root = _home(request) / "coach" / "logs"
     rows: list[dict[str, Any]] = []
     try:
-        paths = sorted(
-            root.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True
-        )[:20]
+        stamped: list[tuple[float, Path]] = []
+        for path in root.glob("*.jsonl"):
+            try:
+                stamped.append((path.stat().st_mtime, path))
+            except OSError:
+                continue  # rotated between glob and stat
+        paths = [path for _, path in sorted(stamped, reverse=True)[:20]]
     except OSError:
         paths = []
     for path in paths:
@@ -485,7 +494,7 @@ def get_recent(
                 continue
             # A decision row has no severity or title; the page rendered it as
             # "none — no finding". Only reviews belong in this list.
-            if str(record.get("kind") or "review") != "review":
+            if record.get("kind") != "review":
                 continue
             if wanted and str(record.get("session_id") or "") not in wanted:
                 continue

@@ -207,8 +207,9 @@ class Store:
         self._saves += 1
         if self._saves % 25 == 0:
             try:
-                if len(self._state_paths()) > self.max_sessions:
-                    self.prune()
+                # Sweep on the tick even under the cap: this is also where
+                # crash-leftover temp files are removed.
+                self.prune()
             except OSError as exc:
                 # A persistent prune failure silently un-caps the directory.
                 log.warning("coach store prune failed: %s", exc)
@@ -309,7 +310,7 @@ class Store:
         try:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError, RecursionError):
             return None
         if not isinstance(data, dict):
             return None

@@ -52,7 +52,7 @@ class Decision:
 
 def _error(reason: str, cost_usd: float = 0.0) -> Decision:
     """Return a failure decision with a non-empty one-line reason."""
-    text = str(reason).strip() or "decision failed"
+    text = " ".join(str(reason).split())[:240] or "decision failed"
     return Decision(gate="error", rationale=text, cost_usd=cost_usd)
 
 
@@ -115,7 +115,14 @@ def _post(
     )
     opener = http or _open_without_redirects
     with opener(request, timeout=_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+        # A hostile endpoint must not stream a multi-GB body into the desktop.
+        try:
+            body = response.read(1_048_576 + 1)
+        except TypeError:  # a fake response with a zero-argument read()
+            body = response.read()
+        if len(body) > 1_048_576:
+            raise ValueError("response_too_large")
+        return json.loads(body.decode("utf-8"))
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -284,7 +291,7 @@ def decide(
     url = (base_url.strip() if isinstance(base_url, str) else "") or _ENDPOINTS.get(backend, "")
     if not url:
         return _error(f"unknown decide backend: {backend}")
-    if not api_key:
+    if not isinstance(api_key, str) or not api_key.strip():
         return _error(f"missing API key for {backend}")
     try:
         payload = _post(
