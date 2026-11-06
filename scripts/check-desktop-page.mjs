@@ -268,6 +268,30 @@ globalThis.__resetAll = __resetAll;
     if (mod.groupModels(fixture, "no-such-model").length !== 0) {
       fail("desktop model search must return no groups without matches")
     }
+    if (typeof mod.findingPrompt !== "function") {
+      fail("desktop page must export findingPrompt for testing")
+    }
+    const prompt = mod.findingPrompt({
+      severity: "concern",
+      title: "Retry hides the timeout",
+      body: "The loop swallows the deadline error.",
+      evidence: "client.py:88",
+      fix: "Re-raise after the last attempt.",
+    })
+    for (const expected of [
+      "Coach concern: Retry hides the timeout",
+      "swallows the deadline error",
+      "Evidence: client.py:88",
+      "Suggested fix: Re-raise",
+      "Address this finding",
+    ]) {
+      if (!prompt.includes(expected)) {
+        fail(`send-to-chat prompt lost "${expected}"`)
+      }
+    }
+    if (mod.findingPrompt({ severity: "none", title: "t" }).startsWith("Coach none")) {
+      fail("send-to-chat prompt must not label a sourceless note as a severity")
+    }
     const plugin = mod.default
     if (!plugin || plugin.id !== "coach" || typeof plugin.register !== "function") {
       fail("desktop page default export is not { id: 'coach', register }")

@@ -52,6 +52,19 @@ const SECTION_TITLE = {
   opacity: 0.62,
 }
 
+function findingPrompt(row) {
+  const lines = [
+    row.severity && row.severity !== "none"
+      ? `Coach ${row.severity}: ${row.title || ""}`
+      : `Coach note: ${row.title || "finding"}`,
+    row.body ? String(row.body) : "",
+    row.evidence ? `Evidence: ${row.evidence}` : "",
+    row.fix ? `Suggested fix: ${row.fix}` : "",
+    "Address this finding, or explain why it does not apply.",
+  ]
+  return lines.filter(Boolean).join("\n").slice(0, 4000)
+}
+
 function messageOf(error) {
   if (error && error.message) return String(error.message)
   return String(error === null || error === undefined ? "Unknown error" : error)
@@ -1013,17 +1026,7 @@ function StatusPage(props) {
       setNotice("This Desktop build cannot send to the chat.")
       return
     }
-    const lines = [
-      row.severity && row.severity !== "none"
-        ? `Coach ${row.severity}: ${row.title || ""}`
-        : `Coach note: ${row.title || "finding"}`,
-      row.body ? String(row.body) : "",
-      row.evidence ? `Evidence: ${row.evidence}` : "",
-      row.fix ? `Suggested fix: ${row.fix}` : "",
-      "Address this finding, or explain why it does not apply.",
-    ]
-    const text = lines.filter(Boolean).join("\n").slice(0, 4000)
-    if (composer.submit(focused || null, text)) {
+    if (composer.submit(focused || null, findingPrompt(row))) {
       setNotice("Sent to this chat.")
     } else {
       setNotice("Could not reach this chat's composer.")
@@ -1282,6 +1285,6 @@ export function register(ctx) {
   })
 }
 
-export { flattenModels, groupModels };
+export { findingPrompt, flattenModels, groupModels };
 
 export default { id: "coach", name: "Coach", register }
