@@ -690,3 +690,30 @@ def test_trim_log_keeps_small_files_and_log_names_are_safe(tmp_path):
     assert "/" not in _log_name("../../etc/passwd")
 
 
+
+
+def test_decide_error_counts_an_unpriced_attempt(tmp_path, monkeypatch):
+    """A failed decide call writes nothing to the bill; the counter and
+    /coach status must surface it instead of silently under-counting."""
+    from coach.jev import Decision
+
+    target = decide_plugin(tmp_path)
+    monkeypatch.setattr(
+        "coach.plugin.decide",
+        lambda **kw: Decision(
+            decision="",
+            confidence=0.0,
+            probabilities={},
+            gate="error",
+            rationale="jev-openrouter call failed: URLError: outage",
+            cost_usd=0.0,
+        ),
+    )
+    out = json.loads(
+        target.tool_decide({"question": "Choose?", "options": ["a", "b"]})
+    )
+    assert "URLError" in out["error"]
+    state = target.store.load("current")
+    assert state.calls.get("decide_unpriced") == 1
+    assert state.last_error.startswith("jev-openrouter call failed")
+    assert target.status()["decide_unpriced"] == 1

@@ -22,7 +22,7 @@ from .settings import (
     load_settings,
     split_provider_model,
 )
-from .state import _safe_name as _state_safe_name
+from .state import safe_session_name as _state_safe_name
 
 _MODEL_KEYS = {"coach_model", "active_model", "review_model", "consult_model"}
 _MODE_KEYS = {

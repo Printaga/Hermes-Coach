@@ -14,7 +14,7 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -470,7 +470,7 @@ def get_config(request: Request) -> dict[str, Any]:
 
 
 @router.put("/config")
-def put_config(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def put_config(request: Request, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     """Save settings values for the keys declared in the manifest."""
     _guard_origin(request)
     body = payload if isinstance(payload, Mapping) else {}
@@ -570,7 +570,8 @@ def get_guidance(
 
 @router.put("/guidance")
 def put_guidance(
-    request: Request, payload: dict[str, Any] = Body(...)
+    request: Request,
+    payload: Annotated[dict[str, Any], Body()],
 ) -> dict[str, Any]:
     """Replace one guidance file after validating its target."""
     _guard_origin(request)

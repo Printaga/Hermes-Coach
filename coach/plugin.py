@@ -731,6 +731,7 @@ class CoachPlugin(CommandsMixin):
             "pending_notes": len(state.pending),
             "sessions": len(self.store.sessions_on_disk()),
             "review_skips": int(state.calls.get("review_skips") or 0),
+            "decide_unpriced": int(state.calls.get("decide_unpriced") or 0),
             "last_error": state.last_error,
             "paused": self._paused,
         }
@@ -1087,19 +1088,15 @@ class CoachPlugin(CommandsMixin):
                 structured=True,
                 timeout=float(self.settings.worker_timeout_s),
             )
-            with self._store_lock:
-                # Re-load: the host may have recorded turns, holds, or spend
-                # while the model call was in flight; applying onto the stale
-                # copy would silently discard those updates.
-                state = self.store.load(sid)
+            def commit(state: Any) -> None:
                 turn = _find_turn(state, tid)
                 _charge(state, reply.cost_usd)
                 if turn is not None:
                     turn["reviewed"] = True
                     turn["digest"] = digest
                 state.last_error = reply.error
-                state.updated_at = self.clock()
-                self.store.save(state)
+
+            self._reload_and_save(sid, commit)
             self._log_review(sid, tid, reply)
             self._debug(
                 f"active review {sid}/{tid} error={reply.error!r} "
@@ -1108,14 +1105,8 @@ class CoachPlugin(CommandsMixin):
             )
             if not reply.error:
                 self.deliver(reply.finding, session_id=sid, turn_id=tid)
-        except Exception:
-            try:
-                with self._store_lock:
-                    fresh = self.store.load(sid)
-                    fresh.updated_at = self.clock()
-                    self.store.save(fresh)
-            except Exception:
-                pass
+        except Exception as exc:  # noqa: BLE001 - fail-open is the contract
+            self._record_skip(sid, f"review crashed: {type(exc).__name__}")
         finally:
             with self._queued_lock:
                 self._queued.pop((sid, tid), None)
@@ -1338,14 +1329,11 @@ class CoachPlugin(CommandsMixin):
                 structured=True,
                 timeout=float(timeout),
             )
-            with self._store_lock:
-                # Re-load: the Active worker or another hook may have saved
-                # while the review call was in flight.
-                state = self.store.load(session_id)
+            def commit(state: Any) -> None:
                 _charge(state, reply.cost_usd)
                 state.last_error = reply.error
-                state.updated_at = self.clock()
-                self.store.save(state)
+
+            self._reload_and_save(session_id, commit)
             self._log_review(session_id, turn_id, reply)
             if reply.error:
                 return None
@@ -1372,6 +1360,22 @@ class CoachPlugin(CommandsMixin):
                 self.store.save(state)
         except Exception:
             pass
+
+    def _reload_and_save(self, session_id: str, commit: Callable[[Any], Any]) -> Any:
+        """Apply ``commit`` onto a fresh reload under the store lock, then save.
+
+        Every reload-under-lock site here serves one contract: a model call
+        ran outside the lock, so the copy used for the prompt may be stale;
+        applying onto it would silently discard concurrent host updates.
+        The callback mutates the reloaded state and returns the caller's
+        value (``None`` on the plain path); the save is ours.
+        """
+        with self._store_lock:
+            state = self.store.load(session_id)
+            result = commit(state)
+            state.updated_at = self.clock()
+            self.store.save(state)
+            return result
 
     def card(self, finding: Finding) -> None:
         """Post the user-visible card for a finding, when cards are enabled."""
@@ -1433,7 +1437,7 @@ class CoachPlugin(CommandsMixin):
         if intent not in _INTENTS:
             intent = "advice"
 
-        session_id = str(args.get("session_id") or "current")
+        session_id = str(args.get("session_id") or "current").strip()
         if not self.settings.allow_in_subagents and self._is_child(session_id):
             return _error("child_session")
 
@@ -1488,17 +1492,14 @@ class CoachPlugin(CommandsMixin):
             structured=False,
             timeout=float(self.settings.worker_timeout_s),
         )
-        with self._store_lock:
-            # Re-load: the Active worker may have saved while the consult
-            # call was in flight; the attempt counter was already persisted
-            # above, so only spend and history are applied here.
-            state = self.store.load(session_id)
+        committed: list[Any] = []
+
+        def commit(state: Any):
+            committed.append(state)
             _charge(state, reply.cost_usd)
             if reply.error:
-                state.updated_at = self.clock()
-                self.store.save(state)
+                state.last_error = reply.error
                 return _error(_error_text(reply.error), spend_usd=state.spend_usd)
-
             append_turn(
                 state,
                 turn_id=turn_id,
@@ -1516,8 +1517,11 @@ class CoachPlugin(CommandsMixin):
             }
             state.advice = [*state.advice, entry][-_ADVICE_KEEP:]
             state.last_advice = entry
-            state.updated_at = self.clock()
-            self.store.save(state)
+
+        error = self._reload_and_save(session_id, commit)
+        if error is not None:
+            return error
+        state = committed[0]
         # Transparency: the user sees the advice even when the agent only
         # summarises it (or not at all) in its reply.
         self.card_text(
@@ -1567,7 +1571,7 @@ class CoachPlugin(CommandsMixin):
         if not self.settings.decide_enabled:
             return _error("decide_disabled")
 
-        session_id = str(args.get("session_id") or "current")
+        session_id = str(args.get("session_id") or "current").strip()
         if not self.settings.allow_in_subagents and self._is_child(session_id):
             return _error("child_session")
 
@@ -1609,17 +1613,19 @@ class CoachPlugin(CommandsMixin):
             min_confidence=self.settings.decide_min_confidence,
             chat=self.coach,
         )
-        with self._store_lock:
-            # Re-load: the Active worker may have saved while the decide call
-            # was in flight; the attempt counter was persisted above.
-            state = self.store.load(session_id)
-            _charge(state, decision.cost_usd)
-            state.updated_at = self.clock()
-            if decision.gate == "error":
-                state.last_error = decision.rationale
-                self.store.save(state)
-                return _error(decision.rationale, spend_usd=state.spend_usd)
+        committed: list[Any] = []
 
+        def commit(state: Any) -> Any:
+            committed.append(state)
+            _charge(state, decision.cost_usd)
+            if decision.gate == "error":
+                # The attempt was made and billed nowhere: count it, or the
+                # budget under-counts by every failed decide call.
+                state.calls["decide_unpriced"] = (
+                    int(state.calls.get("decide_unpriced") or 0) + 1
+                )
+                state.last_error = decision.rationale
+                return _error(decision.rationale, spend_usd=state.spend_usd)
             state.last_error = ""
             state.last_decision = {
                 "question": question,
@@ -1630,7 +1636,11 @@ class CoachPlugin(CommandsMixin):
                 "backend": backend,
                 "at": _now_iso(),
             }
-            self.store.save(state)
+
+        error = self._reload_and_save(session_id, commit)
+        if error is not None:
+            return error
+        state = committed[0]
         self._log_decision(session_id, turn_id, decision, backend)
         self.card_text(
             _decision_card(decision, backend)

@@ -50,6 +50,11 @@ class SessionState:
     updated_at: float = field(default_factory=time.time)
 
 
+def safe_session_name(session_id: str) -> str:
+    """Public alias: map a session id to its collision-free filename component."""
+    return _safe_name(session_id)
+
+
 def _safe_name(session_id: str) -> str:
     """Map a session id to one collision-free filename component.
 
