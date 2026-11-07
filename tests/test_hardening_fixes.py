@@ -11,9 +11,8 @@ from coach.plugin import (
     ASK_SCHEMA,
     CoachPlugin,
     _with_host_ids,
-    build_plugin,
 )
-from coach.settings import DEFAULTS, load_settings
+from coach.settings import load_settings
 from coach.state import SessionState, Store
 from tests.support import ConsultLlm as Llm
 

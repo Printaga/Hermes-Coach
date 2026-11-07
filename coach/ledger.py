@@ -10,7 +10,6 @@ oldest first, so the newest context always survives.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-
 from typing import Any
 
 from .state import SessionState

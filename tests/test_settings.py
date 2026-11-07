@@ -1,6 +1,7 @@
 # tests/test_settings.py
 from coach.settings import DEFAULTS, load_settings
 
+
 def test_defaults_are_unconfigured():
     s = load_settings({})
     assert s.is_configured() is False

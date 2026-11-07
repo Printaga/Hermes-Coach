@@ -2,6 +2,7 @@
 from coach.advisor import Coach
 from coach.settings import load_settings
 
+
 class Usage:
     input_tokens = 1000; output_tokens = 100
     cache_read_tokens = 0; cache_write_tokens = 0

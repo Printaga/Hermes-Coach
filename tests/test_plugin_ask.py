@@ -1,10 +1,12 @@
 # tests/test_plugin_ask.py
 import json
+
 from coach.guidance import Guidance
 from coach.plugin import CoachPlugin
 from coach.settings import load_settings
 from coach.state import Store
 from tests.support import ConsultLlm as Llm
+
 
 def _plugin(tmp_path, *, settings=None, surface=lambda: "cli"):
     return CoachPlugin(llm=Llm(), store=Store(tmp_path), surface=surface,

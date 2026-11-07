@@ -676,7 +676,7 @@ _needs_readable_chmod = pytest.mark.skipif(
 )
 
 
-_needs_readable_chmod
+@_needs_readable_chmod
 def test_guidance_read_surfaces_permission_errors(tmp_path):
     from coach.guidance import Guidance
 
@@ -690,7 +690,7 @@ def test_guidance_read_surfaces_permission_errors(tmp_path):
         target.chmod(0o600)
 
 
-_needs_readable_chmod
+@_needs_readable_chmod
 def test_guidance_system_block_degrades_on_permission_error(tmp_path):
     from coach.guidance import Guidance
 

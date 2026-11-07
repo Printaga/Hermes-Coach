@@ -1,10 +1,10 @@
 # tests/test_state.py
-import json, os, sys
+import os
+import sys
 
 import pytest
 
-from pathlib import Path
-from coach.state import SessionState, Store
+from coach.state import Store
 
 _not_readable_as_non_owner = pytest.mark.skipif(
     sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
@@ -55,7 +55,7 @@ def test_has_reports_a_known_session(tmp_path):
     assert store.has("s1") is True
 
 
-_not_readable_as_non_owner
+@_not_readable_as_non_owner
 def test_unreadable_file_names_the_cause_in_last_error(tmp_path):
     store = Store(tmp_path)
     path = store._path("denied")

@@ -24,7 +24,7 @@ if str(_PLUGIN_ROOT) not in sys.path:
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request
 
 from coach.guidance import GUIDANCE_MAX_CHARS
-from coach.settings import DEFAULTS, ModelChoice, _CHOICES, load_settings
+from coach.settings import _CHOICES, DEFAULTS, ModelChoice, load_settings
 from coach.state import Store
 
 __all__ = ["app_for_tests", "router"]

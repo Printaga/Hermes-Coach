@@ -4,7 +4,6 @@
 # plugin during development or live verification. Unit tests next to each
 # module cover the happy paths; these tests cover the failure modes.
 
-import copy
 import json
 import os
 import subprocess

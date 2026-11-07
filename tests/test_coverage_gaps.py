@@ -3,7 +3,6 @@
 # These tests intentionally target pure helpers and failure paths rather than
 # repeating the main behavioral suites.
 
-import copy
 import json
 import os
 import sys
@@ -16,13 +15,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from coach.advisor import Coach
-from coach.delivery import format_ambient
-from coach.commands import _bool_arg, _coerce_setting, _parse_model
-from coach.evidence import _git, _heads, _read_text, _safe_paths, _stdout, collect
-from coach.findings import Finding, is_deliverable, parse_finding
-from coach.ledger import _summary_line, append_turn, build_messages, tool_card
+from coach.commands import _bool_arg
+from coach.evidence import _git, _heads, _read_text, _safe_paths, _stdout
+from coach.findings import Finding, parse_finding
+from coach.ledger import _summary_line, build_messages, tool_card
 from coach.plugin import (
-    ASK_SCHEMA,
     CoachPlugin,
     _as_turn,
     _child_id,
@@ -35,29 +32,23 @@ from coach.plugin import (
     _request_text,
     _result_text,
     _tool_arg,
-    _trim_log,
     _turns_since_review,
     build_plugin,
 )
 from coach.settings import (
     DEFAULTS,
     _as_bool,
-    _as_choice,
-    _as_confidence,
-    _as_float,
-    _as_int,
-    _as_model,
-    _as_text,
     load_settings,
 )
 from coach.state import (
-    SessionState,
     Store,
-    _as_float as state_float,
-    _as_int as state_int,
-    _calls,
     _dict_items,
-    _safe_name,
+)
+from coach.state import (
+    _as_float as state_float,
+)
+from coach.state import (
+    _as_int as state_int,
 )
 from dashboard import plugin_api as api
 from dashboard.plugin_api import app_for_tests
@@ -403,8 +394,9 @@ def test_jev_rejects_malformed_payloads_and_unknown_backends():
 
 
 def test_chat_model_failure_modes_stay_errors():
-    from coach.jev import decide
     from types import SimpleNamespace
+
+    from coach.jev import decide
 
     class Boom:
         def ask(self, *args, **kwargs):
@@ -445,7 +437,6 @@ def test_chat_model_failure_modes_stay_errors():
 
 
 def test_settings_coercion_helpers():
-    from coach.commands import _bool_arg
 
     assert _as_bool(1, False) is False
     assert _as_bool("on", False) is True
@@ -683,7 +674,6 @@ def test_worker_stop_is_safe_without_a_submission():
 
 
 def test_trim_log_keeps_small_files_and_log_names_are_safe(tmp_path):
-    from coach.plugin import _log_name
 
     target = tmp_path / "coach-coverage-test.jsonl"
     target.write_text("a\nb\n", encoding="utf-8")

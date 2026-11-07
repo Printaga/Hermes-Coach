@@ -6,7 +6,6 @@
 
 from pathlib import Path
 
-
 from coach.commands import _coerce_setting, _parse_model
 from coach.plugin import (
     CoachPlugin,

@@ -3,7 +3,6 @@
 import copy
 import json
 import os
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +12,7 @@ from coach.findings import Finding
 from coach.plugin import _primary_identity
 from coach.state import Store
 from tests.support import plugin
+
 
 def test_grant_writes_both_trust_flags(tmp_path, monkeypatch):
     import sys

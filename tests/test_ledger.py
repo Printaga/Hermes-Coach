@@ -2,6 +2,7 @@
 from coach.ledger import append_turn, build_messages, estimate_tokens, tool_card
 from coach.state import SessionState
 
+
 def _state(n):
     s = SessionState(session_id="s")
     for i in range(n):

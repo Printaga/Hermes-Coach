@@ -12,8 +12,7 @@ import subprocess
 import pytest
 
 from coach.evidence import collect, head
-from coach.plugin import _REVIEW_SYSTEM, _SYSTEM, CoachPlugin
-from coach.state import Store
+from coach.plugin import _REVIEW_SYSTEM, _SYSTEM
 from tests.support import plugin as make_plugin
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")

@@ -1,16 +1,10 @@
 # tests/test_dashboard_api.py
-import copy
 import json
-import sys
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from coach.findings import Finding
-from coach.plugin import _primary_identity
-from dashboard.plugin_api import router, app_for_tests
-from tests.support import plugin
+
+from dashboard.plugin_api import app_for_tests
 
 
 def test_status_reports_unconfigured(tmp_path):
@@ -132,7 +126,6 @@ def test_recent_returns_only_the_tail_of_large_logs(tmp_path):
                         "kind": "review",
                         "session_id": "s",
                         "turn_id": "t",
-                        "kind": "review",
                         "severity": "nit",
                         "title": f"note {index}",
                         "at": f"2026-11-06T00:00:{index:02d}",

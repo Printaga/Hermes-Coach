@@ -1,10 +1,10 @@
 # tests/test_plugin_delivery.py
-import json
 from coach.findings import Finding
 from coach.plugin import CoachPlugin
 from coach.settings import load_settings
 from coach.state import Store
 from tests.support import ConsultLlm as Llm
+
 
 def _p(tmp_path, **cfg):
     base = {"coach_model": {"provider": "p", "model": "m"}}
