@@ -323,3 +323,43 @@ def test_a_second_claim_is_reviewed_after_a_hold(tmp_path):
     assert first and first["action"] == "continue"
     assert len(llm.calls) == 2, "the answering claim was not reviewed"
     assert second is None  # the hold cap still permits only one hold
+
+
+def test_hold_cap_is_rechecked_after_the_review(tmp_path):
+    """A concurrent gate firing may use the last hold mid-review; the commit
+    must re-check the cap instead of letting both firings hold."""
+    p = _p(tmp_path, review_authority="hold_once", review_max_holds=1)
+    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+
+    def concurrent_review(**kw):
+        with p._store_lock:
+            state = p.store.load("s")
+            state.calls["review_holds:t1"] = 1
+            state.updated_at = 0.0
+            p.store.save(state)
+        return type(
+            "F",
+            (),
+            {
+                "severity": "blocker",
+                "title": "t",
+                "body": "b",
+                "evidence": "e",
+                "fix": "f",
+            },
+        )()
+
+    p.review_now = concurrent_review
+    out = p.on_pre_verify(**PAY)
+    assert p.store.load("s").calls.get("review_holds:t1") == 1
+    assert out is None or "action" not in out
+
+
+def test_record_skip_counts_and_names_the_reason(tmp_path):
+    """Every swallowed skip must leave a counter + readable last_error."""
+    p = _p(tmp_path)
+    p._record_skip("s", "review failed: Boom")
+    p._record_skip("s", "gate skipped: 0.0s left after evidence")
+    state = p.store.load("s")
+    assert state.calls.get("review_skips") == 2
+    assert "gate skipped" in state.last_error

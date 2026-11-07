@@ -240,3 +240,13 @@ def test_turn_is_persisted_before_the_worker_starts(tmp_path):
     _tool(p)
     p.on_post_llm_call(**TURN)
     assert p.worker.ledger_at_submit == 1
+
+
+def test_padded_ids_do_not_strand_the_review_queue(tmp_path):
+    """_queued keys must use stripped ids, or a padded payload strands
+    dedupe bookkeeping until session end (older-to-newer sweep drops it)."""
+    p = _p(tmp_path)
+    _tool(p)
+    p.on_post_llm_call(**dict(TURN, session_id=" s ", turn_id=" t1 "))
+    assert ("s", "t1") in p._queued
+    assert (" s ", " t1 ") not in p._queued

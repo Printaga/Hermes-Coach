@@ -105,14 +105,28 @@ class Store:
             return []
         return [path for path in self.root.glob("*.json") if path.is_file()]
 
+    def _quarantine(self, path: Path) -> None:
+        """Move a corrupt state file aside so its contents survive diagnosis.
+
+        A reset (fresh) state silently drops spend, hold counters and the
+        ledger; keeping the unreadable file under a distinct name makes the
+        cause diagnosable instead of destroyed on the next save.
+        """
+        try:
+            path.rename(path.with_name(f"{path.name}.corrupt-{int(time.time())}"))
+        except OSError:
+            pass
+
     def _read(self, path: Path, fallback_id: str) -> SessionState:
         """Parse one file; a corrupt or missing one is a fresh state.
 
         Corrupt content (bad JSON, wrong shape) resets to a fresh state that
-        says so in ``last_error``. Read failures that are not corruption
-        (permissions, I/O) also yield a fresh state — the store is fail-open
-        by contract — but ``last_error`` names the real cause so /coach
-        status shows it instead of silently discarding history.
+        says so in ``last_error``; the unreadable file is renamed aside first
+        so the damage is diagnosable rather than silently overwritten by the
+        next save. Read failures that are not corruption (permissions, I/O)
+        also yield a fresh state — the store is fail-open by contract — but
+        ``last_error`` names the real cause so /coach status shows it
+        instead of silently discarding history.
         """
         try:
             with path.open("r", encoding="utf-8") as handle:
@@ -122,6 +136,7 @@ class Store:
         except (ValueError, TypeError, RecursionError):
             # json raises ValueError (incl. UnicodeDecodeError) on bad bytes;
             # TypeError/RecursionError cover hostile shapes.
+            self._quarantine(path)
             return SessionState(
                 session_id=fallback_id, last_error="state reset", updated_at=0.0
             )
@@ -132,6 +147,7 @@ class Store:
                 updated_at=0.0,
             )
         if not isinstance(data, dict):
+            self._quarantine(path)
             return SessionState(
                 session_id=fallback_id, last_error="state reset", updated_at=0.0
             )

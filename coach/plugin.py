@@ -38,7 +38,13 @@ from .ledger import (
     build_messages,
     tool_card,
 )
-from .settings import DEFAULTS, ModelChoice, Settings, load_settings
+from .settings import (
+    DEFAULTS,
+    ModelChoice,
+    Settings,
+    load_settings,
+    split_provider_model,
+)
 from .state import Store
 from .worker import Worker
 
@@ -691,6 +697,20 @@ class CoachPlugin(CommandsMixin):
             state = self.store.load(str(session_id or "current"))
         except Exception:
             state = self.store.load("current")
+        # spend_total_usd is profile-wide: sum every on-disk session plus the
+        # in-memory state when it is not yet the file's copy.
+        try:
+            all_states = self.store.states_on_disk()
+        except Exception:
+            all_states = []
+        spend_sessions = {
+            session.session_id: round(session.spend_usd, 6)
+            for session in all_states
+        }
+        spend_total = sum(session.spend_usd for session in all_states)
+        if state.session_id not in spend_sessions:
+            spend_sessions[state.session_id] = round(state.spend_usd, 6)
+            spend_total += state.spend_usd
         return {
             "configured": self.settings.is_configured(),
             "coach_model": _model_dict(self.settings.coach_model),
@@ -702,14 +722,15 @@ class CoachPlugin(CommandsMixin):
             "decide_enabled": self.settings.decide_enabled,
             "decide_backend": self.settings.decide_backend,
             "spend_usd": round(state.spend_usd, 6),
-            "spend_total_usd": round(state.spend_usd, 6),
-            "spend_sessions": {session_id: round(state.spend_usd, 6)},
+            "spend_total_usd": round(spend_total, 6),
+            "spend_sessions": spend_sessions,
             "budget_usd": self.settings.budget_session_usd,
             "budget_per_session_usd": self.settings.budget_session_usd,
             "budget_on_exceed": self.settings.budget_on_exceed,
             "allow_in_subagents": self.settings.allow_in_subagents,
             "pending_notes": len(state.pending),
             "sessions": len(self.store.sessions_on_disk()),
+            "review_skips": int(state.calls.get("review_skips") or 0),
             "last_error": state.last_error,
             "paused": self._paused,
         }
@@ -896,8 +917,8 @@ class CoachPlugin(CommandsMixin):
         if not self.settings.active_enabled:
             return
         data = _payload(payload, kw)
-        session_id = str(data.get("session_id") or "current")
-        turn_id = str(data.get("turn_id") or "current")
+        session_id = str(data.get("session_id") or "current").strip()
+        turn_id = str(data.get("turn_id") or "current").strip()
         args = data.get("args")
         if not isinstance(args, Mapping):
             args = {}
@@ -934,8 +955,8 @@ class CoachPlugin(CommandsMixin):
         self.refresh_settings()
         data = _payload(payload, kw)
         self._remember_primary(data)
-        session_id = str(data.get("session_id") or "current")
-        turn_id = str(data.get("turn_id") or "current")
+        session_id = str(data.get("session_id") or "current").strip()
+        turn_id = str(data.get("turn_id") or "current").strip()
         with self._tools_lock:
             tools = self._turn_tools.pop((session_id, turn_id), [])
         if not self.settings.active_enabled and not self.settings.review_enabled:
@@ -1191,8 +1212,8 @@ class CoachPlugin(CommandsMixin):
         if not changed:
             return None
 
-        session_id = str(data.get("session_id") or "current")
-        turn_id = str(data.get("turn_id") or "current")
+        session_id = str(data.get("session_id") or "current").strip()
+        turn_id = str(data.get("turn_id") or "current").strip()
         with self._store_lock:
             state = self.store.load(session_id)
             if (
@@ -1222,6 +1243,9 @@ class CoachPlugin(CommandsMixin):
             # would be killed by the host and take the hook down with it, so
             # skip it: no verdict is better than a silenced gate.
             log.info("coach: gate skipped, %.1fs left after evidence", left)
+            self._record_skip(
+                session_id, f"gate skipped: {left:.1f}s left after evidence"
+            )
             return None
         finding = self.review_now(
             session_id=session_id,
@@ -1239,17 +1263,23 @@ class CoachPlugin(CommandsMixin):
             and self.settings.review_authority == "hold_once"
             and can_hold
         ):
-            # review_now saved its own copy with the spend added; reload under
-            # the store lock so the hold counter does not overwrite that
-            # update or any concurrent host update.
+            # Re-check the cap under the lock: the decision came from a
+            # snapshot taken before the (long) review, so a concurrent gate
+            # firing for the same turn may have used the last hold meanwhile.
+            granted = False
             with self._store_lock:
                 state = self.store.load(session_id)
-                state.calls[holds_key] = state.calls.get(holds_key, used) + 1
-                state.updated_at = self.clock()
-                self.store.save(state)
-            # The user sees the blocker too, not only the agent.
-            self.card(finding)
-            return {"action": "continue", "message": _hold_message(finding)}
+                cap = max(0, int(self.settings.review_max_holds))
+                used_now = state.calls.get(holds_key, 0)
+                if used_now < cap:
+                    state.calls[holds_key] = used_now + 1
+                    state.updated_at = self.clock()
+                    self.store.save(state)
+                    granted = True
+            if granted:
+                # The user sees the blocker too, not only the agent.
+                self.card(finding)
+                return {"action": "continue", "message": _hold_message(finding)}
 
         # Everything else reaches the model as a note on the next turn, through
         # the same path Active uses. Without this a concern is a card the model
@@ -1320,15 +1350,28 @@ class CoachPlugin(CommandsMixin):
             if reply.error:
                 return None
             return reply.finding
-        except Exception:
-            try:
-                with self._store_lock:
-                    fresh = self.store.load(session_id)
-                    fresh.updated_at = self.clock()
-                    self.store.save(fresh)
-            except Exception:
-                pass
+        except Exception as exc:  # noqa: BLE001 - fail-open is the contract
+            self._record_skip(session_id, f"review failed: {type(exc).__name__}")
             return None
+
+    def _record_skip(self, session_id: str, reason: str) -> None:
+        """Surface a swallowed skip: counter + last_error, best effort.
+
+        The plugin is fail-open by contract — no error stops the host — but
+        every oversight skip must leave a trace the user can find in
+        ``/coach status`` instead of vanishing into a logger.
+        """
+        try:
+            with self._store_lock:
+                state = self.store.load(session_id)
+                state.calls["review_skips"] = (
+                    int(state.calls.get("review_skips") or 0) + 1
+                )
+                state.last_error = str(reason)[:200]
+                state.updated_at = self.clock()
+                self.store.save(state)
+        except Exception:
+            pass
 
     def card(self, finding: Finding) -> None:
         """Post the user-visible card for a finding, when cards are enabled."""
@@ -1657,9 +1700,10 @@ def _primary_identity() -> tuple[str, str]:
         if isinstance(section, Mapping):
             model = str(section.get("default") or "")
             provider = str(section.get("provider") or "")
-            if "/" in model and not provider:
-                head, _, tail = model.partition("/")
-                provider, model = head, tail
+            if not provider:
+                head, tail, _ = split_provider_model(model)
+                if head:
+                    provider, model = head, tail
             return model, provider
     except Exception:
         pass

@@ -246,8 +246,9 @@ def test_host_ids_fill_defaults_and_win():
 # --- settings ---------------------------------------------------------------------
 
 
-def test_review_max_holds_minimum_is_one():
-    assert load_settings({"review_max_holds": 0}).review_max_holds == 1
+def test_review_max_holds_minimum_is_zero():
+    """0 is a valid mode (never hold) the UI offers and README documents."""
+    assert load_settings({"review_max_holds": 0}).review_max_holds == 0
 
 
 def test_settings_maxima_clamp():
@@ -517,3 +518,25 @@ def test_a_zero_budget_means_no_budget(tmp_path):
     state.spend_usd = 5.0
     plugin.store.save(state)
     assert json.loads(plugin.tool_ask({"question": "q"}, session_id="s"))["ok"] is True
+
+
+def test_status_sums_spend_across_sessions(tmp_path):
+    """spend_total_usd is profile-wide, matching the dashboard producer."""
+    plugin = _plugin(tmp_path)
+    first = plugin.store.load("s1")
+    first.spend_usd = 0.01
+    plugin.store.save(first)
+    second = plugin.store.load("s2")
+    second.spend_usd = 0.02
+    plugin.store.save(second)
+    status = plugin.status("s1")
+    assert status["spend_usd"] == 0.01
+    assert abs(status["spend_total_usd"] - 0.03) < 1e-9
+    assert set(status["spend_sessions"]) == {"s1", "s2"}
+
+
+def test_status_counts_review_skips(tmp_path):
+    plugin = _plugin(tmp_path)
+    assert plugin.status()["review_skips"] == 0
+    plugin._record_skip("current", "review failed: Boom")
+    assert plugin.status()["review_skips"] == 1

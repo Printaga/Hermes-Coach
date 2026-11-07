@@ -114,3 +114,18 @@ def test_a_huge_integer_in_a_session_file_does_not_raise(tmp_path):
     state = store.load("s")  # "never raises" is the contract
     assert state.spend_usd == 0.0
     assert state.session_id == "s"
+
+
+def test_corrupt_file_is_quarantined_for_diagnosis(tmp_path):
+    store = Store(tmp_path)
+    corrupt = store._path("bad")
+    corrupt.write_text("{nope", encoding="utf-8")
+    s = store.load("bad")
+    assert s.ledger == [] and s.last_error
+    # The unreadable file survives under a quarantined name,...
+    quarantined = list(tmp_path.glob("*.json.corrupt-*"))
+    assert len(quarantined) == 1
+    # ...must not poison later listings, and the next save makes a normal file.
+    assert store.sessions_on_disk() == []
+    store.save(store.load("bad"))
+    assert store.sessions_on_disk() == ["bad"]
