@@ -15,6 +15,7 @@ from __future__ import annotations
 import errno
 import os
 import re
+import stat
 from pathlib import Path
 
 __all__ = ["GUIDANCE_MAX_CHARS", "Guidance"]
@@ -29,7 +30,7 @@ _GLOBAL_SCOPES = {"global", "all", ""}
 # case-insensitively and with any inner whitespace: otherwise injected text
 # can close the block early and turn guidance into free-standing instructions,
 # or reopen a nested block the model treats as authoritative.
-_CLOSE_TAG = re.compile(r"</\s*coach-guidance\s*>", re.IGNORECASE)
+_CLOSE_TAG = re.compile(r"</\s*coach-guidance(?:\s[^>]*)?>", re.IGNORECASE)
 _OPEN_TAG = re.compile(r"<\s*coach-guidance(?:\s[^>]*)?>", re.IGNORECASE)
 
 
@@ -56,9 +57,12 @@ class Guidance:
         """
         path = self._path(scope, cwd)
         try:
-            if path.is_symlink():
-                # A cloned repo can carry COACH.md as a symlink to any readable
-                # file; reading it would put that file in every prompt.
+            st = path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(st.st_mode):
+                # A cloned repo can carry COACH.md as a symlink (an O_NOFOLLOW
+                # open already refuses that race) or as a special file like a
+                # FIFO, whose open would block the single review thread
+                # indefinitely; neither belongs in the prompt.
                 return ""
             # O_NOFOLLOW closes the swap between the check above and the open,
             # and the bounded read refuses to decode a huge file.

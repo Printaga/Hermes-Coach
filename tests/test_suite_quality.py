@@ -631,6 +631,45 @@ def test_guidance_strips_tag_variants_case_insensitively(tmp_path):
     assert "<coach-guidance >" not in block
 
 
+def test_guidance_strips_attribute_bearing_close_tags(tmp_path):
+    """Close tags with attributes must strip like open tags do, or the
+    injected variant closes the guidance block early (probe-confirmed)."""
+    from coach.guidance import _CLOSE_TAG, _OPEN_TAG
+
+    for tag in ("</coach-guidance x>", "</coach-guidance data-a=1>", "</ coach-guidance>"):
+        assert _CLOSE_TAG.sub("", tag) != tag, tag
+        assert _CLOSE_TAG.sub("", tag) == ""
+    for tag in ("<coach-guidance x>", "<coach-guidance data-a=1>"):
+        assert _OPEN_TAG.sub("", tag) == "", tag
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="mkfifo is POSIX-only")
+def test_guidance_refuses_a_fifo_at_coach_md(tmp_path):
+    """A non-regular file must yield '' instead of blocking os.open forever."""
+    import os as _os
+    import threading
+
+    from coach.guidance import Guidance
+
+    fifo = tmp_path / "COACH.md"
+    _os.mkfifo(fifo)
+    result: dict = {}
+    done = threading.Event()
+
+    def attempt() -> None:
+        try:
+            result["text"] = Guidance(tmp_path).read("project", str(tmp_path))
+        except BaseException as exc:  # pragma: no cover - diagnostics only
+            result["error"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    assert done.wait(5.0), "read() still blocked on the FIFO"
+    assert result.get("text") == ""
+
+
 _needs_readable_chmod = pytest.mark.skipif(
     sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
     reason="chmod 0o000 is not unreadable for root or on Windows",
