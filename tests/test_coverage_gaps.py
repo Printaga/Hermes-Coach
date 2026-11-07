@@ -572,13 +572,50 @@ def test_dashboard_grant_write_failure_is_a_500(tmp_path, monkeypatch):
 
 
 def test_dashboard_host_config_is_tolerant(monkeypatch):
+    """Load failure is None (write refusal), not an empty dict to persist."""
     _hermes_config_test(monkeypatch, load_config=lambda: ["not", "a", "mapping"])
-    assert api._load_host_config() == {}
+    assert api._load_host_config() is None
     _hermes_config_test(
         monkeypatch,
         load_config=lambda: (_ for _ in ()).throw(RuntimeError("locked")),
     )
-    assert api._load_host_config() == {}
+    assert api._load_host_config() is None
+
+
+def test_dashboard_transient_read_failure_never_persists(tmp_path, monkeypatch):
+    """A failed load raises config_read_failed instead of writing a partial config."""
+    app = app_for_tests(home=tmp_path)
+    app.state.config = None
+    saved: list = []
+    monkeypatch.setattr(api, "_save_host_config", lambda config: saved.append(config) or True)
+    _hermes_config_test(
+        monkeypatch,
+        load_config=lambda: (_ for _ in ()).throw(RuntimeError("locked")),
+    )
+    response = TestClient(app, base_url="http://127.0.0.1").post("/permissions/grant", json={})
+    assert response.status_code == 500
+    assert response.json()["detail"] == "config_read_failed"
+    assert saved == []
+
+
+def test_dashboard_failed_read_marker_survives(monkeypatch):
+    """The host's FailedConfigRead marker must reach save_config intact."""
+    saved: list = []
+
+    class FailedConfigRead(dict):
+        pass
+
+    _hermes_config_test(
+        monkeypatch,
+        load_config=lambda: FailedConfigRead({"kept": True}),
+        save_config=lambda config: saved.append(config),
+    )
+    loaded = api._load_host_config()
+    assert loaded is not None
+    api._apply_grant(loaded)
+    assert api._save_host_config(loaded)
+    assert type(saved[-1]).__name__ == "FailedConfigRead"
+    assert saved[-1]["kept"] is True
 
 
 def _hermes_config_test(monkeypatch, **functions):

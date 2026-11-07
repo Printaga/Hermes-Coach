@@ -194,6 +194,43 @@ def test_mutations_reject_a_foreign_origin(tmp_path):
     assert allowed.status_code == 200
 
 
+def test_loopback_guard_accepts_only_exact_loopback_hosts(tmp_path):
+    """Rebinding-class names and non-loopback hosts never pass the Host gate."""
+
+    from dashboard.plugin_api import _is_loopback_host
+
+    assert _is_loopback_host("localhost")
+    assert _is_loopback_host("127.0.0.1")
+    assert _is_loopback_host("::1")
+    assert not _is_loopback_host("127.0.0.1.nip.io")
+    assert not _is_loopback_host("127.gov")
+    assert not _is_loopback_host("127.0.0.2")
+    assert not _is_loopback_host(None)
+    assert not _is_loopback_host("")
+
+
+def test_mutations_reject_a_malformed_host_header():
+    """A malformed Host refuses with the pinned 403, not an accidental 500."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from dashboard.plugin_api import _guard_origin
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "PUT",
+            "path": "/config",
+            "query_string": b"",
+            "headers": [(b"host", b"[::1")],
+        }
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _guard_origin(request)
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail == "cross_origin_request"
+
+
 # ---------------------------------------------------------------------------
 # Dashboard API guards
 # ---------------------------------------------------------------------------

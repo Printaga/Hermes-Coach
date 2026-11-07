@@ -45,15 +45,24 @@ _SECRET_KEY = "decide_typesafe_api_key"
 # --------------------------------------------------------------------------
 
 
-def _load_host_config() -> dict[str, Any]:
-    """Read the host config; an unavailable host is an empty config."""
+def _load_host_config() -> dict[str, Any] | None:
+    """Read the host config; ``None`` when the host could not supply one.
+
+    The result is passed through unchanged. In particular the host's
+    ``FailedConfigRead`` marker (a dict subclass) must survive the
+    load→mutate→save round trip: ``dict(...)`` here would strip it and a
+    transient read failure would be saved back as a near-empty config,
+    clobbering the real one. Refusals are the host's job — ``save_config``
+    rejects data still carrying that marker — so we only fail loudly with
+    ``None`` and let ``_mutate_config`` refuse to write.
+    """
     try:
         from hermes_cli.config import load_config
 
         data = load_config()
     except Exception:
-        return {}
-    return copy.deepcopy(dict(data)) if isinstance(data, Mapping) else {}
+        return None
+    return data if isinstance(data, Mapping) else None
 
 
 def _save_host_config(config: Mapping[str, Any]) -> bool:
@@ -61,7 +70,7 @@ def _save_host_config(config: Mapping[str, Any]) -> bool:
     try:
         from hermes_cli.config import save_config
 
-        save_config(dict(config))
+        save_config(config if isinstance(config, dict) else dict(config))
     except Exception:
         return False
     return True
@@ -72,7 +81,7 @@ def _plugin_config(request: Request) -> Mapping[str, Any]:
     state_config = getattr(request.app.state, "config", None)
     if isinstance(state_config, Mapping):
         return state_config
-    return _load_host_config()
+    return _load_host_config() or {}
 
 
 def _coach_section(config: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -127,6 +136,11 @@ def _mutate_config(request: Request, mutate: Any) -> None:
         mutate(state_config)
         return
     config = _load_host_config()
+    if config is None:
+        # A read failure must never turn into a write: persisting the
+        # post-mutation partial dict here would replace the whole host
+        # config (the same refusal commands._grant implements).
+        raise HTTPException(status_code=500, detail="config_read_failed")
     mutate(config)
     if not _save_host_config(config):
         raise HTTPException(status_code=500, detail="config_write_failed")
@@ -315,30 +329,54 @@ def _guidance_payload(scope: str, cwd: str, path: Path, text: str) -> dict[str, 
     }
 
 
-_LOOPBACK_HOSTS = {"localhost", "::1"}
-_LOOPBACK_PREFIX = "127."
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def _is_loopback_host(name: str | None) -> bool:
     value = str(name or "").strip("[]").lower()
-    return value in _LOOPBACK_HOSTS or value.startswith(_LOOPBACK_PREFIX)
+    return value in _LOOPBACK_HOSTS
+
+
+def _parse_authority(value: str | None) -> str | None:
+    """Hostname of a ``Host`` header (authority form); ``None`` if malformed.
+
+    Nothing legitimate sends a malformed authority, so malformed input is
+    refused (fail-closed) rather than coerced by a bracket-strip.
+    """
+    if not value:
+        return None
+    try:
+        return urlparse(f"//{value}").hostname
+    except ValueError:
+        return None
+
+
+def _parse_url_host(value: str | None) -> str | None:
+    """Hostname of an ``Origin``-style absolute URL; ``None`` if malformed."""
+    if not value:
+        return None
+    try:
+        return urlparse(value).hostname
+    except ValueError:
+        return None
 
 
 def _guard_origin(request: Request) -> None:
     """Refuse a mutating request that a browser page on another origin sent.
 
-    The dashboard is a local, unauthenticated API. Comparing ``Origin`` to
-    ``Host`` is not a defence: under DNS rebinding both are the attacker's
-    hostname. The Host itself must be loopback, and a present Origin must be
-    loopback too; a request with no Origin is a local tool, which already has
-    the same filesystem access.
+    The dashboard is a local, unauthenticated API on a loopback bind: the
+    host's own Host-header middleware (which admits only exact loopback
+    Host values) stands in front of these routes, so the ``127.*`` prefix
+    acceptance this check used to carry ('127.0.0.1.nip.io' and friends) is
+    gone; both layers now use exact hostname membership. A present Origin
+    must also be loopback-named; a request with no Origin is a local tool,
+    which already has the same filesystem access.
     """
     host = request.headers.get("host") or ""
-    host_name = urlparse(f"//{host}").hostname if host else None
-    if not _is_loopback_host(host_name):
+    if not _is_loopback_host(_parse_authority(host)):
         raise HTTPException(status_code=403, detail="cross_origin_request")
     origin = str(request.headers.get("origin") or "").strip()
-    if origin and not _is_loopback_host(urlparse(origin).hostname):
+    if origin and not _is_loopback_host(_parse_url_host(origin)):
         raise HTTPException(status_code=403, detail="cross_origin_request")
 
 
