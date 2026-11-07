@@ -741,6 +741,21 @@ class CoachPlugin(CommandsMixin):
         if self.settings.debug_log_decisions:
             log.debug("coach: %s", message)
 
+    def _prompt_call(
+        self, state: Any, system: str, guidance: str, question: str
+    ) -> list[Any]:
+        """One bounded coach prompt; the ledger caps live here alone."""
+        return build_messages(
+            system=system,
+            guidance=guidance,
+            state=state,
+            question=question,
+            max_tokens=self.settings.ledger_max_tokens,
+            tool_result_chars=self.settings.ledger_max_tool_result_chars,
+            recent_turns=self.settings.ledger_max_recent_turns,
+            note_max_chars=self.settings.ledger_note_max_chars,
+        )
+
     def deliver(
         self,
         finding: Finding | None,
@@ -1072,16 +1087,7 @@ class CoachPlugin(CommandsMixin):
             guidance = (
                 self.guidance.system_block(cwd) if self.settings.guidance_enabled else ""
             )
-            messages = build_messages(
-                system=_SYSTEM,
-                guidance=guidance,
-                state=state,
-                question=None,
-                max_tokens=self.settings.ledger_max_tokens,
-                tool_result_chars=self.settings.ledger_max_tool_result_chars,
-                recent_turns=self.settings.ledger_max_recent_turns,
-                note_max_chars=self.settings.ledger_note_max_chars,
-            )
+            messages = self._prompt_call(state, _SYSTEM, guidance, None)
             reply = self.coach.ask(
                 messages,
                 mode="active",
@@ -1313,16 +1319,7 @@ class CoachPlugin(CommandsMixin):
                 f"Completion claim:\n{claim or '(none)'}\n\n"
                 f"Evidence:\n{evidence or '(no diff)'}"
             )
-            messages = build_messages(
-                system=_REVIEW_SYSTEM,
-                guidance=guidance,
-                state=state,
-                question=question,
-                max_tokens=self.settings.ledger_max_tokens,
-                tool_result_chars=self.settings.ledger_max_tool_result_chars,
-                recent_turns=self.settings.ledger_max_recent_turns,
-                note_max_chars=self.settings.ledger_note_max_chars,
-            )
+            messages = self._prompt_call(state, _REVIEW_SYSTEM, guidance, question)
             reply = self.coach.ask(
                 messages,
                 mode="review",
@@ -1476,16 +1473,7 @@ class CoachPlugin(CommandsMixin):
         guidance = (
             self.guidance.system_block(cwd) if self.settings.guidance_enabled else ""
         )
-        messages = build_messages(
-            system=_SYSTEM,
-            guidance=guidance,
-            state=state,
-            question=prompt,
-            max_tokens=self.settings.ledger_max_tokens,
-            tool_result_chars=self.settings.ledger_max_tool_result_chars,
-            recent_turns=self.settings.ledger_max_recent_turns,
-            note_max_chars=self.settings.ledger_note_max_chars,
-        )
+        messages = self._prompt_call(state, _SYSTEM, guidance, prompt)
         reply = self.coach.ask(
             messages,
             mode="consult",

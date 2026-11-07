@@ -154,16 +154,16 @@ def _coach_root(config: dict[str, Any]) -> dict[str, Any]:
 
 def _apply_grant(config: dict[str, Any]) -> None:
     """Set both trust flags; the host still owns the actual write."""
-    llm = _mapping_section(_coach_root(config), "llm")
-    llm["allow_provider_override"] = True
-    llm["allow_model_override"] = True
+    from coach.trustflags import set_flags
+
+    set_flags(config, True)
 
 
 def _apply_revoke(config: dict[str, Any]) -> None:
     """Clear both trust flags; the host still owns the actual write."""
-    llm = _mapping_section(_coach_root(config), "llm")
-    llm["allow_provider_override"] = False
-    llm["allow_model_override"] = False
+    from coach.trustflags import set_flags
+
+    set_flags(config, False)
 
 
 def _canonical_values(raw: Mapping[str, Any]) -> dict[str, Any]:

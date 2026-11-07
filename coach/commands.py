@@ -509,41 +509,15 @@ class CommandsMixin:
 
     def _grant(self) -> str:
         """Write the host's model-override trust flags, best effort."""
-        try:
-            from hermes_cli.config import load_config, save_config
+        from .trustflags import write
 
-            config = load_config() or {}
-            entries = config.setdefault("plugins", {}).setdefault("entries", {})
-            llm = entries.setdefault("coach", {}).setdefault("llm", {})
-            llm["allow_provider_override"] = True
-            llm["allow_model_override"] = True
-            save_config(config)
-        except Exception as exc:
-            return (
-                "Could not grant model overrides automatically "
-                f"({type(exc).__name__}). Set plugins.entries.coach.llm."
-                "allow_provider_override and allow_model_override to true."
-            )
-        return "Granted per-mode model overrides for the coach plugin."
+        return write(True)
 
     def _revoke(self) -> str:
         """Clear the host's model-override trust flags, best effort."""
-        try:
-            from hermes_cli.config import load_config, save_config
+        from .trustflags import write
 
-            config = load_config() or {}
-            entries = config.setdefault("plugins", {}).setdefault("entries", {})
-            llm = entries.setdefault("coach", {}).setdefault("llm", {})
-            llm["allow_provider_override"] = False
-            llm["allow_model_override"] = False
-            save_config(config)
-        except Exception as exc:
-            return (
-                "Could not revoke model overrides automatically "
-                f"({type(exc).__name__}). Set plugins.entries.coach.llm."
-                "allow_provider_override and allow_model_override to false."
-            )
-        return "Revoked per-mode model overrides for the coach plugin."
+        return write(False)
 
     def _forget(self, session_id: str) -> str:
         """Delete this session's state file and review log; never raise."""
