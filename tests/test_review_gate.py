@@ -363,3 +363,43 @@ def test_record_skip_counts_and_names_the_reason(tmp_path):
     state = p.store.load("s")
     assert state.calls.get("review_skips") == 2
     assert "gate skipped" in state.last_error
+
+
+def test_fallback_mismatch_leaves_a_counter(tmp_path):
+    """The host may silently serve a different model; the reply is discarded,
+    so the recurrence must be countable instead of invisible."""
+    from types import SimpleNamespace
+
+    from coach.advisor import Coach
+
+    served = SimpleNamespace(
+        text="",
+        usage=SimpleNamespace(
+            input_tokens=1, output_tokens=1, cache_read_tokens=0, cache_write_tokens=0
+        ),
+        parsed={
+            "severity": "nit",
+            "title": "t",
+            "body": "b",
+            "evidence": "e",
+            "fix": "f",
+        },
+        model="served-elsewhere",
+        provider="other-provider",
+    )
+
+    class ServedFallback:
+        def complete_structured(self, **kwargs):
+            return served
+
+    p = _p(tmp_path, coach_model={"provider": "p", "model": "m"})
+    p.coach = Coach(ServedFallback(), p.settings)
+
+    finding = p.review_now(
+        session_id="s", turn_id="t1", request="r", claim="c", evidence="diff"
+    )
+    assert finding is None
+    state = p.store.load("s")
+    assert state.calls.get("review_fallbacks") == 1
+    assert state.last_error == "fallback_mismatch"
+    assert p.status("s")["review_fallbacks"] == 1

@@ -142,6 +142,86 @@ def _safe_paths(root: Path, paths: Sequence[str]) -> list[str]:
     return safe
 
 
+def _toplevel(directory: Path, runner: Callable[..., object], timeout: float) -> str:
+    """The git toplevel containing ``directory``, or ``""`` outside any repo."""
+    result = _git(runner, directory, [*_HARDENED, "rev-parse", "--show-toplevel"], timeout=timeout)
+    if result is None or result.returncode != 0:
+        return ""
+    return _stdout(result).strip()
+
+
+def _discover_repo(
+    root: Path,
+    safe: Sequence[str],
+    runner: Callable[..., object],
+    remaining: Callable[[], float],
+) -> tuple[Path, list[str], list[str]]:
+    """Find the git repo under which most reported paths actually live.
+
+    The plugin's cwd is not always the worktree the change set belongs to:
+    agents whose cwd sits above their repo (``/home/user`` for a project in
+    ``~/Development/...``) produced reviews whose evidence said "git was
+    unavailable" because ``git status`` ran in the home directory. Discovery
+    groups the same reported paths by their enclosing api toplevel, owned by
+    the group with the most paths; containment still guards every read, so
+    the trust boundary is unchanged.
+    """
+    counts: dict[str, int] = {}
+    ordered: list[str] = []
+    memo: dict[str, str] = {}
+    for rel in safe:
+        try:
+            target = (root / rel).resolve()
+        except (OSError, ValueError, RuntimeError):
+            continue
+        direction = target.parent if target.is_file() else target
+        key = str(direction)
+        if key in memo:
+            top = memo[key]
+        else:
+            top = _toplevel(direction, runner, min(_GIT_TIMEOUT, remaining()))
+            memo[key] = top
+        if not top:
+            continue
+        try:
+            target.relative_to(Path(top))
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if top not in counts:
+            counts[top] = 0
+            ordered.append(top)
+        counts[top] += 1
+    if not counts:
+        return root, [], []
+    ranked = sorted(ordered, key=lambda top: (-counts[top], top))
+    best = ranked[0]
+    others: list[str] = []
+    rels: list[str] = []
+    seen: set[str] = set()
+    for top in ranked:
+        for rel in safe:
+            try:
+                target = (root / rel).resolve()
+                inner = target.relative_to(Path(top)).as_posix()
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if inner in seen or not inner:
+                continue
+            if top == best:
+                seen.add(inner)
+                rels.append(inner)
+            elif counts[top] > 0:
+                others.append(f"{inner} (in {top})")
+    return Path(best), rels, others
+
+
+_DISCOVERY_NOTE = (
+    "--- repo discovery ---\n"
+    "The plugin's cwd was not inside a git repo, so collection ran in the\n"
+    "repo found from the report's paths: {root}\n{extra}"
+)
+
+
 def _git(
     run: Callable[..., object],
     root: Path,
@@ -567,6 +647,41 @@ def collect(
 
     base = str(base or "").strip()
     gathered = _gather(root, safe, base, runner, reader, remaining)
+    use_root, use_safe = root, safe
+    discovery_head = ""
+    if gathered is None:
+        # git is not usable under the plugin's cwd. The change set usually
+        # still lives in a repo beneath it (agent cwd = home directory,
+        # project = ~/Development/...): find that repo from the reported
+        # paths and collect there instead of degrading to file-head reads.
+        found, rels, others = _discover_repo(root, safe, runner, remaining)
+        if found != root and rels:
+            gathered = _gather(found, rels, "", runner, reader, remaining)
+            if gathered is not None:
+                use_root, use_safe = found, rels
+                # The turn base was snapshotted in the plugin's repo; it is
+                # meaningless for a discovered one.
+                base = ""
+                try:
+                    prefix = str(found.relative_to(root).as_posix()) + "/"
+                except (OSError, ValueError, RuntimeError):
+                    prefix = ""
+                extra = (
+                    "Paths outside this repo were listed but not diffed:\n"
+                    + "\n".join(others[:10])
+                    if others
+                    else ""
+                )
+                mapping = (
+                    f"Report these repo-relative paths against the claim with the\n"
+                    f"prefix `{prefix}` (the report named them under the plugin's).\n"
+                    if prefix
+                    else "The report named these paths by absolute location.\n"
+                )
+                discovery_head = _DISCOVERY_NOTE.format(
+                    root=found,
+                    extra=mapping + (f"{extra}\n" if extra else ""),
+                )
     if gathered is None:
         # git is unusable here: still say what was read and that the list is
         # the host's report, never a complete change set.
@@ -591,8 +706,8 @@ def collect(
 
     files = _file_list(
         runner,
-        root,
-        safe,
+        use_root,
+        use_safe,
         base=base if gathered.base_ok else "",
         untracked=gathered.untracked,
         remaining=remaining,
@@ -604,7 +719,7 @@ def collect(
         # host's path list, or a commit again reads as smaller than it is.
         stat = _diff(
             runner,
-            root,
+            use_root,
             f"{base}..HEAD",
             (),
             stat=True,
@@ -612,7 +727,7 @@ def collect(
         )
     else:
         stat = _diff(
-            runner, root, "HEAD", safe, stat=True,
+            runner, use_root, "HEAD", use_safe, stat=True,
             timeout=min(_GIT_TIMEOUT, remaining()),
         )
 
@@ -635,4 +750,6 @@ def collect(
     rest = "\n\n".join(body)
     truncated = bool(rest) and (sum(len(section) for section in header) + len(rest) + 48 > limit)
     header.append(_coverage(listed, len(safe), limit, git=True, truncated=truncated))
+    if discovery_head:
+        header.append(discovery_head)
     return _assemble(header, body, limit)

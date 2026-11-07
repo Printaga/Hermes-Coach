@@ -414,3 +414,25 @@ def test_the_file_list_announces_its_cap():
         range_names=rows,
     )
     assert "[+5 more files]" in out
+
+
+@needs_git
+def test_repo_discovered_when_plugin_cwd_sits_above_it(tmp_path):
+    """Agent cwd = home, project = a repo beneath it: evidence must come from
+    git in the project, not degrade to host-reported file heads. The audit
+    found every review of such turns labeled 'git was unavailable'."""
+    outer = tmp_path / "home"
+    project = outer / "Development" / "project"
+    project.mkdir(parents=True)
+    _repo(project)
+    (project / "f.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(project, "base")
+    (project / "f.py").write_text("x = 2\n", encoding="utf-8")
+
+    text = collect(str(outer), ["Development/project/f.py"])
+    assert "repo discovery" in text
+    assert "Development/project/" in text
+    # git evidence, not the degraded host-reported list
+    assert "git was unavailable" not in text
+    assert "uncommitted" in text
+    assert "-x = 1" in text and "+x = 2" in text
