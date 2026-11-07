@@ -365,9 +365,12 @@ def test_record_skip_counts_and_names_the_reason(tmp_path):
     assert "gate skipped" in state.last_error
 
 
-def test_fallback_mismatch_leaves_a_counter(tmp_path):
-    """The host may silently serve a different model; the reply is discarded,
-    so the recurrence must be countable instead of invisible."""
+def test_a_host_resolved_review_model_keeps_the_finding(tmp_path):
+    """An auto-router or host fallback answers as a concrete model.
+
+    That is normal, so the verdict is kept and attributed to the model that
+    actually served it instead of being discarded as a mismatch.
+    """
     from types import SimpleNamespace
 
     from coach.advisor import Coach
@@ -384,25 +387,22 @@ def test_fallback_mismatch_leaves_a_counter(tmp_path):
             "evidence": "e",
             "fix": "f",
         },
-        model="served-elsewhere",
-        provider="other-provider",
+        model="reflection/beam-free",
+        provider="kilocode",
     )
 
-    class ServedFallback:
+    class ServedElsewhere:
         def complete_structured(self, **kwargs):
             return served
 
     p = _p(tmp_path, coach_model={"provider": "p", "model": "m"})
-    p.coach = Coach(ServedFallback(), p.settings)
+    p.coach = Coach(ServedElsewhere(), p.settings)
 
     finding = p.review_now(
         session_id="s", turn_id="t1", request="r", claim="c", evidence="diff"
     )
-    assert finding is None
-    state = p.store.load("s")
-    assert state.calls.get("review_fallbacks") == 1
-    assert state.last_error == "fallback_mismatch"
-    assert p.status("s")["review_fallbacks"] == 1
+    assert finding is not None and finding.title == "t"
+    assert p.store.load("s").last_error == ""
 
 
 def test_collect_evidence_uses_the_configured_budget(tmp_path, monkeypatch):

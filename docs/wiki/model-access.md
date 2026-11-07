@@ -29,12 +29,13 @@ sequenceDiagram
 |---|---|
 | `check(mode)` | `unconfigured` with no shared model; `same_model` when the resolved pair equals the primary (unless `skip_same_model` is off) |
 | Provider failure | `provider_error: <ExceptionType>`; the turn continues |
-| Fallback | If the host reports a different provider or model than requested — including an empty pair — the reply is discarded as `fallback_mismatch`, so a silent fallback cannot make the coach review the primary model's work |
+| Model resolution | An auto-router id or host fallback answers as a concrete model; the reply is accepted, attributed and priced as the served model — exact equality with the requested pair is not required |
 | Pricing | Injected `cost_fn` in tests; otherwise `agent.usage_pricing.estimate_usage_cost`, guarded to `0.0` |
 | Deadline | Caller-supplied: 45 s for Active/Consult, 20 s under the Review hook (the host bounds hooks at 30 s) |
 
-The model identity check is strict on purpose: Hermes fills `provider` and
-`model` on every plugin result, so an empty or differing pair is abnormal.
+The reply always names the model that served it (`provider`, `model`), and the
+cost follows that model. An auto-router such as `kilo-auto/free` never reports
+its own id, so equality is the wrong check.
 
 ## Decisions
 

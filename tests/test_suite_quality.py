@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from coach.advisor import _content_text, _differs, _split_messages
+from coach.advisor import _content_text, _split_messages
 from coach.commands import _bool_arg, _coerce_setting, _parse_model
 from coach.findings import Finding
 from coach.jev import _inner, _probabilities, decide
@@ -128,10 +128,6 @@ def test_advisor_content_helpers_flatten_roles_and_diffs():
     )
     assert system == "S"
     assert body == "U\n\nassistant: A"
-    assert _differs("", "") is False
-    assert _differs("", "anything") is True
-    assert _differs("OpenRouter/M", "openrouter/m") is False
-    assert _differs("other", "openrouter/m") is True
 
 
 def test_jev_helpers_prefer_named_answers_and_valid_scores():

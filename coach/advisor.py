@@ -1,8 +1,10 @@
 """One LLM call for the coach plugin, with deadline, usage and cost.
 
-The client is deliberately fail-open: an unconfigured coach, a provider error
-or a silent host fallback all come back as a :class:`CoachReply` with an
-``error`` instead of an exception, so a bad turn never takes down the host.
+The client is deliberately fail-open: an unconfigured coach or a provider error
+comes back as a :class:`CoachReply` with an ``error`` instead of an exception,
+so a bad turn never takes down the host. A host that resolves the requested
+model to a concrete one (an auto-router, or a fallback) is normal: the reply is
+accepted, attributed and priced as served.
 """
 
 from __future__ import annotations
@@ -74,20 +76,6 @@ def _split_messages(
         else:
             body_parts.append(f"{role}: {text}")
     return "\n\n".join(system_parts), "\n\n".join(body_parts)
-
-
-def _differs(reported: str, requested: str) -> bool:
-    """True when the host did not confirm the provider or model we asked for.
-
-    An empty report is also a mismatch: Hermes always reports both fields, so
-    a blank means the reply is unattributed, and silently trusting it would
-    defeat the same-model guard. A false mismatch only discards one review
-    (visible in the logs); a missed fallback would review the model's own
-    work as if it were a second opinion.
-    """
-    if not requested.strip():
-        return False
-    return reported.strip().lower() != requested.strip().lower()
 
 
 class Coach:
@@ -192,15 +180,10 @@ class Coach:
             cost, estimated = self._price(
                 actual_model or model, usage, actual_provider or provider
             )
-            if _differs(actual_model, model) or _differs(actual_provider, provider):
-                return CoachReply(
-                    provider=actual_provider,
-                    model=actual_model,
-                    usage=usage,
-                    cost_usd=cost,
-                    cost_estimated=estimated,
-                    error="fallback_mismatch",
-                )
+            # A host may resolve an auto-router id (or serve a fallback) to a
+            # different concrete model. That is normal, so the reply is kept
+            # and attributed/priced as served instead of demanding the exact
+            # pair; the caller sees which model actually answered.
             return CoachReply(
                 text=text,
                 finding=parse_finding(parsed, text),

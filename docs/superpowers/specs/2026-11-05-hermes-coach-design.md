@@ -179,10 +179,11 @@ hermes-coach/
    and enqueues a review. Hook returns immediately.
 3. Worker: single-flight. If a review is running, keep only the newest queued
    turn; drop older ones. Checks the budget before calling. Deadline 45 s.
-4. On completion: verify the response came from the requested provider and
-   model — a failed call can fall back to the primary model. A mismatch is
-   recorded as `fallback_mismatch` and discarded. Then normalise the finding;
-   if `none`, record and stop, otherwise store it and deliver per policy.
+4. On completion: accept the reply as attributed. An auto-router id (or a
+   host-side fallback) resolves to a concrete model, so the review records and
+   prices the model that served it instead of demanding the requested pair.
+   Then normalise the finding; if `none`, record and stop, otherwise store it
+   and deliver per policy.
 5. Ambient notes are held per session and returned by the next `pre_llm_call`
    as `{"context": ...}`, once, then marked delivered. A card is posted at
    review time.
@@ -400,9 +401,9 @@ any other call. Session spend is the sum, persisted with the session state.
 - Guidance writes: global to `$HERMES_HOME/coach/guidance.md`; project to
   `<focused cwd>/COACH.md` only when that directory was recorded from a real
   session, never a symlink target, never a new directory, capped at 8k chars.
-- A coach response whose provider/model differs from the requested pair is
-  discarded as `fallback_mismatch`, so a silent fallback can never make the
-  coach review the primary model's own work.
+- An auto-router or host fallback answers as a concrete model; the reply is
+  accepted, attributed and priced as served. The same-model refusal still runs
+  on the configured pair before the call.
 - `coach_ask` and `coach_decide` refuse in child sessions, tracked through the
   `subagent_start` / `subagent_stop` hooks. `allow_in_subagents` (config only)
   turns that off.

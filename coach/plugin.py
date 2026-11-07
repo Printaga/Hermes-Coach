@@ -736,7 +736,6 @@ class CoachPlugin(CommandsMixin):
             "pending_notes": len(state.pending),
             "sessions": len(self.store.sessions_on_disk()),
             "review_skips": int(state.calls.get("review_skips") or 0),
-            "review_fallbacks": int(state.calls.get("review_fallbacks") or 0),
             "decide_unpriced": int(state.calls.get("decide_unpriced") or 0),
             "last_error": state.last_error,
             "paused": self._paused,
@@ -1103,12 +1102,6 @@ class CoachPlugin(CommandsMixin):
             def commit(state: Any) -> None:
                 turn = _find_turn(state, tid)
                 _charge(state, reply.cost_usd)
-                if reply.error == "fallback_mismatch":
-                    # The host served a different model and the reply was
-                    # discarded; count it or the recurrence is invisible.
-                    state.calls["review_fallbacks"] = (
-                        int(state.calls.get("review_fallbacks") or 0) + 1
-                    )
                 if turn is not None:
                     turn["reviewed"] = True
                     turn["digest"] = digest
@@ -1356,10 +1349,6 @@ class CoachPlugin(CommandsMixin):
             )
             def commit(state: Any) -> None:
                 _charge(state, reply.cost_usd)
-                if reply.error == "fallback_mismatch":
-                    state.calls["review_fallbacks"] = (
-                        int(state.calls.get("review_fallbacks") or 0) + 1
-                    )
                 state.last_error = reply.error
 
             self._reload_and_save(session_id, commit)

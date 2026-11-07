@@ -36,11 +36,14 @@ def test_passes_model_and_provider_and_prices_the_call():
     assert r.text == "advice" and r.cost_usd == 0.0042
     assert llm.calls[0]["model"] == "x" and llm.calls[0]["provider"] == "openrouter"
 
-def test_fallback_to_primary_is_discarded():
-    llm = FakeLlm(Result("advice", provider="openrouter", model="primary"))
+def test_a_host_resolved_model_is_accepted_and_attributed():
+    # An auto-router (or a host fallback) answers as a concrete model; that is
+    # normal, so the reply is kept and names the model that actually served it.
+    llm = FakeLlm(Result("advice", provider="kilocode", model="reflection/beam-free"))
     coach = Coach(llm, _settings(), primary_model="primary", primary_provider="openrouter")
     r = coach.ask([{"role": "user", "content": "q"}], mode="consult")
-    assert r.error == "fallback_mismatch" and r.text == ""
+    assert r.error == "" and r.text == "advice"
+    assert (r.provider, r.model) == ("kilocode", "reflection/beam-free")
 
 def test_same_model_as_primary_is_refused():
     coach = Coach(FakeLlm(Result("x")), _settings(), primary_model="x", primary_provider="openrouter")
