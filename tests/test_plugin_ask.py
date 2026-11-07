@@ -1,6 +1,8 @@
 # tests/test_plugin_ask.py
 import json
 
+import pytest
+
 from coach.guidance import Guidance
 from coach.plugin import CoachPlugin
 from coach.settings import load_settings
@@ -83,7 +85,9 @@ def test_host_ids_reach_the_tool(tmp_path):
     out = json.loads(p.tool_ask({"question": "q"}, session_id="s1", task_id="task-1"))
     assert out["ok"] is True
     state = p.store.load("s1")
-    assert state.calls.get("task-1") == 1
+    # Consult keeps its own namespace so a turn id can never alias a global
+    # telemetry counter (review_skips, decide_unpriced, ...).
+    assert state.calls.get("consult:task-1") == 1
 
 
 def test_hook_model_becomes_the_same_model_baseline(tmp_path):
@@ -135,3 +139,21 @@ def test_pre_llm_call_records_the_working_directory(tmp_path):
     p.on_pre_llm_call({"session_id": "s", "turn_id": "t"})
     data = json.loads((tmp_path / "coach" / "state.json").read_text())
     assert str(tmp_path) in data["seen_cwds"]
+
+
+def test_a_raised_consult_call_releases_the_reservation(tmp_path, monkeypatch):
+    p = _plugin(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(p.coach, "ask", boom)
+    with pytest.raises(RuntimeError):
+        p._ask({"question": "q", "turn_id": "t1", "session_id": "s"})
+    assert p.store.load("s").calls.get("consult:t1", 0) == 0
+
+
+def test_a_turn_named_like_a_counter_does_not_corrupt_status(tmp_path):
+    p = _plugin(tmp_path)
+    assert json.loads(p.tool_ask({"question": "q", "turn_id": "review_skips"}))["ok"] is True
+    assert p.status()["review_skips"] == 0

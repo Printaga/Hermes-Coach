@@ -48,6 +48,11 @@ DEFAULTS: dict[str, Any] = {
     "review_enabled": True,
     "review_authority": "hold_once",
     "review_max_holds": 1,
+    # How many characters of changed-file patch the completion review may see.
+    # 8 000 was too small for multi-file turns: the review then reported the
+    # truncation as "unverifiable" instead of judging the work. 128 000 covers
+    # every observed commit in this repo's history except one 141k refactor.
+    "review_evidence_max_chars": 128000,
     "decide_enabled": False,
     "decide_backend": "jev-openrouter",
     "decide_model": "typesafe/jev-1.14",
@@ -179,6 +184,7 @@ class Settings:
     review_enabled: bool
     review_authority: str
     review_max_holds: int
+    review_evidence_max_chars: int
     decide_enabled: bool
     decide_backend: str
     decide_model: str
@@ -282,6 +288,7 @@ _MINIMUMS: dict[str, float] = {
     # 0 is a valid mode: the gate never holds (used < max(0, holds)); the
     # desktop page offers it and README troubleshooting points to it.
     "review_max_holds": 0,
+    "review_evidence_max_chars": 2000,
     "decide_max_calls_per_turn": 1,
     "consult_max_calls_per_turn": 1,
     "delivery_max_corrective_per_request": 0,
@@ -299,6 +306,7 @@ _MAXIMUMS: dict[str, float] = {
     "max_reply_tokens": 2000,
     "active_every_n": 100,
     "review_max_holds": 10,
+    "review_evidence_max_chars": 160000,
     "decide_max_calls_per_turn": 10,
     "consult_max_calls_per_turn": 10,
     "delivery_max_corrective_per_request": 10,
@@ -353,6 +361,10 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
         ),
         review_max_holds=_as_int(
             data.get("review_max_holds"), DEFAULTS["review_max_holds"]
+        ),
+        review_evidence_max_chars=_as_int(
+            data.get("review_evidence_max_chars"),
+            DEFAULTS["review_evidence_max_chars"],
         ),
         decide_enabled=_as_bool(
             data.get("decide_enabled"), DEFAULTS["decide_enabled"]

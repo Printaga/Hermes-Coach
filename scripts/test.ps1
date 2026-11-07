@@ -1,6 +1,6 @@
 # Run the same two gates as scripts/test.sh on Windows.
 $ErrorActionPreference = "Stop"
-Set-Location (Join-Path $PSScriptRoot "..")
+Push-Location (Join-Path $PSScriptRoot "..")
 
 $python = $env:COACH_PYTHON
 if (-not $python) { $python = "python" }
@@ -30,4 +30,5 @@ if ($env:SKIP_DESKTOP_CHECK -ne "1") {
   Write-Warning "desktop-page check skipped (SKIP_DESKTOP_CHECK=1)"
 }
 
+Pop-Location
 exit $status

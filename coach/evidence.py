@@ -122,9 +122,15 @@ def _safe_paths(root: Path, paths: Sequence[str]) -> list[str]:
             # The host records absolute paths; accept one only when it resolves
             # inside the project, and pass it to git as a relative path.
             try:
-                safe.append(candidate.resolve().relative_to(base).as_posix())
+                value = candidate.resolve().relative_to(base).as_posix()
             except (OSError, ValueError, RuntimeError):
                 continue
+            if value in seen:
+                continue
+            seen.add(value)
+            if len(safe) >= _MAX_PATHS:
+                break
+            safe.append(value)
             continue
         if ".." in candidate.parts:
             continue
@@ -210,7 +216,7 @@ def _discover_repo(
             if top == best:
                 seen.add(inner)
                 rels.append(inner)
-            elif counts[top] > 0:
+            else:
                 others.append(f"{inner} (in {top})")
     return Path(best), rels, others
 
@@ -492,9 +498,18 @@ def _assemble(header: Sequence[str], body: Sequence[str], limit: int) -> str:
         if kept:
             head = "\n\n".join(kept)
         elif sections:
-            # Nothing fits whole: keep the head of the highest-priority block
-            # (the coverage line names the counts) rather than nothing at all.
-            head = sections[-1][: max(0, limit - 20)].rstrip() + "\n[clipped]"
+            # Nothing fits whole: keep the head of the coverage block — it
+            # names the counts — rather than whichever block happens to sit
+            # last (the discovery note may follow it).
+            coverage = next(
+                (
+                    section
+                    for section in sections
+                    if section.startswith("--- coverage ---")
+                ),
+                sections[-1],
+            )
+            head = coverage[: max(0, limit - 20)].rstrip() + "\n[clipped]"
     rest = "\n\n".join(section for section in body if section)
     text = f"{head}\n\n{rest}" if rest else head
     if len(text) <= limit:

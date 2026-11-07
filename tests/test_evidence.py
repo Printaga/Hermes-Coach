@@ -61,3 +61,11 @@ def test_absolute_path_outside_the_project_is_refused(tmp_path):
     def fake_run(argv, **kw):
         return subprocess.CompletedProcess(argv, 128, "", "")
     assert collect(str(tmp_path), [str(outside)], run=fake_run) == ""
+
+
+def test_absolute_and_relative_spellings_of_one_path_are_deduped(tmp_path):
+    from coach.evidence import _safe_paths
+
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    assert _safe_paths(tmp_path, [str(target), "a.py"]) == ["a.py"]

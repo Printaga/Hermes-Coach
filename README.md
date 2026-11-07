@@ -98,7 +98,7 @@ and the child-session refusal; the agent does not need to send them.
 |---|---|
 | `/coach status` | model, modes, spend, pending notes |
 | `/coach last [n]` | the last advice (or the last `n`) for this session |
-| `/coach log [n]` | recent review findings for this session |
+| `/coach log [n] [full]` | recent reviews/decisions: turn, time, body, evidence, fix, question/options |
 | `/coach active on\|off` | per-turn review |
 | `/coach review on\|off` | completion review |
 | `/coach decide on\|off` | the decide tool |
@@ -150,8 +150,10 @@ the commits the turn produced plus any worktree changes plus new files, led by
 a `git --stat` summary. Committing before saying "done" therefore no longer
 hides the work from the reviewer. When the range is unusable (rebase, amended
 history, no recorded base) the review falls back to the worktree and says so.
-The evidence block is capped at 8000 characters; past that the stat list
-survives and the patch is clipped.
+The evidence block is capped by `review_evidence_max_chars` (128 000 characters
+by default; adjustable on the Completion review card or with
+`/coach set review_evidence_max_chars <n>`); past that the stat list and file
+list survive and the patch is clipped.
 
 The per-turn (Active) review sees messages and one-line tool cards only, never
 file contents, and its prompt says so — completion evidence belongs to the
@@ -186,9 +188,11 @@ reprints the most recent one, and `/coach pending` lists undelivered notes
 with their body. Review findings
 and decisions are cards plus one line each in
 `$HERMES_HOME/coach/logs/<session>.jsonl` (timestamp, kind, severity, title,
-body, evidence, fix; trimmed to the newest 200). `/coach log` prints them for
-the current session, and **Status → Recent reviews** shows them in the Desktop
-page, scoped to **This chat** or **All sessions**.
+body, evidence, fix; decisions also carry the question, options and rationale;
+trimmed to the newest 200). `/coach log` prints those records with the context
+they carry, and `/coach log <n> full` prints fields longer than the display
+cap whole. **Status → Recent reviews** shows them in the Desktop page, scoped
+to **This chat** or **All sessions**.
 
 ## Troubleshooting
 

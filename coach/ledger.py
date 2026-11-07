@@ -206,7 +206,7 @@ def _turn_lines(
 
 
 def _fit_to_budget(lines: list[dict[str, Any]], budget: int) -> str:
-    """Drop by tier until the text fits, then cut the tail on a line boundary.
+    """Drop by tier until the text fits, then cut the front on a line boundary.
 
     Tier order is the policy: cards go first, then assistant text, then turn
     headings; user history survives longest because the reviewer needs the
@@ -217,8 +217,19 @@ def _fit_to_budget(lines: list[dict[str, Any]], budget: int) -> str:
         return "\n".join(line["text"] for line in lines if not line["dropped"])
 
     # Track the joined length incrementally: re-rendering per dropped line is
-    # O(n^2) on a ledger with hundreds of lines.
-    total = sum(len(line["text"]) + 1 for line in lines)
+    # O(n^2) on a ledger with hundreds of lines. render() joins kept lines
+    # with "\n", so n kept lines contribute n-1 separators, not n.
+    kept = len(lines)
+    total = sum(len(line["text"]) for line in lines) + max(0, kept - 1)
+
+    def drop(line: dict[str, Any]) -> None:
+        nonlocal kept, total
+        line["dropped"] = True
+        # Dropping from n>1 kept lines removes its text and one separator;
+        # the last remaining line has no separator to remove.
+        total -= len(line["text"]) + (1 if kept > 1 else 0)
+        kept -= 1
+
     for kind in ("card", "assistant", "heading"):
         if total <= budget:
             break
@@ -226,8 +237,7 @@ def _fit_to_budget(lines: list[dict[str, Any]], budget: int) -> str:
             if total <= budget:
                 break
             if line["kind"] == kind and not line["dropped"]:
-                line["dropped"] = True
-                total -= len(line["text"]) + 1
+                drop(line)
     ledger_text = render()
 
     kept_users = sum(
@@ -238,9 +248,8 @@ def _fit_to_budget(lines: list[dict[str, Any]], budget: int) -> str:
             if total <= budget or kept_users <= 1:
                 break
             if line["kind"] == "user" and not line["dropped"]:
-                line["dropped"] = True
+                drop(line)
                 kept_users -= 1
-                total -= len(line["text"]) + 1
         ledger_text = render()
 
     if len(ledger_text) <= budget:

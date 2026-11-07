@@ -710,6 +710,15 @@ function BehaviourPage(props) {
         max: 10,
         onChange: (next) => state.save("review_max_holds", next),
       }),
+      h(NumberField, {
+        label: "Diff budget for the review (characters)",
+        hint: "How much changed-file patch the review may read. Past this the stat and file list survive and the patch is clipped, which can make a large change look unverifiable.",
+        value: values.review_evidence_max_chars,
+        min: 2000,
+        max: 160000,
+        step: 1000,
+        onChange: (next) => state.save("review_evidence_max_chars", next),
+      }),
     ),
     h(
       Card,
@@ -923,11 +932,23 @@ function GuidancePage(props) {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
   const seq = useRef(0)
+  // Unmount guard: a fetch or PUT that settles after the tab is left must not
+  // call setState on a dead component.
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
 
   const load = async (nextScope) => {
     // Bump first: an in-flight fetch from the previous scope must not land
     // after this early return cleared the editor.
     const id = ++seq.current
+    // A scope switch abandons the old save indicator: the save that was in
+    // flight now belongs to the editor the user left.
+    setSaving(false)
     if (nextScope === "project" && !cwd) {
       setText("")
       setPath("")
@@ -940,13 +961,13 @@ function GuidancePage(props) {
     try {
       const query = `/guidance?scope=${encodeURIComponent(nextScope)}&cwd=${encodeURIComponent(cwd || "")}`
       const data = unwrap(await ctx.rest(query))
-      if (seq.current !== id) return  // a newer scope won
+      if (!alive.current || seq.current !== id) return  // a newer scope won
       setText(data && typeof data.text === "string" ? data.text : "")
       setPath(data && data.path ? String(data.path) : "")
     } catch (err) {
-      if (seq.current === id) setNotice(messageOf(err))
+      if (alive.current && seq.current === id) setNotice(messageOf(err))
     } finally {
-      if (seq.current === id) setLoading(false)
+      if (alive.current && seq.current === id) setLoading(false)
     }
   }
 
@@ -978,18 +999,24 @@ function GuidancePage(props) {
       if (seq.current !== id) {
         // The scope or cwd changed (and reloaded) while the PUT was in
         // flight: the write landed, but this editor now shows another file.
-        setNotice("Saved. The editor moved on, so reload to see it.")
+        if (alive.current) setNotice("Saved. The editor moved on, so reload to see it.")
         return
       }
+      if (!alive.current) return
       setNotice(result && result.message ? result.message : "Saved.")
       if (result && result.path) setPath(String(result.path))
     } catch (err) {
-      if (seq.current === id) setNotice(messageOf(err))
+      if (alive.current && seq.current === id) setNotice(messageOf(err))
     } finally {
-      setSaving(false)
+      // Only the owner of the current sequence clears the indicator; a newer
+      // load or save already reset it for itself.
+      if (alive.current && seq.current === id) setSaving(false)
     }
   }
 
+  // Display-only estimate: the prompt/ledger budget that actually matters is
+  // enforced in Python (coach/ledger.py); four characters per token is a
+  // close-enough readout for the editor.
   const tokens = Math.ceil(text.length / 4)
 
   return h(
@@ -1086,17 +1113,20 @@ function useRecent(ctx, sessionParam) {
   const [recent, setRecent] = useState([])
   const [recentError, setRecentError] = useState("")
   const [loading, setLoading] = useState(true)
-  const pull = (alive) =>
+  // Shared with refresh(): a manual pull that resolves after the page
+  // unmounts must not call setRecent on a dead component.
+  const alive = useRef(true)
+  const pull = (isAlive) =>
     ctx
       .rest(`/recent?limit=8${sessionParam}`)
       .then((result) => {
-        if (!alive()) return
+        if (!isAlive()) return
         const list = (unwrap(result) || {}).reviews
         setRecent(Array.isArray(list) ? list : [])
         setLoading(false)
       })
       .catch((err) => {
-        if (alive()) {
+        if (isAlive()) {
           setRecentError(messageOf(err))
           // A failed fetch must leave the loading state: otherwise the page
           // spins forever with the recorded error unreachable (audited).
@@ -1104,16 +1134,16 @@ function useRecent(ctx, sessionParam) {
         }
       })
   useEffect(() => {
-    let live = true
+    alive.current = true
     setRecentError("")
-    pull(() => live)
+    pull(() => alive.current)
     return () => {
-      live = false
+      alive.current = false
     }
   }, [sessionParam])
   const refresh = () => {
     setRecentError("")
-    pull(() => true)
+    pull(() => alive.current)
   }
   return { recent, recentError, loading, refresh }
 }
@@ -1202,13 +1232,20 @@ function StatusPage(props) {
       setNotice("This Desktop build cannot send to the chat.")
       return
     }
-    const outcome = composer.submit(focused || null, findingPrompt(row))
     const done = (ok) =>
       setNotice(ok ? "Sent to this chat." : "Could not reach this chat's composer.")
+    const outcome = composer.submit(focused || null, findingPrompt(row))
     if (outcome && typeof outcome.then === "function") {
-      outcome.then(done, () => done(false))
+      // A resolved promise means the host accepted the text; the resolved
+      // value is not a success flag, so only a rejection is a failure.
+      outcome.then(
+        () => done(true),
+        () => done(false),
+      )
     } else {
-      done(outcome !== false && outcome !== null && outcome !== undefined)
+      // Fire-and-forget composers return undefined on success; only an
+      // explicit false is a failure.
+      done(outcome !== false)
     }
   }
 

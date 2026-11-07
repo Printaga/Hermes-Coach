@@ -337,6 +337,28 @@ def test_send_pending_reports_a_missing_channel(tmp_path):
     assert plugin.store.load("s").pending != []
 
 
+def test_send_pending_keeps_a_failed_duplicate_of_a_delivered_note(tmp_path):
+    outcomes = iter([True, False])
+    plugin = CoachPlugin(
+        llm=_ConsultLlm(),
+        store=Store(tmp_path),
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+        post=lambda text: None,
+        inject=lambda text: next(outcomes),
+    )
+    state = plugin.store.load("s")
+    state.pending = [
+        {"turn_id": "t1", "title": "same", "text": "first"},
+        {"turn_id": "t1", "title": "same", "text": "second"},
+    ]
+    plugin.store.save(state)
+    out = plugin._send_pending(session_id="s")
+    assert "Delivered 1" in out
+    # The failed retry must survive even though the delivered note shares its
+    # (turn, title) pair.
+    assert [note["text"] for note in plugin.store.load("s").pending] == ["second"]
+
+
 def test_recent_log_skips_malformed_lines(tmp_path):
     from coach.plugin import _log_name
 

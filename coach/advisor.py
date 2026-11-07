@@ -263,7 +263,9 @@ class Coach:
                 # A broken cost function must not make the call look free.
                 return self._estimate(usage), True
         if usage is None:
-            return 0.0, False
+            # Unpriced, not free: the flag keeps the budget meter honest even
+            # when there are no token counts to estimate from.
+            return self._estimate(usage), True
         try:
             from agent.usage_pricing import estimate_usage_cost
 

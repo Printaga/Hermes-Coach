@@ -22,7 +22,7 @@ import { execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 let dir = null
 function fail(message) {
@@ -61,10 +61,11 @@ function main() {
 
   // Strip block comments, line comments, and single/double-quoted strings so
   // a mention in prose or an error message cannot trip (or satisfy) a check.
-  // Template literals are kept: code inside ${} stays analyzable.
   // Strings first: a literal may contain // or /*, and stripping comments
   // first corrupted the following code. Template literals are removed too —
-  // their text is display data, never a gate target.
+  // including any code inside ${} — because their text is display data, never
+  // a gate target. The runtime smoke test is the backstop for expressions
+  // written inside backticks; do not rely on them satisfying a static check.
   const code = source
     .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""')
     .replace(/`(?:[^`\\]|\\.)*`/g, '""')
@@ -82,8 +83,8 @@ function main() {
   const bracket = (name) =>
     String.raw`\bctx\s*(?:\?\.\s*)?\[\s*['"]${name}['"]\s*\]`
   const APIs = [
-    ["jsx", String.raw`\bctx\s*\.\s*jsx\b`, null],
-    ["jsxs", String.raw`\bctx\s*\.\s*jsxs\b`, null],
+    ["jsx", `${ctxName}jsx\\b`, bracket("jsx")],
+    ["jsxs", `${ctxName}jsxs\\b`, bracket("jsxs")],
     ["useValue", `${ctxName}useValue\\b`, bracket("useValue")],
     ["useEffect", `${ctxName}useEffect\\b`, bracket("useEffect")],
     ["host", `${ctxName}host\\b`, bracket("host")],
@@ -141,7 +142,7 @@ function main() {
       [
         "-c",
         "import json,sys;sys.path.insert(0,sys.argv[1]);import coach.settings as s;print(json.dumps(list(s.DEFAULTS)))",
-        new URL("..", import.meta.url).pathname,
+        fileURLToPath(new URL("..", import.meta.url)),
       ],
       { encoding: "utf8" },
     )
@@ -222,6 +223,12 @@ function main() {
   let braces = 0
   for (const line of source.split("\n")) {
     if (!skipping && /^\s*import\b/.test(line)) {
+      // A bare side-effect import (`import "polyfill"`) has no `from` clause
+      // and may omit the semicolon: strip that line whole instead of treating
+      // it as an unterminated statement that swallows the rest of the file.
+      if (/^\s*import\s*["'][^"']*["']\s*;?\s*$/.test(line)) {
+        continue
+      }
       skipping = true
       braces = 0
     }
@@ -454,10 +461,9 @@ globalThis.__resetAll = __resetAll;
             )
           }
         } catch (err) {
-          if (String(err && err.message).startsWith("desktop page check failed")) {
-            throw err
-          }
-          fail(`settings tab ${child.id} threw while rendering: ${err.message}`)
+          // fail() exits the process, so anything landing here is a real
+          // render or effect crash inside the plugin under test.
+          fail(`settings tab ${child.id} threw while rendering: ${err && err.message ? err.message : err}`)
         }
         if (!tree || !tree.type) {
           fail(`settings tab ${child.id} rendered nothing`)

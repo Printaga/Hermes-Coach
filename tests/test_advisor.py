@@ -201,3 +201,15 @@ def test_ask_omits_reasoning_on_an_old_host_without_the_kwarg():
     reply = coach.ask([{"role": "user", "content": "q"}], mode="consult")
     assert reply.error == ""
     assert llm.calls  # called without the kwarg
+
+
+def test_a_missing_usage_is_flagged_as_estimated_not_free():
+    from coach.advisor import Coach
+
+    coach = Coach(
+        llm=None,
+        settings=load_settings({"coach_model": {"provider": "p", "model": "m"}}),
+    )
+    # No token counts to estimate from, but a missing usage must not read as
+    # a confidently priced free call.
+    assert coach._price("m", None, "p") == (0.0, True)

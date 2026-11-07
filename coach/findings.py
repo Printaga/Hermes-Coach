@@ -3,6 +3,9 @@
 A finding is the coach's one actionable observation about a turn or a diff.
 Parsing is strict: only a valid severity, title and body produce a finding, so
 a malformed or unparseable reply becomes ``None`` instead of invented advice.
+Over-long optional fields are truncated to the SCHEMA limits rather than
+rejected: the alternative is dropping an otherwise valid finding over a long
+evidence excerpt.
 """
 
 from __future__ import annotations
@@ -29,8 +32,8 @@ _TITLE_MAX = 80
 _BODY_MAX = 600
 _EVIDENCE_MAX = 1000
 _FIX_MAX = 1000
-_FENCED_JSON = re.compile(
-    r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
+_FENCED_BLOCK = re.compile(
+    r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE
 )
 
 SCHEMA: dict = {
@@ -62,11 +65,18 @@ class Finding:
     fix: str
 
     def digest(self) -> str:
-        """Stable identity for dedupe, ignoring whitespace and case."""
+        """Stable identity for dedupe, ignoring whitespace and case.
+
+        Body and fix are part of the identity: two findings that share a
+        title and an evidence excerpt but give materially different advice
+        must not collapse into one.
+        """
         payload = (
             f"{_normalise(self.severity)}|"
             f"{_normalise(self.title)}|"
-            f"{_normalise(self.evidence)}"
+            f"{_normalise(self.body)}|"
+            f"{_normalise(self.evidence)}|"
+            f"{_normalise(self.fix)}"
         )
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
@@ -90,20 +100,61 @@ def _from_mapping(payload: Mapping[str, Any]) -> Finding | None:
     )
 
 
+def _json_objects(text: str):
+    """Yield every balanced ``{...}`` span, ignoring braces inside strings.
+
+    The old non-greedy ``\\{.*?\\}`` stopped at the first closing brace — one
+    inside a string literal — so a valid reply like
+    ``{"body": "the check uses } here"}`` became unparseable and the finding
+    was silently dropped.
+    """
+    start = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                yield text[start : index + 1]
+                start = None
+
+
 def parse_finding(parsed: Any, text: str = "") -> Finding | None:
     """Return a validated finding from structured data or a fenced JSON reply."""
     if isinstance(parsed, Mapping):
         return _from_mapping(parsed)
     source = text or (parsed if isinstance(parsed, str) else "")
-    for match in _FENCED_JSON.finditer(source):
+    for block in _FENCED_BLOCK.finditer(source):
+        chunk = block.group(1).strip()
+        payloads: list[Any] = []
         try:
-            payload = json.loads(match.group(1))
+            payloads.append(json.loads(chunk))
         except (TypeError, ValueError):
-            continue
-        if isinstance(payload, Mapping):
-            finding = _from_mapping(payload)
-            if finding is not None:
-                return finding
+            for candidate in _json_objects(chunk):
+                try:
+                    payloads.append(json.loads(candidate))
+                except (TypeError, ValueError):
+                    continue
+        for payload in payloads:
+            if isinstance(payload, Mapping):
+                finding = _from_mapping(payload)
+                if finding is not None:
+                    return finding
     return None
 
 

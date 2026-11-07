@@ -38,7 +38,7 @@ id_ed25519*
 .freebuff/
 
 # Generated review output (at any depth, not just the repo root)
-/review.json
+review.json
 
 # CodeWiki scratch
 .codewiki/

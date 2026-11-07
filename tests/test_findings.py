@@ -22,3 +22,20 @@ def test_digest_ignores_whitespace_and_case():
 def test_title_and_body_are_bounded():
     f = parse_finding({**GOOD, "title": "t" * 500, "body": "b" * 4000})
     assert len(f.title) <= 80 and len(f.body) <= 600
+
+
+def test_a_brace_inside_a_string_does_not_truncate_the_json():
+    text = (
+        "Here is the result:\n```json\n"
+        '{"severity": "concern", "title": "Guard", "body": "uses } here", '
+        '"evidence": "a.py:1", "fix": "Close it."}\n```\n'
+    )
+    finding = parse_finding(None, text)
+    assert finding is not None
+    assert finding.body == "uses } here"
+
+
+def test_digest_separates_findings_with_different_advice():
+    a = Finding("nit", "Same title", "one body", "a.py:1", "first fix")
+    b = Finding("nit", "Same title", "two body", "a.py:1", "second fix")
+    assert a.digest() != b.digest()

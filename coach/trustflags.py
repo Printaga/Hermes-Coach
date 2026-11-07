@@ -10,33 +10,44 @@ its own error shape (CLI message vs HTTP 500).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 _TRUST_KEYS = ("allow_provider_override", "allow_model_override")
 
 
 def set_flags(config: dict[str, Any], value: bool) -> None:
-    """Write both model-override trust flags on a loaded host config."""
-    plugins = config.setdefault("plugins", {})
-    entries = plugins.setdefault("entries", {})
-    coach = entries.setdefault("coach", {})
-    llm = coach.setdefault("llm", {})
+    """Write both model-override trust flags on a loaded host config.
+
+    Every node on the path is typed on the way down: a hand-edited config with
+    ``plugins.entries.coach`` as a list must fail with a message naming the
+    node, not an opaque AttributeError from chained ``setdefault``.
+    """
+    node: dict[str, Any] = config
+    path: list[str] = []
+    for key in ("plugins", "entries", "coach", "llm"):
+        path.append(key)
+        current = node.setdefault(key, {})
+        if not isinstance(current, dict):
+            raise TypeError(
+                f"host config node {'.'.join(path)!r} is not a mapping"
+            )
+        node = current
     for key in _TRUST_KEYS:
-        llm[key] = value
+        node[key] = value
 
 
 def read_flags(config: Mapping[str, Any]) -> tuple[bool, bool]:
     """Return the two flags as strict booleans (False when unset/wrong-typed)."""
-    coach = (
-        config.get("plugins", {}).get("entries", {}).get("coach", {})
-        if isinstance(config, Mapping)
-        else {}
-    )
-    llm = coach.get("llm", {}) if isinstance(coach, Mapping) else {}
+    node: Any = config
+    for key in ("plugins", "entries", "coach", "llm"):
+        node = node.get(key, {}) if isinstance(node, Mapping) else {}
     return (
-        llm.get(_TRUST_KEYS[0]) is True,
-        llm.get(_TRUST_KEYS[1]) is True,
+        node.get(_TRUST_KEYS[0]) is True,
+        node.get(_TRUST_KEYS[1]) is True,
     )
 
 
@@ -58,6 +69,9 @@ def write(value: bool) -> str:
         set_flags(config, value)
         save_config(config)
     except Exception as exc:
+        # The traceback is the only way to tell a read failure from a save
+        # failure or a malformed config node; the caller gets the short form.
+        log.warning("coach: trust flag %s failed", value, exc_info=True)
         verb = "grant" if value else "revoke"
         flag = "true" if value else "false"
         return (

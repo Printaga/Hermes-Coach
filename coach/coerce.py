@@ -51,7 +51,12 @@ def as_int(value: Any, default: int = 0) -> int:
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value) if value.is_integer() else default
+        # An integral float is accepted, but one this large has already lost
+        # integer precision in the float itself: int(1e308) is a meaningless
+        # 300-digit number, not a setting. Treat it as out of range.
+        if value.is_integer() and -(2**63) <= value <= 2**63:
+            return int(value)
+        return default
     if isinstance(value, str):
         try:
             return int(value.strip())

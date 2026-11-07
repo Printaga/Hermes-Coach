@@ -85,7 +85,11 @@ def register(ctx):
     # Unload cleanup registers even when the host has no hook surface: the
     # worker thread must not outlive the plugin.
     on_unload = getattr(ctx, "on_unload", None)
-    if callable(on_unload):
+    if not callable(on_unload):
+        # The worker thread would outlive the plugin: make the older host
+        # visible in the log instead of failing silently.
+        log.error("coach: host has no callable on_unload; worker may outlive the plugin")
+    else:
         try:
             on_unload(plugin.shutdown)
         except Exception:

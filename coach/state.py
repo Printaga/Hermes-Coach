@@ -156,6 +156,11 @@ class Store:
             return SessionState(
                 session_id=fallback_id, last_error="state reset", updated_at=0.0
             )
+        return self._from_data(data, fallback_id)
+
+    @staticmethod
+    def _from_data(data: Mapping[str, Any], fallback_id: str) -> SessionState:
+        """Build a state from already-parsed JSON, with the store's coercion."""
         return SessionState(
             session_id=_as_str(data.get("session_id")) or fallback_id,
             ledger=_dict_items(data.get("ledger")),
@@ -214,8 +219,14 @@ class Store:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 json.dump(asdict(state), handle, ensure_ascii=False, allow_nan=False)
+                handle.flush()
+                # os.replace alone is atomic, not durable: after a power loss
+                # the file can exist with empty content, and _read would then
+                # reset the state — silently zeroing spend and hold counters.
+                os.fsync(handle.fileno())
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, path)
+            self._sync_directory()
         except BaseException:
             try:
                 tmp_path.unlink(missing_ok=True)
@@ -247,11 +258,46 @@ class Store:
         overflow = len(entries) - self.max_sessions
         if overflow <= 0:
             self._sweep_tmp_files()
+            self._sweep_quarantine()
             return
         entries.sort(key=lambda entry: (entry[0], entry[1]))
         for _, _, path in entries[:overflow]:
             path.unlink(missing_ok=True)
         self._sweep_tmp_files()
+        self._sweep_quarantine()
+
+    def _sync_directory(self) -> None:
+        """Best-effort fsync of the store directory after a rename."""
+        try:
+            descriptor = os.open(self.root, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+
+    def _sweep_quarantine(self, older_than_s: float = 30 * 24 * 3600.0) -> None:
+        """Remove old quarantined corrupt files.
+
+        They are named ``<file>.json.corrupt-<ts>``, so neither the ``*.json``
+        glob nor the session cap ever sees them; without this they accumulate
+        forever. The long window keeps a recent incident diagnosable.
+        """
+        if not self.root.is_dir():
+            return
+        now = time.time()
+        for path in self.root.glob("*.corrupt-*"):
+            try:
+                if not path.is_file():
+                    continue
+                if now - path.stat().st_mtime < older_than_s:
+                    continue
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     def _sweep_tmp_files(self, older_than_s: float = 3600.0) -> None:
         """Remove stale dot-tmp files left by a crash between mkstemp and replace.
@@ -338,4 +384,6 @@ class Store:
         session_id = data.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return None
-        return self._read(path, session_id)
+        # Reuse the parsed copy: re-opening the same path could read a file
+        # that changed in between, and _read would quarantine it destructively.
+        return self._from_data(data, session_id)

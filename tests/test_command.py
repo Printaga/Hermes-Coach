@@ -13,6 +13,15 @@ def _p(tmp_path):
     )
 
 
+def _p_with_own_logs(tmp_path):
+    """A plugin whose log dir is under this test's tmp_path, not its parent."""
+    return CoachPlugin(
+        llm=Llm(),
+        store=Store(tmp_path / "sessions"),
+        settings=load_settings({"coach_model": {"provider": "openrouter", "model": "x"}}),
+    )
+
+
 def test_status_lists_modes_and_spend(tmp_path):
     out = _p(tmp_path).command("status")
     assert "Active" in out and "Review" in out and "$" in out
@@ -116,6 +125,96 @@ def test_decisions_are_logged_and_listed(tmp_path):
     out = p.command("log", session_id="s1")
     assert "[decide] client.py" in out and "client owns the loop" in out
     assert "Last decision: client.py" in p.command("status", session_id="s1")
+
+
+def test_log_prints_the_whole_finding_record(tmp_path):
+    import json
+
+    from coach.commands import _log_name
+
+    p = _p_with_own_logs(tmp_path)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    body = "B" * 600
+    evidence = "E" * 800
+    fix = "F" * 700
+    record = {
+        "kind": "review",
+        "session_id": "s1",
+        "turn_id": "t1",
+        "severity": "concern",
+        "title": "Guard the loop",
+        "body": body,
+        "evidence": evidence,
+        "fix": fix,
+        "provider": "openrouter",
+        "model": "x",
+        "cost_usd": 0.001,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "error": "",
+        "at": "2026-11-07T18:00:00+00:00",
+    }
+    (logs / f"{_log_name('s1')}.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    out = p.command("log", session_id="s1")
+    # The record carried evidence and fix all along; /coach log used to drop
+    # them and cut the body at 200 chars without a marker.
+    assert body in out and evidence in out and fix in out
+    assert "turn t1" in out and "at 2026-11-07 18:00:00" in out
+    assert "openrouter/x" in out and "$0.001000" in out
+
+
+def test_log_marks_a_clipped_legacy_field_and_full_prints_it(tmp_path):
+    import json
+
+    from coach.commands import _log_name
+
+    p = _p_with_own_logs(tmp_path)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    body = "L" * 5000
+    (logs / f"{_log_name('s1')}.jsonl").write_text(
+        json.dumps({"kind": "review", "title": "Long", "body": body}) + "\n",
+        encoding="utf-8",
+    )
+    compact = p.command("log", session_id="s1")
+    assert "chars hidden" in compact and body not in compact
+    full = p.command("log 5 full", session_id="s1")
+    assert body in full
+
+
+def test_log_reports_unreadable_lines_instead_of_hiding_them(tmp_path):
+    import json
+
+    from coach.commands import _log_name
+
+    p = _p_with_own_logs(tmp_path)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    good = json.dumps({"kind": "review", "title": "Fine", "body": "ok"})
+    (logs / f"{_log_name('s1')}.jsonl").write_text(
+        "{not json\n" + good + "\n", encoding="utf-8"
+    )
+    out = p.command("log", session_id="s1")
+    assert "Fine" in out and "1 unreadable log line(s) skipped" in out
+
+
+def test_decision_log_keeps_the_question_and_options(tmp_path):
+    from types import SimpleNamespace
+
+    p = _p_with_own_logs(tmp_path)
+    p._log_decision(
+        "s1", "t1",
+        SimpleNamespace(decision="b", confidence=0.8, gate="act",
+                        rationale="cheaper", cost_usd=0.0004),
+        "jev-openrouter",
+        question="Which store?",
+        options=["a", "b"],
+    )
+    out = p.command("log", session_id="s1")
+    assert "question: Which store?" in out
+    assert "options: a; b" in out
+    assert "backend jev-openrouter" in out
 
 
 def test_shutdown_stops_the_worker(tmp_path):

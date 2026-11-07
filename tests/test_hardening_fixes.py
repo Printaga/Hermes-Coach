@@ -257,6 +257,22 @@ def test_settings_maxima_clamp():
     assert settings.ledger_max_tokens == 20000
 
 
+def test_review_evidence_budget_defaults_and_clamps():
+    assert load_settings({}).review_evidence_max_chars == 128000
+    assert (
+        load_settings({"review_evidence_max_chars": "nope"}).review_evidence_max_chars
+        == 128000
+    )
+    assert (
+        load_settings({"review_evidence_max_chars": 10}).review_evidence_max_chars
+        == 2000
+    )
+    assert (
+        load_settings({"review_evidence_max_chars": 10**9}).review_evidence_max_chars
+        == 160000
+    )
+
+
 def test_status_accepts_session_id(tmp_path):
     plugin = _plugin(tmp_path)
     assert plugin.status("other")["spend_usd"] == 0.0

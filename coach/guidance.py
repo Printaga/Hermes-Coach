@@ -13,12 +13,15 @@ one; it was deleted rather than kept in step.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import re
 import stat
 from pathlib import Path
 
 __all__ = ["GUIDANCE_MAX_CHARS", "Guidance"]
+
+log = logging.getLogger(__name__)
 
 GUIDANCE_MAX_CHARS = 4000
 _GLOBAL_FILE = "guidance.md"
@@ -64,10 +67,32 @@ class Guidance:
                 # FIFO, whose open would block the single review thread
                 # indefinitely; neither belongs in the prompt.
                 return ""
-            # O_NOFOLLOW closes the swap between the check above and the open,
-            # and the bounded read refuses to decode a huge file.
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            # O_NOFOLLOW closes the symlink swap between the check above and
+            # the open; opening non-blocking and re-checking the type on the
+            # descriptor closes the regular-file-to-FIFO swap that would
+            # otherwise block this read forever. The bounded read refuses to
+            # decode a huge file.
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
             descriptor = os.open(path, flags)
+            try:
+                regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+            except OSError:
+                os.close(descriptor)
+                raise
+            if not regular:
+                os.close(descriptor)
+                return ""
+            set_blocking = getattr(os, "set_blocking", None)
+            if set_blocking is not None:
+                try:
+                    set_blocking(descriptor, True)
+                except OSError:
+                    os.close(descriptor)
+                    raise
             with os.fdopen(descriptor, "r", encoding="utf-8", errors="replace") as handle:
                 return handle.read(GUIDANCE_MAX_CHARS)
         except OSError as exc:
@@ -85,10 +110,12 @@ class Guidance:
         for scope in ("global", "project"):
             try:
                 text = self.read(scope, cwd)
-            except OSError:
+            except OSError as exc:
                 # A denied or broken guidance file degrades to no guidance;
                 # read() already distinguishes missing files from real errors
-                # for direct callers that need the distinction.
+                # for direct callers that need the distinction. Log it so an
+                # operator can tell this apart from "nothing configured".
+                log.warning("coach: guidance file unreadable: %s", exc)
                 continue
             if text.strip():
                 parts.append(text.strip())

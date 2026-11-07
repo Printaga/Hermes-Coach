@@ -129,3 +129,19 @@ def test_corrupt_file_is_quarantined_for_diagnosis(tmp_path):
     assert store.sessions_on_disk() == []
     store.save(store.load("bad"))
     assert store.sessions_on_disk() == ["bad"]
+
+
+def test_old_quarantine_files_are_swept(tmp_path):
+    store = Store(tmp_path)
+    bad = tmp_path / "x.json.corrupt-1"
+    bad.write_text("{", encoding="utf-8")
+    store._sweep_quarantine(older_than_s=0)
+    assert not bad.exists()
+
+
+def test_recent_quarantine_files_are_kept(tmp_path):
+    store = Store(tmp_path)
+    bad = tmp_path / "x.json.corrupt-1"
+    bad.write_text("{", encoding="utf-8")
+    store._sweep_quarantine()
+    assert bad.exists()

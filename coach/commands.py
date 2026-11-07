@@ -9,6 +9,7 @@ which is what made a 2 100-line file out of four separate responsibilities.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -24,6 +25,8 @@ from .settings import (
 )
 from .state import safe_session_name as _state_safe_name
 
+log = logging.getLogger(__name__)
+
 _MODEL_KEYS = {"coach_model", "active_model", "review_model", "consult_model"}
 _MODE_KEYS = {
     "coach": "coach_model",
@@ -37,7 +40,7 @@ _HELP = (
     "Coach commands:\n"
     "  /coach status                    configuration, modes, spend\n"
     "  /coach last                      the last advice the coach gave\n"
-    "  /coach log [n]                   recent review findings for this session\n"
+    "  /coach log [n] [full]            last reviews/decisions with their context\n"
     "  /coach active on|off             per-turn Active review\n"
     "  /coach review on|off             pre-completion Review gate\n"
     "  /coach decide on|off             coach_decide tool\n"
@@ -137,6 +140,64 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# The writer stores body/evidence/fix at their schema maxima (600/1000/1000),
+# so the default bound only bites on hand-edited or legacy records. `full`
+# raises it for those instead of silently dropping the tail.
+_LOG_FIELD_LIMIT = 4000
+_LOG_FIELD_LIMIT_FULL = 20000
+
+
+def _log_value(value: Any) -> str:
+    """Render one logged field, flattening option lists."""
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "").strip()
+
+
+def _log_detail(value: Any, limit: int) -> tuple[str, bool]:
+    """Return the field text and whether the tail had to be clipped.
+
+    The marker is part of the text on purpose: a silent slice made a shortened
+    finding look like the model's complete answer.
+    """
+    text = _log_value(value)
+    if len(text) <= limit:
+        return text, False
+    hidden = len(text) - limit
+    return (
+        f"{text[:limit]}… (+{hidden} chars hidden; add 'full' to /coach log)",
+        True,
+    )
+
+
+def _log_time(value: Any) -> str:
+    """A compact, human-readable timestamp for one log line."""
+    text = str(value or "").strip()
+    return text.replace("T", " ")[:19] if "T" in text else text[:19]
+
+
+def _log_meta(row: Mapping[str, Any]) -> str:
+    """The pricing/attribution line every event can carry."""
+    parts: list[str] = []
+    provider = str(row.get("provider") or "").strip()
+    model = str(row.get("model") or "").strip()
+    if provider and model:
+        parts.append(f"{provider}/{model}")
+    elif model or provider:
+        parts.append(model or provider)
+    backend = str(row.get("backend") or "").strip()
+    if backend:
+        parts.append(f"backend {backend}")
+    cost = row.get("cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        parts.append(f"${float(cost):.6f}")
+    tokens_in = row.get("input_tokens")
+    tokens_out = row.get("output_tokens")
+    if isinstance(tokens_in, int) and isinstance(tokens_out, int):
+        parts.append(f"tokens {tokens_in}→{tokens_out}")
+    return " · ".join(parts)
+
+
 class CommandsMixin:
     """The /coach subcommands, mixed into CoachPlugin."""
 
@@ -179,6 +240,7 @@ class CommandsMixin:
             if name == "forget":
                 return self._forget(session_id)
         except Exception as exc:  # a command must not break the host
+            log.exception("coach command %s failed", name)
             return f"Coach: {name} failed ({type(exc).__name__})."
         return _HELP.rstrip()
 
@@ -186,22 +248,29 @@ class CommandsMixin:
         """Persist one setting and re-validate the in-memory copy."""
         if key not in DEFAULTS:
             return False
-        stored = value.as_dict() if isinstance(value, ModelChoice) else value
-        raw = _raw_settings(self.settings)
-        raw[key] = stored
-        # Store what the loader would use, not what was typed: the dashboard
-        # already does, and two writers must not disagree about a value.
-        canonical = load_settings(raw)
-        saved = getattr(canonical, key, value)
-        if isinstance(saved, ModelChoice):
-            saved = saved.as_dict()
-        if self.set_setting is not None:
-            result = self.set_setting(key, saved)
-            if result is False:
+        # Serialize the snapshot→validate→write swap: two /coach set calls on
+        # different keys would otherwise both write from the same stale copy.
+        with self._store_lock:
+            stored = value.as_dict() if isinstance(value, ModelChoice) else value
+            raw = _raw_settings(self.settings)
+            raw[key] = stored
+            # Store what the loader would use, not what was typed: the dashboard
+            # already does, and two writers must not disagree about a value.
+            canonical = load_settings(raw)
+            # Persist only a value the loader actually produced. Falling back to
+            # the raw typed value would bypass validation and save it anyway.
+            if not hasattr(canonical, key):
                 return False
-        self.settings = canonical
-        self.coach.settings = self.settings
-        return True
+            saved = getattr(canonical, key)
+            if isinstance(saved, ModelChoice):
+                saved = saved.as_dict()
+            if self.set_setting is not None:
+                result = self.set_setting(key, saved)
+                if result is False:
+                    return False
+            self.settings = canonical
+            self.coach.settings = self.settings
+            return True
 
     def _toggle(self, key: str, label: str, args: list[str]) -> str:
         value = _bool_arg(args[0]) if args else None
@@ -397,11 +466,15 @@ class CommandsMixin:
         )
 
     def _log_text(self, session_id: str = "current", args: list[str] | None = None) -> str:
-        """Print the last few logged events (reviews and decisions)."""
+        """Print recent logged events with the context the record carries."""
+        raw_args = [str(arg).strip().lower() for arg in (args or [])]
+        full = "full" in raw_args
+        numbers = [arg for arg in raw_args if arg.isdigit()]
         try:
-            count = max(1, min(20, int((args or ["5"])[0])))
+            count = int(numbers[0]) if numbers else 5
         except (TypeError, ValueError):
             count = 5
+        count = max(1, min(20, count))
         path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
         if not path.exists():
             return "No coach reviews logged for this session yet."
@@ -409,40 +482,78 @@ class CommandsMixin:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             return "No coach reviews logged for this session yet."
-        rows = []
+        rows: list[Mapping[str, Any]] = []
+        skipped = 0
         for line in lines[-count:]:
             try:
                 row = json.loads(line)
             except ValueError:
+                skipped += 1
                 continue
             if not isinstance(row, Mapping):
                 # A stray scalar line parses without raising and would blow
                 # up row.get() below; skip it like an unparseable line.
+                skipped += 1
                 continue
             rows.append(row)
         if not rows:
-            return "No coach reviews logged for this session yet."
+            message = "No coach reviews logged for this session yet."
+            if skipped:
+                message += f" ({skipped} unreadable log line(s) skipped.)"
+            return message
+        limit = _LOG_FIELD_LIMIT_FULL if full else _LOG_FIELD_LIMIT
+        clipped = False
         out = [f"Last {len(rows)} coach event(s):"]
         for row in rows:
             kind = str(row.get("kind") or "review")
+            where = []
+            turn = str(row.get("turn_id") or "").strip()
+            if turn:
+                where.append(f"turn {turn}")
+            when = _log_time(row.get("at"))
+            if when:
+                where.append(f"at {when}")
+            suffix = f" ({', '.join(where)})" if where else ""
             if kind == "decide":
                 out.append(
-                    f"- [decide] {row.get('decision')} "
-                    f"({row.get('gate')}, {row.get('confidence')})"
+                    f"- [decide] {row.get('decision') or '(none)'} "
+                    f"({row.get('gate') or 'unknown'} gate, "
+                    f"confidence {row.get('confidence')}){suffix}"
                 )
-                rationale = str(row.get("rationale") or "").strip()
-                if rationale:
-                    out.append(f"  {rationale[:200]}")
+                fields = (
+                    ("question", row.get("question")),
+                    ("options", row.get("options")),
+                    ("rationale", row.get("rationale")),
+                )
             else:
                 out.append(
                     f"- [{row.get('severity') or 'none'}] "
-                    f"{row.get('title') or 'no finding'}"
+                    f"{row.get('title') or 'no finding'}{suffix}"
                 )
-                body = str(row.get("body") or "").strip()
-                if body:
-                    out.append(f"  {body[:200]}")
-            if row.get("error"):
-                out.append(f"  error: {row['error']}")
+                # The record has always carried these; dropping them left the
+                # reader with a title and half a body.
+                fields = (
+                    ("body", row.get("body")),
+                    ("evidence", row.get("evidence")),
+                    ("fix", row.get("fix")),
+                )
+            for label, value in fields:
+                text, was_clipped = _log_detail(value, limit)
+                clipped = clipped or was_clipped
+                if text:
+                    out.append(f"  {label}: {text.replace(chr(10), chr(10) + '  ')}")
+            meta = _log_meta(row)
+            if meta:
+                out.append(f"  meta: {meta}")
+            error = str(row.get("error") or "").strip()
+            if error:
+                text, was_clipped = _log_detail(error, limit)
+                clipped = clipped or was_clipped
+                out.append(f"  error: {text}")
+        if skipped:
+            out.append(f"({skipped} unreadable log line(s) skipped.)")
+        if clipped and not full:
+            out.append("Some fields were clipped; /coach log <n> full prints them whole.")
         return "\n".join(out)
 
     def _pending_text(self, session_id: str = "current") -> str:
@@ -465,37 +576,49 @@ class CommandsMixin:
         return "\n".join(lines)
 
     def _send_pending(self, session_id: str = "current") -> str:
-        with self._store_lock:
-            state = self.store.load(session_id)
-            notes = [note for note in state.pending if isinstance(note, Mapping)]
-            if not notes:
-                return "No pending coach notes."
         if self.inject is None:
             return "No injection channel available; notes stay pending."
-        sent = 0
-        delivered: set[tuple[str, str]] = set()
-        for note in notes:
-            text = str(note.get("text") or note.get("body") or "").strip()
-            if text and self._inject(text):
-                sent += 1
-                delivered.add(
-                    (str(note.get("turn_id") or ""), str(note.get("title") or ""))
-                )
-        if not sent:
-            return "Could not deliver pending notes; they stay pending."
         with self._store_lock:
-            # Drop by (turn, title), not text value: duplicate texts are legal
-            # and a failed retry must not be discarded as a duplicate.
             state = self.store.load(session_id)
+            deliverable = [
+                note
+                for note in state.pending
+                if isinstance(note, Mapping)
+                and str(note.get("text") or note.get("body") or "").strip()
+            ]
+            if not deliverable:
+                return "No pending coach notes."
+            # Claim the notes before injecting: the host injection call runs
+            # outside the lock, so a second /coach send (or the background
+            # dispatcher) must not find the same entry still pending. Anything
+            # that fails is re-queued below; nothing is dropped twice.
             state.pending = [
                 note
                 for note in state.pending
-                if not isinstance(note, Mapping)
-                or (str(note.get("turn_id") or ""), str(note.get("title") or ""))
-                not in delivered
+                if not (
+                    isinstance(note, Mapping)
+                    and str(note.get("text") or note.get("body") or "").strip()
+                )
             ]
             state.updated_at = self.clock()
             self.store.save(state)
+        sent = 0
+        failed: list[Any] = []
+        for note in deliverable:
+            text = str(note.get("text") or note.get("body") or "").strip()
+            if self._inject(text):
+                sent += 1
+            else:
+                failed.append(note)
+        with self._store_lock:
+            state = self.store.load(session_id)
+            if failed:
+                # A retry keeps its place ahead of notes queued meanwhile.
+                state.pending = [*failed, *state.pending]
+            state.updated_at = self.clock()
+            self.store.save(state)
+        if not sent:
+            return "Could not deliver pending notes; they stay pending."
         return f"Delivered {sent} pending coach note(s)."
 
     def _toggle_pause(self) -> str:

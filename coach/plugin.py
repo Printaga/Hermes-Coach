@@ -282,8 +282,13 @@ def _bound_state(value: Any) -> dict[str, Any]:
     for key in list(value)[:_STATE_KEYS_MAX]:
         name = str(key)[:120]
         item = value[key]
-        if isinstance(item, (str, int, float, bool)) or item is None:
+        if isinstance(item, bool) or item is None or isinstance(item, (str, int)):
             bounded[name] = str(item)[:_STATE_VALUE_MAX] if isinstance(item, str) else item
+        elif isinstance(item, float):
+            # json.dumps(inf) emits `Infinity`, which is not JSON; a strict
+            # receiver rejects the whole payload. The state is model-supplied,
+            # so drop the value rather than ship an invalid document.
+            bounded[name] = item if math.isfinite(item) else None
         else:
             try:
                 text = json.dumps(item, ensure_ascii=False, default=str)
@@ -567,7 +572,7 @@ class CoachPlugin(CommandsMixin):
                     timeout = 5.0
                 worker.stop(timeout=min(max(1.0, timeout), 20.0))
         except Exception:
-            pass
+            log.debug("coach: worker stop failed", exc_info=True)
 
     def _remember_primary(self, data: Mapping[str, Any]) -> None:
         """Track the model the session is actually running.
@@ -590,7 +595,7 @@ class CoachPlugin(CommandsMixin):
                         state.updated_at = self.clock()
                         self.store.save(state)
             except Exception:
-                pass
+                log.debug("coach: could not persist last_primary_model", exc_info=True)
 
     def _snapshot_turn_base(self, data: Mapping[str, Any]) -> None:
         """Remember the commit HEAD points at when a new turn starts.
@@ -1161,10 +1166,16 @@ class CoachPlugin(CommandsMixin):
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
                 _trim_log(path)
         except Exception:
-            pass
+            log.debug("coach: review log write failed", exc_info=True)
 
     def _log_decision(
-        self, session_id: str, turn_id: str, decision: Any, backend: str
+        self,
+        session_id: str,
+        turn_id: str,
+        decision: Any,
+        backend: str,
+        question: str = "",
+        options: Any = (),
     ) -> None:
         """Append one JSONL line per decision; never raise."""
         try:
@@ -1174,6 +1185,10 @@ class CoachPlugin(CommandsMixin):
                 "kind": "decide",
                 "session_id": session_id,
                 "turn_id": turn_id,
+                # What the decision was about and which choices existed: a
+                # rationale alone cannot be re-read later.
+                "question": str(question or "").strip()[:500],
+                "options": [str(option).strip()[:120] for option in (options or ())][:8],
                 "decision": decision.decision,
                 "confidence": decision.confidence,
                 "gate": decision.gate,
@@ -1193,7 +1208,7 @@ class CoachPlugin(CommandsMixin):
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
                 _trim_log(path)
         except Exception:
-            pass
+            log.debug("coach: decision log write failed", exc_info=True)
 
     def on_pre_verify(
         self, payload: Mapping[str, Any] | None = None, **kw: Any
@@ -1202,6 +1217,7 @@ class CoachPlugin(CommandsMixin):
         try:
             return self._pre_verify(_payload(payload, kw))
         except Exception:
+            log.warning("coach: pre_verify gate failed open", exc_info=True)
             return None
 
     def _pre_verify(self, data: Mapping[str, Any]) -> dict[str, str] | None:
@@ -1299,7 +1315,12 @@ class CoachPlugin(CommandsMixin):
 
     def collect_evidence(self, cwd: str, paths: list[str], base: str = "") -> str:
         """Return bounded diff evidence; replaced in tests."""
-        return collect(cwd, paths, base=base)
+        return collect(
+            cwd,
+            paths,
+            base=base,
+            max_chars=self.settings.review_evidence_max_chars,
+        )
 
     def review_now(
         self,
@@ -1465,12 +1486,16 @@ class CoachPlugin(CommandsMixin):
                 return _error(_error_text("unconfigured"))
 
             turn_id = str(args.get("turn_id") or "current")
-            used = state.calls.get(turn_id, 0)
+            # Namespaced like decide:/corrective:/review_holds:. A bare turn id
+            # could alias a global telemetry counter (review_skips, ...) and
+            # silently corrupt /coach status.
+            consult_key = f"consult:{turn_id}"
+            used = state.calls.get(consult_key, 0)
             if used >= self.settings.consult_max_calls_per_turn:
                 return _error("call_cap")
             # Reserve under the same lock as the check: a later section could
             # otherwise admit two concurrent asks.
-            state.calls[turn_id] = used + 1
+            state.calls[consult_key] = used + 1
             state.updated_at = self.clock()
             self.store.save(state)
         prompt = question
@@ -1485,12 +1510,26 @@ class CoachPlugin(CommandsMixin):
             self.guidance.system_block(cwd) if self.settings.guidance_enabled else ""
         )
         messages = self._prompt_call(state, _SYSTEM, guidance, prompt)
-        reply = self.coach.ask(
-            messages,
-            mode="consult",
-            structured=False,
-            timeout=float(self.settings.worker_timeout_s),
-        )
+        try:
+            reply = self.coach.ask(
+                messages,
+                mode="consult",
+                structured=False,
+                timeout=float(self.settings.worker_timeout_s),
+            )
+        except Exception:
+            # The call never produced an answer: release the reservation so a
+            # provider crash does not burn the turn's consult budget.
+            def release(current: Any) -> None:
+                current.calls[consult_key] = max(
+                    0, current.calls.get(consult_key, 1) - 1
+                )
+
+            try:
+                self._reload_and_save(session_id, release)
+            except Exception:
+                log.warning("coach: could not release consult reservation", exc_info=True)
+            raise
         committed: list[Any] = []
 
         def commit(state: Any):
@@ -1640,7 +1679,9 @@ class CoachPlugin(CommandsMixin):
         if error is not None:
             return error
         state = committed[0]
-        self._log_decision(session_id, turn_id, decision, backend)
+        self._log_decision(
+            session_id, turn_id, decision, backend, question=question, options=options
+        )
         self.card_text(
             _decision_card(decision, backend)
         )

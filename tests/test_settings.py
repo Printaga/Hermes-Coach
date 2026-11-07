@@ -90,3 +90,11 @@ def test_every_reasoning_setting_is_a_choice():
 
     for key in ("reasoning_effort", "active_reasoning", "review_reasoning", "consult_reasoning"):
         assert key in _CHOICES
+
+
+def test_an_integral_float_beyond_the_int_range_is_rejected():
+    from coach.coerce import as_int
+
+    # int(1e308) would produce a meaningless 300-digit "setting".
+    assert as_int(1e308) == 0
+    assert as_int(float(2**70)) == 0

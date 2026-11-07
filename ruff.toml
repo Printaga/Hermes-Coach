@@ -1,6 +1,6 @@
 # Minimal hygiene battery (see .audit report's import-hygiene finding):
-# errors + import order. Extended rulesets come with the structural
-# refactors that own their own rule coverage.
+# pyflakes error rules (F) + import order (I). Extended rulesets come with
+# the structural refactors that own their own rule coverage.
 target-version = "py311"
 line-length = 100
 [lint]

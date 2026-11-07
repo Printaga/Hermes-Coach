@@ -12,6 +12,8 @@ import copy
 import json
 import os
 import sys
+import tempfile
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any
@@ -38,6 +40,11 @@ _RECENT_BYTES = 256 * 1024
 _GLOBAL_FILE = "guidance.md"
 _PROJECT_FILE = "COACH.md"
 _SECRET_KEY = "decide_typesafe_api_key"
+
+# FastAPI runs these sync routes in a threadpool, so two mutations can overlap
+# inside one process even though the host config write itself is serialized.
+# Cross-process conflicts still rely on the host's own config handling.
+_CONFIG_LOCK = threading.Lock()
 
 
 # --------------------------------------------------------------------------
@@ -133,17 +140,19 @@ def _mutate_config(request: Request, mutate: Any) -> None:
     """
     state_config = getattr(request.app.state, "config", None)
     if isinstance(state_config, dict):
-        mutate(state_config)
+        with _CONFIG_LOCK:
+            mutate(state_config)
         return
-    config = _load_host_config()
-    if config is None:
-        # A read failure must never turn into a write: persisting the
-        # post-mutation partial dict here would replace the whole host
-        # config (the same refusal commands._grant implements).
-        raise HTTPException(status_code=500, detail="config_read_failed")
-    mutate(config)
-    if not _save_host_config(config):
-        raise HTTPException(status_code=500, detail="config_write_failed")
+    with _CONFIG_LOCK:
+        config = _load_host_config()
+        if config is None:
+            # A read failure must never turn into a write: persisting the
+            # post-mutation partial dict here would replace the whole host
+            # config (the same refusal commands._grant implements).
+            raise HTTPException(status_code=500, detail="config_read_failed")
+        mutate(config)
+        if not _save_host_config(config):
+            raise HTTPException(status_code=500, detail="config_write_failed")
 
 
 def _coach_root(config: dict[str, Any]) -> dict[str, Any]:
@@ -305,11 +314,26 @@ def _write_guidance(
             raise HTTPException(status_code=400, detail="cwd_missing")
         path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        # O_NOFOLLOW closes the check-then-write race on the final component.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        # The symlink refusal above plus os.replace (which replaces the link
+        # itself and never follows it) closes the check-then-write race. The
+        # write goes to a sibling temp file: O_TRUNC on the target would
+        # destroy existing guidance if the write failed midway.
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
     except OSError as exc:
         raise HTTPException(
             status_code=500, detail=f"guidance_write_failed: {type(exc).__name__}"

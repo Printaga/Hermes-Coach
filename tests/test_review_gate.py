@@ -403,3 +403,18 @@ def test_fallback_mismatch_leaves_a_counter(tmp_path):
     assert state.calls.get("review_fallbacks") == 1
     assert state.last_error == "fallback_mismatch"
     assert p.status("s")["review_fallbacks"] == 1
+
+
+def test_collect_evidence_uses_the_configured_budget(tmp_path, monkeypatch):
+    import coach.plugin as plugin_module
+
+    seen = {}
+
+    def fake_collect(cwd, paths, *, base="", max_chars=0):
+        seen["max_chars"] = max_chars
+        return "evidence"
+
+    monkeypatch.setattr(plugin_module, "collect", fake_collect)
+    p = _p(tmp_path, review_evidence_max_chars=12000)
+    p.collect_evidence(str(tmp_path), ["a.py"], base="abc")
+    assert seen["max_chars"] == 12000
