@@ -1,7 +1,7 @@
 """Settings for the coach plugin.
 
-``DEFAULTS`` is the source of truth for values. ``plugin.yaml`` mirrors it, and
-``tests/test_manifest.py`` fails if the two drift apart.
+``DEFAULTS`` is the source of truth for values. ``plugin.yaml`` declares the
+plugin's tools and hooks only — it carries no settings mirror.
 """
 
 from __future__ import annotations
@@ -257,10 +257,31 @@ class Settings:
         return same_model and choice.provider.strip().lower() == provider.strip().lower()
 
 
+_SPLIT_CONVENTION = (
+    "# Model ids can contain slashes (org/model), so no split is universally\n"
+    "# right; where a parse is unavoidable (a host payload or CLI input that\n"
+    "# carries no provider field — AGENTS.md forbids storing split strings),\n"
+    "# the codebase convention is that the provider is the FIRST segment,\n"
+    "# matching provider-prefixed ids like openrouter/<org>/<model>.\n"
+)
+
+
+def split_provider_model(value: str) -> tuple[str, str, bool]:
+    """Split one provider-less ``provider/model`` string on the first slash.
+
+    Use only where the source carries no separate provider field; the bool
+    reports whether a slash existed at all. See ``_SPLIT_CONVENTION``.
+    """
+    head, sep, tail = str(value or "").partition("/")
+    return head.strip(), tail.strip(), bool(sep)
+
+
 _MINIMUMS: dict[str, float] = {
     "max_reply_tokens": 80,
     "active_every_n": 2,
-    "review_max_holds": 1,
+    # 0 is a valid mode: the gate never holds (used < max(0, holds)); the
+    # desktop page offers it and README troubleshooting points to it.
+    "review_max_holds": 0,
     "decide_max_calls_per_turn": 1,
     "consult_max_calls_per_turn": 1,
     "delivery_max_corrective_per_request": 0,

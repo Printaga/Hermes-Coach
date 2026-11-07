@@ -229,7 +229,7 @@ def _fit_to_budget(lines: list[dict[str, Any]], budget: int) -> str:
             if line["kind"] == kind and not line["dropped"]:
                 line["dropped"] = True
                 total -= len(line["text"]) + 1
-    ledger_text = render() if total <= budget else render()
+    ledger_text = render()
 
     kept_users = sum(
         1 for line in lines if line["kind"] == "user" and not line["dropped"]

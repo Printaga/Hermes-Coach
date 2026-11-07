@@ -613,7 +613,7 @@ function ModelSection(props) {
       hint: "A hard cap on the coach's answer. Output is the expensive half of a review, so this is the main cost lever.",
       value: values.max_reply_tokens,
       min: 80,
-      max: 4000,
+      max: 2000,
       step: 20,
       onChange: (next) => state.save("max_reply_tokens", next),
     }),
@@ -667,7 +667,7 @@ function BehaviourPage(props) {
             hint: "One review every this many turns.",
             value: values.active_every_n,
             min: 2,
-            max: 50,
+            max: 100,
             onChange: (next) => state.save("active_every_n", next),
           })
         : null,
@@ -704,10 +704,10 @@ function BehaviourPage(props) {
       }),
       h(NumberField, {
         label: "Holds allowed per request",
-        hint: "One is usually right. More than one turns the gate into an argument.",
+        hint: "Zero disables holds. One is usually right. More than one turns the gate into an argument.",
         value: values.review_max_holds,
         min: 0,
-        max: 3,
+        max: 10,
         onChange: (next) => state.save("review_max_holds", next),
       }),
     ),
@@ -831,7 +831,7 @@ function DeliveryPage(props) {
         hint: "Caps how often advice can start its own turn within one request from you.",
         value: values.delivery_max_corrective_per_request,
         min: 0,
-        max: 5,
+        max: 10,
         onChange: (next) => state.save("delivery_max_corrective_per_request", next),
       }),
       h(Toggle, {
@@ -844,7 +844,7 @@ function DeliveryPage(props) {
         label: "Undelivered notes expire after",
         hint: "Turns. A note nobody delivered is dropped rather than surfacing stale.",
         value: values.delivery_note_ttl_turns,
-        min: 1,
+        min: 0,
         max: 20,
         onChange: (next) => state.save("delivery_note_ttl_turns", next),
       }),
@@ -867,7 +867,7 @@ function BudgetPage(props) {
       hint: "A review is usually a fraction of a cent; a corrective turn costs more because it is a full turn.",
       value: values.budget_session_usd,
       min: 0,
-      max: 100,
+      max: 1000,
       step: 0.1,
       onChange: (next) => state.save("budget_session_usd", next),
     }),
@@ -1096,7 +1096,12 @@ function useRecent(ctx, sessionParam) {
         setLoading(false)
       })
       .catch((err) => {
-        if (alive()) setRecentError(messageOf(err))
+        if (alive()) {
+          setRecentError(messageOf(err))
+          // A failed fetch must leave the loading state: otherwise the page
+          // spins forever with the recorded error unreachable (audited).
+          setLoading(false)
+        }
       })
   useEffect(() => {
     let live = true
@@ -1400,9 +1405,10 @@ export function register(ctx) {
         )
       }
       const raw = String(main || "")
-      // Split on the LAST slash: model ids can contain slashes
-      // (provider/org/model), and splitting on the first defeats sameModel().
-      const slash = raw.lastIndexOf("/")
+      // Split on the FIRST slash: the provider is the first segment of a
+      // provider-prefixed id (openrouter/org/model), matching the Python
+      // sites' one split convention (see coach.settings.split_provider_model).
+      const slash = raw.indexOf("/")
       const mainModel = raw
         ? {
             provider: slash >= 0 ? raw.slice(0, slash) : "",

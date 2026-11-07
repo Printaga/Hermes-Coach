@@ -15,7 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .settings import DEFAULTS, ModelChoice, Settings, load_settings
+from .settings import (
+    DEFAULTS,
+    ModelChoice,
+    Settings,
+    load_settings,
+    split_provider_model,
+)
 from .state import _safe_name as _state_safe_name
 
 _MODEL_KEYS = {"coach_model", "active_model", "review_model", "consult_model"}
@@ -81,8 +87,7 @@ def _parse_model(text: str) -> tuple[bool, ModelChoice | None]:
     value = str(text or "").strip()
     if value.lower() in {"none", "clear", "inherit", "off"}:
         return True, None
-    provider, sep, model = value.partition("/")
-    provider, model = provider.strip(), model.strip()
+    provider, model, sep = split_provider_model(value)
     if not sep or not provider or not model:
         return False, None
     return True, ModelChoice(provider=provider, model=model)
@@ -407,9 +412,14 @@ class CommandsMixin:
         rows = []
         for line in lines[-count:]:
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(row, Mapping):
+                # A stray scalar line parses without raising and would blow
+                # up row.get() below; skip it like an unparseable line.
+                continue
+            rows.append(row)
         if not rows:
             return "No coach reviews logged for this session yet."
         out = [f"Last {len(rows)} coach event(s):"]

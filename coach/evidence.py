@@ -63,6 +63,10 @@ def _filter_overrides(
     cached = _FILTER_CACHE.get(key)
     if cached is not None:
         return cached
+    if len(_FILTER_CACHE) > 512:
+        # One entry per (repo, config-mtime): a churn-heavy run would creep
+        # without a cap; wholesale clear is fine — entries are cheap to redo.
+        _FILTER_CACHE.clear()
     overrides: list[str] = []
     result = _git(
         runner,
@@ -286,9 +290,15 @@ def _file_list(
     if remaining() > 0:
         add(_names(runner, root, "HEAD", paths, min(_GIT_TIMEOUT, remaining())))
     for rel in untracked:
-        if rel not in seen and len(rows) < _MAX_LISTED_FILES:
-            seen.add(rel)
-            rows.append(f"?? {rel}")
+        if rel in seen:
+            continue
+        if len(rows) >= _MAX_LISTED_FILES:
+            # Untracked overflow must count like tracked overflow does, or
+            # the coverage claim reads "read all" while files were dropped.
+            extra += 1
+            continue
+        seen.add(rel)
+        rows.append(f"?? {rel}")
     if extra:
         rows.append(f"[+{extra} more files]")
     return "\n".join(rows)
