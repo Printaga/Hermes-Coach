@@ -12,7 +12,7 @@ import json
 import logging
 import math
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -137,7 +137,7 @@ def _log_name(session_id: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 # The writer stores body/evidence/fix at their schema maxima (600/1000/1000),
@@ -575,6 +575,17 @@ class CommandsMixin:
             )
         return "\n".join(lines)
 
+    def _requeue_pending(self, session_id: str, notes: list[Any]) -> None:
+        """Put claimed notes back at the head of the pending queue."""
+        if not notes:
+            return
+        with self._store_lock:
+            state = self.store.load(session_id)
+            # A retry keeps its place ahead of notes queued meanwhile.
+            state.pending = [*notes, *state.pending]
+            state.updated_at = self.clock()
+            self.store.save(state)
+
     def _send_pending(self, session_id: str = "current") -> str:
         if self.inject is None:
             return "No injection channel available; notes stay pending."
@@ -604,12 +615,22 @@ class CommandsMixin:
             self.store.save(state)
         sent = 0
         failed: list[Any] = []
-        for note in deliverable:
-            text = str(note.get("text") or note.get("body") or "").strip()
-            if self._inject(text):
-                sent += 1
-            else:
-                failed.append(note)
+        tried = 0
+        try:
+            for note in deliverable:
+                text = str(note.get("text") or note.get("body") or "").strip()
+                if self._inject(text):
+                    sent += 1
+                else:
+                    failed.append(note)
+                tried += 1
+        except BaseException:
+            # The claim above already dropped these notes from disk. An
+            # unexpected raise from the injection channel must not turn that
+            # claim into a loss: requeue what was not delivered, then re-raise.
+            failed.extend(deliverable[tried:])
+            self._requeue_pending(session_id, failed)
+            raise
         with self._store_lock:
             state = self.store.load(session_id)
             if failed:

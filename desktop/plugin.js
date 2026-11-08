@@ -189,7 +189,12 @@ function useSettings(ctx) {
       })
       if (!alive.current) return true
       setConfig(unwrap(next))
-      setStatus(unwrap(await ctx.rest("/status")))
+      try {
+        setStatus(unwrap(await ctx.rest("/status")))
+      } catch {
+        // The PUT landed: a status refresh that fails is not a failed save,
+        // and reporting one would invite a retry of a write that persisted.
+      }
       return true
     } catch (err) {
       if (alive.current) setSaveError(messageOf(err))
@@ -381,8 +386,14 @@ function NumberField(props) {
       min: props.min,
       max: props.max,
       step: props.step ?? 1,
+      onFocus: () => {
+        editing.current = true
+      },
       onChange: (event) => setDraft(event.target.value),
-      onBlur: commit,
+      onBlur: () => {
+        editing.current = false
+        commit()
+      },
       onKeyDown: (event) => {
         if (event.key === "Enter") commit()
       },
@@ -414,13 +425,23 @@ function reasoningOptions() {
   }))
 }
 
-const REASONING_DEFAULTS = REASONING_LABELS.map(([value]) => value)
-
 function ReasoningChoice(props) {
+  const value = props.value || ""
+  const options = reasoningOptions()
+  if (!options.some((option) => option.value === value)) {
+    // Echo a value this page does not know (another version's scale, or a
+    // hand-edited config) instead of falling back to the placeholder: the
+    // stored setting would otherwise look unset while the coach still sends it.
+    options.unshift({
+      value,
+      label: `${value} (not on the app scale)`,
+      description: "Saved by another version. Pick a level to replace it.",
+    })
+  }
   return h(Choice, {
     label: props.label,
-    value: props.value || "",
-    options: reasoningOptions(),
+    value,
+    options,
     onChange: props.onChange,
   })
 }
@@ -1116,23 +1137,29 @@ function useRecent(ctx, sessionParam) {
   // Shared with refresh(): a manual pull that resolves after the page
   // unmounts must not call setRecent on a dead component.
   const alive = useRef(true)
-  const pull = (isAlive) =>
-    ctx
+  // The mount pull and a manual refresh can overlap; only the newest request
+  // may write, or a slow first fetch lands after the refresh and shows stale
+  // rows (the same sequence pattern GuidancePage uses).
+  const seq = useRef(0)
+  const pull = (isAlive) => {
+    const id = ++seq.current
+    return ctx
       .rest(`/recent?limit=8${sessionParam}`)
       .then((result) => {
-        if (!isAlive()) return
+        if (!isAlive() || seq.current !== id) return
         const list = (unwrap(result) || {}).reviews
         setRecent(Array.isArray(list) ? list : [])
         setLoading(false)
       })
       .catch((err) => {
-        if (isAlive()) {
+        if (isAlive() && seq.current === id) {
           setRecentError(messageOf(err))
           // A failed fetch must leave the loading state: otherwise the page
           // spins forever with the recorded error unreachable (audited).
           setLoading(false)
         }
       })
+  }
   useEffect(() => {
     alive.current = true
     setRecentError("")

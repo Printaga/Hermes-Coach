@@ -167,9 +167,12 @@ function main() {
   ])
   const missing = keys.filter((key) => {
     if (CONFIG_ONLY.has(key)) return false
+    // Match the save literal on the string-preserving copy: `code` has every
+    // quoted literal replaced with "", so `save("key")` becomes `save("")` and
+    // this regex could never fire against it (the branch was dead).
     const saveCall = new RegExp(`save\\(\\s*["']${key}["']`)
     const valuesProp = new RegExp(`values\\.${key}\\b`)
-    if (saveCall.test(code) || valuesProp.test(code)) return false
+    if (saveCall.test(withStrings) || valuesProp.test(code)) return false
     // Per-mode models render through a mapped ModelPicker: the key appears as
     // a string literal in the overrides list and saves via save(key, ...).
     if (

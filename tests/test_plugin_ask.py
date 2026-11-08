@@ -30,6 +30,15 @@ def test_child_sessions_are_refused(tmp_path):
     out = json.loads(p.tool_ask({"question": "q"}))
     assert out["ok"] is False and out["error"] == "child_session"
 
+def test_ask_reports_the_consult_count_under_its_namespaced_key(tmp_path):
+    """calls_this_turn must read consult:<turn> — the bare turn id is never
+    written, so the count silently stayed at the pre-reservation value."""
+    p = _plugin(tmp_path)
+    first = json.loads(p.tool_ask({"question": "q", "turn_id": "t1"}))
+    second = json.loads(p.tool_ask({"question": "q", "turn_id": "t1"}))
+    assert (first["calls_this_turn"], second["calls_this_turn"]) == (1, 2)
+
+
 def test_per_turn_cap(tmp_path):
     p = _plugin(tmp_path)
     args = {"question": "q", "turn_id": "t1"}
@@ -148,6 +157,20 @@ def test_a_raised_consult_call_releases_the_reservation(tmp_path, monkeypatch):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(p.coach, "ask", boom)
+    with pytest.raises(RuntimeError):
+        p._ask({"question": "q", "turn_id": "t1", "session_id": "s"})
+    assert p.store.load("s").calls.get("consult:t1", 0) == 0
+
+
+def test_a_failed_prompt_build_releases_the_reservation(tmp_path, monkeypatch):
+    """The reservation is taken before the prompt is assembled: a raise there
+    (guidance read, cwd probe) must release it, not burn the turn's budget."""
+    p = _plugin(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("guidance read failed")
+
+    monkeypatch.setattr(p, "_prompt_call", boom)
     with pytest.raises(RuntimeError):
         p._ask({"question": "q", "turn_id": "t1", "session_id": "s"})
     assert p.store.load("s").calls.get("consult:t1", 0) == 0

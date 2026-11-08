@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from coach.advisor import Coach
@@ -629,16 +630,16 @@ def test_dashboard_paths_and_guidance_helpers(tmp_path):
     }
     assert api._home(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(home=tmp_path)))) == tmp_path
     assert api._clean_scope("cwd") == "project"
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         api._clean_scope("everywhere")
     assert api._read_guidance(tmp_path / "missing.md") == ""
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         api._project_dir(tmp_path, "")
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         api._project_dir(tmp_path, str(tmp_path / "missing"))
     outside = tmp_path.parent / "outside-coach-project"
     outside.mkdir(exist_ok=True)
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         api._project_dir(tmp_path, str(outside))
 
 
@@ -671,6 +672,33 @@ def test_worker_stop_is_safe_without_a_submission():
     worker = Worker(lambda session_id, turn_id: None)
     worker.stop()
     assert worker.submit("s", "t") is False
+
+
+def test_worker_does_not_queue_the_running_turn_again():
+    """post_llm_call fires once per model call: re-submitting the in-flight
+    turn must not review (and pay for) it a second time."""
+    from coach.worker import Worker
+
+    calls = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def run(session_id, turn_id):
+        calls.append((session_id, turn_id))
+        started.set()
+        release.wait(2.0)
+
+    worker = Worker(run)
+    try:
+        assert worker.submit("s", "t") is True
+        assert started.wait(2.0) is True
+        assert worker.submit("s", "t") is True
+        release.set()
+        assert worker.drain(2.0) is True
+        assert calls == [("s", "t")]
+    finally:
+        release.set()
+        worker.stop()
 
 
 def test_trim_log_keeps_small_files_and_log_names_are_safe(tmp_path):

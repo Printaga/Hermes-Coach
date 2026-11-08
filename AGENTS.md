@@ -82,7 +82,9 @@ the runtime environment.
   turn (`_snapshot_turn_base`), and `pre_verify` collects
   `base..HEAD` + worktree + new files. Never snapshot per model call — a
   mid-turn commit would move the base past the change. Worktree-only evidence
-  is the fallback, not the default.
+  is the fallback, not the default. The coverage block names how many dirty
+  worktree paths lie outside the turn (`_other_dirty`), so a claim that counts
+  the whole tree does not read to the reviewer as work it cannot find.
 - Session state: atomic writes, `0600`, hashed file names, pruned by mtime.
 
 ## Verification

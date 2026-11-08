@@ -25,6 +25,11 @@ _STATUS_CHARS = 64
 _PREVIEW_WRITE_MAX = 2000
 _CARDS_PER_TURN_MAX = 20
 _MAX_TURNS = 60
+# Host-supplied scalars: bound like every other written field, or a hostile or
+# corrupt record smuggles an unbounded string past the documented write cap.
+_TURN_ID_CHARS = 64
+_CWD_CHARS = 512
+_DIGEST_CHARS = 64
 
 
 def _bound_card(card: Any) -> dict:
@@ -63,12 +68,12 @@ def bound_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
         bounded["tools"] = []
     # Only the known keys: an arbitrary payload key must not persist on disk.
     return {
-        "turn_id": str(bounded.get("turn_id") or ""),
+        "turn_id": str(bounded.get("turn_id") or "")[:_TURN_ID_CHARS],
         "user": bounded["user"],
         "assistant": bounded["assistant"],
         "tools": bounded["tools"],
-        "cwd": str(bounded.get("cwd") or ""),
-        "digest": str(bounded.get("digest") or ""),
+        "cwd": str(bounded.get("cwd") or "")[:_CWD_CHARS],
+        "digest": str(bounded.get("digest") or "")[:_DIGEST_CHARS],
     }
 
 

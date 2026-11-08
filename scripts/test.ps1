@@ -8,27 +8,33 @@ if (-not $python) { $python = "python" }
 $status = 0
 $testArgs = @()
 if ($args.Count -gt 0) { $testArgs = $args } else { $testArgs = @("tests") }
-try {
-  uv run --python "$python" --with "pytest==9.2.0" --with "pyyaml==6.0.2" `
-    --with "fastapi==0.133.1" --with "httpx==0.28.1" `
-    python -m pytest -q @testArgs
-  if ($LASTEXITCODE -ne 0) { $status = $LASTEXITCODE }
-} catch {
-  Write-Error $_ -ErrorAction Continue
-  $status = 1
-}
 
-if ($env:SKIP_DESKTOP_CHECK -ne "1") {
+try {
   try {
-    node scripts/check-desktop-page.mjs
+    uv run --python "$python" --with "pytest==9.2.0" --with "pyyaml==6.0.2" `
+      --with "fastapi==0.133.1" --with "httpx==0.28.1" `
+      python -m pytest -q @testArgs
     if ($LASTEXITCODE -ne 0) { $status = $LASTEXITCODE }
   } catch {
     Write-Error $_ -ErrorAction Continue
     $status = 1
   }
-} else {
-  Write-Warning "desktop-page check skipped (SKIP_DESKTOP_CHECK=1)"
+
+  if ($env:SKIP_DESKTOP_CHECK -ne "1") {
+    try {
+      node scripts/check-desktop-page.mjs
+      if ($LASTEXITCODE -ne 0) { $status = $LASTEXITCODE }
+    } catch {
+      Write-Error $_ -ErrorAction Continue
+      $status = 1
+    }
+  } else {
+    Write-Warning "desktop-page check skipped (SKIP_DESKTOP_CHECK=1)"
+  }
+} finally {
+  # Pop-Location must run even when a gate throws or the run is interrupted,
+  # or the caller's location stays changed for the rest of the session.
+  Pop-Location
 }
 
-Pop-Location
 exit $status

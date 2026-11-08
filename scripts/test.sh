@@ -9,9 +9,15 @@ cd "$(dirname "$0")/.." || exit 1
 PYTHON="${COACH_PYTHON:-python3}"
 status=0
 
+# Bash < 4.4 aborts on "${@:-tests}" under `set -u` when there are no
+# positional parameters, so the default is applied without touching "$@".
+args=("$@")
+if [ "$#" -eq 0 ]; then
+  args=(tests)
+fi
 uv run --python "$PYTHON" --with "pytest==9.2.0" --with "pyyaml==6.0.2" \
   --with "fastapi==0.133.1" --with "httpx==0.28.1" \
-  python -m pytest -q "${@:-tests}" || status=$?
+  python -m pytest -q "${args[@]}" || status=$?
 
 if [ "${SKIP_DESKTOP_CHECK:-0}" != "1" ]; then
   node scripts/check-desktop-page.mjs || status=$?

@@ -25,6 +25,7 @@ class Worker:
         self._condition = threading.Condition()
         self._pending: tuple[str, str] | None = None
         self._evicted: tuple[str, str] | None = None
+        self._current: tuple[str, str] | None = None
         self._running = False
         self._stopped = False
         self._thread = threading.Thread(
@@ -40,10 +41,16 @@ class Worker:
         with self._condition:
             if self._stopped:
                 return False
+            target = (session, str(turn_id or "").strip())
+            if target == self._current:
+                # Already running: post_llm_call fires once per model call, and
+                # queueing the same turn again would review (and pay for) it a
+                # second time after the in-flight run finishes.
+                return True
             pending = self._pending
-            if pending is not None and pending != (session, str(turn_id or "").strip()):
+            if pending is not None and pending != target:
                 self._evicted = pending
-            self._pending = (session, str(turn_id or "").strip())
+            self._pending = target
             self._condition.notify()
             return True
 
@@ -91,6 +98,7 @@ class Worker:
                     return
                 session, turn = self._pending
                 self._pending = None
+                self._current = (session, turn)
                 self._running = True
             try:
                 self._run(session, turn)
@@ -98,5 +106,6 @@ class Worker:
                 log.warning("coach: review of %s/%s failed", session, turn, exc_info=True)
             finally:
                 with self._condition:
+                    self._current = None
                     self._running = False
                     self._condition.notify_all()

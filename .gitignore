@@ -33,6 +33,8 @@ htmlcov/
 *.jks
 id_rsa*
 id_ed25519*
+id_ecdsa*
+id_dsa*
 
 # Tool scratch
 .freebuff/

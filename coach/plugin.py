@@ -130,11 +130,14 @@ _REVIEW_SYSTEM = (
     '"concern" for a real defect you can point at in the diff; "blocker" only '
     'when the work must not ship. Use "unverifiable" when the evidence block '
     "itself says the patch is truncated or a file the claim names is missing "
-    "from the change set: that is a coverage limit of this plugin, never a "
+    'from the change set: that is a coverage limit of this plugin, never a '
     "defect in the work, and it must never be reported as a concern or "
     "blocker. The stat, the file list and the coverage line are always "
     "complete even when the patch is clipped; a file whose patch is missing "
-    "has not been shown to be unchanged."
+    "has not been shown to be unchanged. The evidence is turn-scoped: when the "
+    "claim's file count differs from the list, read the coverage block first "
+    "-- worktree paths left dirty by earlier turns are named there, and a "
+    "count that includes them is a scope difference, not missing work."
 )
 ASK_DESCRIPTION = (
     "Ask the coach for one independent second opinion about the current work. "
@@ -1487,19 +1490,21 @@ class CoachPlugin(CommandsMixin):
             state.calls[consult_key] = used + 1
             state.updated_at = self.clock()
             self.store.save(state)
-        prompt = question
-        context = str(args.get("context") or "").strip()[:_CONTEXT_MAX]
-        if context:
-            prompt = f"{question}\n\nContext:\n{context}"
-        # Session-aware project dir: the model's working directory may differ
-        # from this process's cwd in multi-session hosts. Model-supplied paths
-        # are never trusted for the working directory.
-        cwd = str(self.cwd() or os.getcwd())
-        guidance = (
-            self.guidance.system_block(cwd) if self.settings.guidance_enabled else ""
-        )
-        messages = self._prompt_call(state, _SYSTEM, guidance, prompt)
         try:
+            prompt = question
+            context = str(args.get("context") or "").strip()[:_CONTEXT_MAX]
+            if context:
+                prompt = f"{question}\n\nContext:\n{context}"
+            # Session-aware project dir: the model's working directory may
+            # differ from this process's cwd in multi-session hosts.
+            # Model-supplied paths are never trusted for the working directory.
+            cwd = str(self.cwd() or os.getcwd())
+            guidance = (
+                self.guidance.system_block(cwd)
+                if self.settings.guidance_enabled
+                else ""
+            )
+            messages = self._prompt_call(state, _SYSTEM, guidance, prompt)
             reply = self.coach.ask(
                 messages,
                 mode="consult",
@@ -1507,8 +1512,9 @@ class CoachPlugin(CommandsMixin):
                 timeout=float(self.settings.worker_timeout_s),
             )
         except Exception:
-            # The call never produced an answer: release the reservation so a
-            # provider crash does not burn the turn's consult budget.
+            # Nothing answered the user: release the reservation so a provider
+            # crash -- or a failure while assembling the prompt (guidance read,
+            # cwd probe) -- does not burn the turn's consult budget.
             def release(current: Any) -> None:
                 current.calls[consult_key] = max(
                     0, current.calls.get(consult_key, 1) - 1
@@ -1562,7 +1568,7 @@ class CoachPlugin(CommandsMixin):
             "model": reply.model,
             "cost_usd": reply.cost_usd,
             "spend_usd": state.spend_usd,
-            "calls_this_turn": state.calls.get(turn_id, used),
+            "calls_this_turn": state.calls.get(consult_key, used),
             "error": "",
         }
 

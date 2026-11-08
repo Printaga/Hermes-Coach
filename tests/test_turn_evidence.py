@@ -250,6 +250,10 @@ def test_review_prompt_gives_missing_evidence_its_own_severity():
     assert "unverifiable" in _REVIEW_SYSTEM
     assert "coverage limit" in _REVIEW_SYSTEM
     assert "never" in _REVIEW_SYSTEM
+    # The scope rule that keeps a whole-worktree claim from reading as missing
+    # work: the evidence is turn-scoped and says so.
+    assert "turn-scoped" in _REVIEW_SYSTEM
+    assert "not missing work" in _REVIEW_SYSTEM
 
 
 
@@ -414,6 +418,91 @@ def test_the_file_list_announces_its_cap():
         range_names=rows,
     )
     assert "[+5 more files]" in out
+
+
+@needs_git
+def test_worktree_work_from_earlier_turns_is_named_as_out_of_scope(tmp_path):
+    """Evidence is turn-scoped, but the claim is written against the worktree:
+    the coverage block must name the dirty paths the turn did not touch, or a
+    "18 files modified" claim reads as work that never happened."""
+    root = _repo(tmp_path)
+    (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "b.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(root, "base")
+    (root / "a.py").write_text("x = 2\n", encoding="utf-8")
+    (root / "b.py").write_text("x = 2\n", encoding="utf-8")
+
+    text = collect(str(root), ["a.py"])
+
+    assert "1 changed file(s) listed" in text
+    assert "1 other path(s) in this worktree are dirty" in text
+    assert "b.py" not in text  # not this turn's work, so not in the list
+
+    # A turn that covers every dirty path reports no out-of-scope work.
+    both = collect(str(root), ["a.py", "b.py"])
+    assert "other path(s)" not in both
+
+
+@needs_git
+def test_a_rename_counts_once_and_follows_the_turn_paths(tmp_path):
+    """porcelain -z emits a rename as `R  dst\\0src\\0`: the bare origin field
+    is the same entry, not a second dirty path with three characters chopped."""
+    root = _repo(tmp_path)
+    (root / "old.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "keep.py").write_text("y = 1\n", encoding="utf-8")
+    _commit(root, "base")
+    _run(root, "mv", "old.py", "new.py")
+    (root / "keep.py").write_text("y = 2\n", encoding="utf-8")
+
+    text = collect(str(root), ["keep.py"])
+
+    assert "1 other path(s) in this worktree are dirty" in text
+
+    # Either side of the rename makes it this turn's work, not other work.
+    both = collect(str(root), ["keep.py", "new.py"])
+    assert "other path(s)" not in both
+
+
+@needs_git
+def test_the_listed_count_excludes_the_overflow_row(tmp_path):
+    """'N changed file(s) listed' counts files, not the [+] marker row."""
+    root = _repo(tmp_path)
+    names = [f"f{i}.py" for i in range(202)]
+    for name in names:
+        (root / name).write_text("x = 1\n", encoding="utf-8")
+    _commit(root, "base")
+    for name in names:
+        (root / name).write_text("x = 2\n", encoding="utf-8")
+
+    text = collect(str(root), names, max_chars=20000)
+
+    assert "[+2 more files]" in text
+    assert "--- files changed (200) ---" in text
+
+
+def test_an_exhausted_git_budget_is_not_an_empty_change_set(tmp_path, monkeypatch):
+    """_diff/_names return "" for a timeout and for "nothing to report": when
+    the budget is gone the gate must hear "unverified", not "unchanged"."""
+    from coach import evidence
+
+    empty = evidence._Gathered(
+        committed="",
+        uncommitted="",
+        new_files="",
+        base_ok=False,
+        base_note="",
+    )
+    monkeypatch.setattr(evidence, "_gather", lambda *a, **k: empty)
+    ticks = [0.0]
+
+    def clock():
+        # The first reading sets the deadline; every later one is past it.
+        return ticks.pop(0) if ticks else 1e9
+
+    text = evidence.collect(str(tmp_path), ["a.py"], clock=clock)
+
+    assert "unverified" in text
+    assert '"unverifiable"' in text
 
 
 @needs_git

@@ -135,7 +135,7 @@ def _json_objects(text: str):
 
 
 def parse_finding(parsed: Any, text: str = "") -> Finding | None:
-    """Return a validated finding from structured data or a fenced JSON reply."""
+    """Return a validated finding from structured data or a fenced JSON block."""
     if isinstance(parsed, Mapping):
         return _from_mapping(parsed)
     source = text or (parsed if isinstance(parsed, str) else "")

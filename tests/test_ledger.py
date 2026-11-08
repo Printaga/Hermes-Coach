@@ -55,6 +55,26 @@ def test_bound_turn_caps_every_text_field():
     assert len(bounded["tools"][0]["arg"]) <= _ARG_CHARS
 
 
+def test_bound_turn_caps_the_host_scalars_too():
+    """turn_id, cwd and digest reach the same write-time bound as the text:
+    the docstring promises a bounded record, not only bounded prose."""
+    from coach.ledger import bound_turn
+
+    bounded = bound_turn(
+        {
+            "turn_id": "t" * 500,
+            "user": "u",
+            "assistant": "a",
+            "tools": [],
+            "cwd": "/" + "d" * 5000,
+            "digest": "g" * 500,
+        }
+    )
+    assert len(bounded["turn_id"]) <= 64
+    assert len(bounded["cwd"]) <= 512
+    assert len(bounded["digest"]) <= 64
+
+
 def test_record_turn_bounds_text_and_keeps_earlier_tool_cards():
     from coach.plugin import _record_turn
     from coach.state import SessionState

@@ -412,6 +412,64 @@ def _names(
     return _stdout(result)
 
 
+def _other_dirty(
+    root: Path,
+    runner: Callable[..., object],
+    safe: Sequence[str],
+    remaining: Callable[[], float],
+) -> int:
+    """Count dirty worktree paths that are not part of this turn's set.
+
+    A completion claim is written against the whole worktree while the evidence
+    is turn-scoped. Without this count the reviewer saw "18 files modified"
+    against a 6-file list and reported the difference as work it could not find.
+    """
+    timeout = min(_GIT_TIMEOUT, remaining())
+    if timeout <= 0:
+        return 0
+    result = _git(
+        runner,
+        root,
+        [
+            *_hardened(root, runner, timeout),
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+        ],
+        timeout=timeout,
+    )
+    if result is None or result.returncode != 0:
+        return 0
+    known = set(safe)
+    others = 0
+    fields = _stdout(result).split("\0")
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:  # an empty tail, or a rename origin already consumed
+            continue
+        status = entry[:2]
+        rel = entry[3:].removesuffix("/")
+        names = {rel}
+        if "R" in status or "C" in status:
+            # A rename/copy emits the destination as the entry path and the
+            # origin as the next bare NUL field: one path pair, one entry. Read
+            # the origin here, or its first three characters get chopped and it
+            # is counted as a second, unrelated file.
+            origin = fields[index].removesuffix("/") if index < len(fields) else ""
+            index += 1
+            names.add(origin)
+        names.discard("")
+        # Either side counting as this turn's work makes the pair turn work.
+        if names and names.isdisjoint(known):
+            others += 1
+            if others >= _MAX_LISTED_FILES:
+                break
+    return others
+
+
 def _range_usable(
     runner: Callable[..., object],
     root: Path,
@@ -446,6 +504,7 @@ def _coverage(
     *,
     git: bool,
     truncated: bool,
+    others: int = 0,
 ) -> str:
     """State what the evidence covers, so a partial patch cannot read as a lie.
 
@@ -459,6 +518,11 @@ def _coverage(
             f"the host; patch budget {limit} chars."
         ),
     ]
+    if others:
+        lines.append(
+            f"{others} other path(s) in this worktree are dirty from earlier "
+            "turns and are not part of this change set."
+        )
     if not git:
         lines.append(
             "git was unavailable: file contents were read directly and the list "
@@ -471,10 +535,11 @@ def _coverage(
             "unchanged."
         )
     lines.append(
-        "The stat and file list describe every file changed since the turn "
-        "started; the patch shows only the paths the host reported, so a file "
-        "with no patch may still have changed. Judge the work from the list, "
-        "and report any gap as severity \"unverifiable\"."
+        "The stat and file list cover this turn's paths (the host's report, "
+        "plus any commits made during it), not the whole worktree, and the "
+        "patch shows only the paths the host reported, so a file with no patch "
+        "may still have changed. Judge the work from the list, and report any "
+        "gap as severity \"unverifiable\"."
     )
     return "\n".join(lines)
 
@@ -715,6 +780,21 @@ def collect(
         or gathered.new_files
         or gathered.range_names
     ):
+        # An empty change set and an exhausted git budget look identical here:
+        # _diff/_names return "" for a failure and for "nothing to report".
+        # Silence is only honest when the queries ran; otherwise the gate reads
+        # a timeout as "nothing changed" and skips a turn that did change files.
+        if remaining() <= 0:
+            return _assemble(
+                [
+                    "--- coverage ---\n"
+                    "Evidence collection ran out of its git budget before the "
+                    "change set could be read. Treat the work as unverified, not "
+                    'unchanged, and report the gap as severity "unverifiable".'
+                ],
+                [],
+                limit,
+            )
         # Nothing changed: reviewing nothing is worse than skipping, and the
         # caller turns an empty result into "no review".
         return ""
@@ -728,7 +808,10 @@ def collect(
         remaining=remaining,
         range_names=gathered.range_names,
     )
-    listed = len(files.splitlines())
+    listed = sum(1 for line in files.splitlines() if not line.startswith("[+"))
+    # Scope transparency: the turn's set is a subset of the worktree, and a
+    # claim that counts the tree must not read as work this turn never did.
+    others = _other_dirty(use_root, runner, use_safe, remaining)
     if gathered.base_ok:
         # Unconditional: the range's description must never fall back to the
         # host's path list, or a commit again reads as smaller than it is.
@@ -764,7 +847,7 @@ def collect(
         header.append(f"--- files changed ({listed}) ---\n{files}")
     rest = "\n\n".join(body)
     truncated = bool(rest) and (sum(len(section) for section in header) + len(rest) + 48 > limit)
-    header.append(_coverage(listed, len(safe), limit, git=True, truncated=truncated))
+    header.append(_coverage(listed, len(safe), limit, git=True, truncated=truncated, others=others))
     if discovery_head:
         header.append(discovery_head)
     return _assemble(header, body, limit)

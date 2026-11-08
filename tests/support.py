@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -186,7 +187,9 @@ def make_pay(**overrides):
         "attempt": 0,
     }
     payload.update(overrides)
-    return payload
+    # Deep copy: a mutable override (changed_paths=[...]) must not alias the
+    # caller's list, and the nested changed_paths list must never be shared.
+    return copy.deepcopy(payload)
 
 
 PAY = make_pay()

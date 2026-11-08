@@ -1,9 +1,10 @@
-# Minimal hygiene battery (see .audit report's import-hygiene finding):
-# pyflakes error rules (F) + import order (I). Extended rulesets come with
-# the structural refactors that own their own rule coverage.
+# Hygiene battery: pyflakes errors (F), import order (I), bugbear (B) and
+# pyupgrade (UP). B catches real defects that F misses (blind except asserts,
+# loop-variable capture, mutable defaults); UP keeps imports and stdlib calls
+# current. Style/simplify rulesets stay out until the refactors that own them.
 target-version = "py311"
 line-length = 100
 [lint]
-select = ["F", "I"]
+select = ["F", "I", "B", "UP"]
 [lint.isort]
 known-first-party = ["coach", "dashboard", "desktop", "scripts", "tests"]
