@@ -916,7 +916,9 @@ class CoachPlugin(CommandsMixin):
                 with self._store_lock:
                     fresh = self.store.load(session_id)
                 if self.should_pre_review(fresh, self.settings, user_text):
-                    extra = self._pre_turn_guidance(session_id, turn_id, user_text)
+                    extra = self._pre_turn_guidance(
+                        session_id, turn_id, user_text, fresh
+                    )
                     if extra:
                         parts.append(extra)
             except Exception:
@@ -1108,13 +1110,18 @@ class CoachPlugin(CommandsMixin):
         return True
 
     def _pre_turn_guidance(
-        self, session_id: str, turn_id: str, user_text: str
+        self,
+        session_id: str,
+        turn_id: str,
+        user_text: str,
+        state: Any = None,
     ) -> str:
         """Run one bounded pre-turn guidance call; empty string on any miss.
 
         The charge and the provenance land in one atomic commit, and the
         payload is built from the saved record — partial guidance never
-        reaches the turn.
+        reaches the turn. A structured finding earns a card for visibility,
+        but never a pending note: the guidance itself is already injected.
         """
         sid = str(session_id or "current")
         tid = str(turn_id or "current")
@@ -1128,8 +1135,9 @@ class CoachPlugin(CommandsMixin):
                 if self.settings.guidance_enabled
                 else ""
             )
-            with self._store_lock:
-                state = self.store.load(sid)
+            if state is None:
+                with self._store_lock:
+                    state = self.store.load(sid)
             # Reuse the prompt builder so ledger/user text stays data, never
             # directives — no raw string concat on this path.
             messages = self._prompt_call(state, _PRE_SYSTEM, guidance, text)
@@ -1168,22 +1176,20 @@ class CoachPlugin(CommandsMixin):
             )
             state.last_error = ""
 
+        # A paid call must not vanish silently: retry once, then verify the
+        # record actually persisted before injecting anything.
+        self._save_with_retry(sid, commit, what="pre-turn charge")
+        if reply.finding is not None:
+            self.card(reply.finding)
         try:
-            self._reload_and_save(sid, commit)
+            with self._store_lock:
+                record = _find_turn(self.store.load(sid), tid)
+            saved = str((record or {}).get("pre_guidance") or "")
         except Exception:
+            saved = ""
+        if not saved:
             self._record_skip(sid, "pre-turn save failed")
             return ""
-        if reply.finding is not None:
-            try:
-                self.deliver(reply.finding, session_id=sid, turn_id=tid)
-            except Exception:
-                pass
-        with self._store_lock:
-            try:
-                record = _find_turn(self.store.load(sid), tid)
-                saved = str((record or {}).get("pre_guidance") or "")
-            except Exception:
-                saved = ""
         return saved
 
     def run_review(self, session_id: str, turn_id: str) -> None:

@@ -229,3 +229,31 @@ def test_pre_turn_every_n_fires_first_then_gates(tmp_path):
         session_id="s", turn_id="t6", user_message="task four"
     )
     assert third is not None and third.get("context")
+
+
+def test_pre_turn_structured_finding_posts_card_without_pending_note(tmp_path):
+    text = (
+        "Heads up.\n```json\n"
+        '{"severity": "concern", "title": "Risky rm", '
+        '"body": "Deletes before backup.", "evidence": "x", '
+        '"fix": "Back up first."}\n```'
+    )
+    posted: list[str] = []
+    target = CoachPlugin(
+        llm=_ConsultLlm(text=text),
+        store=Store(tmp_path / "sessions"),
+        settings=load_settings(
+            {
+                "coach_model": {"provider": "openrouter", "model": "x"},
+                "active_enabled": True,
+                "active_timing": "pre",
+            }
+        ),
+        post=posted.append,
+    )
+    out = target.on_pre_llm_call(
+        session_id="s", turn_id="t1", user_message="clean up old backups"
+    )
+    assert out is not None and out.get("context")
+    assert len(posted) == 1
+    assert target.store.load("s").pending == []
