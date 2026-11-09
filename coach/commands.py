@@ -41,7 +41,7 @@ _HELP = (
     "  /coach status                    configuration, modes, spend\n"
     "  /coach last                      the last advice the coach gave\n"
     "  /coach log [n] [full]            last reviews/decisions with their context\n"
-    "  /coach active on|off             per-turn Active review\n"
+    "  /coach active on|off|pre|post|both   per-turn Active review\n"
     "  /coach review on|off             pre-completion Review gate\n"
     "  /coach decide on|off             coach_decide tool\n"
     "  /coach model [mode] [provider/model]   set or show a model; mode is\n"
@@ -222,8 +222,16 @@ class CommandsMixin:
                 return self._last_advice_text(session_id, args)
             if name == "log":
                 return self._log_text(session_id, args)
-            if name in {"active", "review", "decide"}:
+            if name in {"review", "decide"}:
                 return self._toggle(f"{name}_enabled", name, args)
+            if name == "active" and args and args[0].lower() in (
+                "pre",
+                "post",
+                "both",
+            ):
+                return self._active_timing(args[0].lower())
+            if name == "active":
+                return self._toggle("active_enabled", name, args)
             if name == "model":
                 return self._model_command(args)
             if name == "set":
@@ -282,6 +290,14 @@ class CommandsMixin:
         if not self._apply(key, value):
             return f"Coach: could not save {key}."
         return f"{label.capitalize()} {_on_off(value)}."
+
+    def _active_timing(self, timing: str) -> str:
+        """Set the Active timing; pre/both also enable the mode."""
+        if not self._apply("active_timing", timing):
+            return "Coach: could not save active_timing."
+        if timing in ("pre", "both") and not self._apply("active_enabled", True):
+            return "Coach: could not save active_enabled."
+        return f"Active {_on_off(self.settings.active_enabled)} ({timing})."
 
     def _resolved(self, mode: str) -> ModelChoice | None:
         if mode == "coach":

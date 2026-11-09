@@ -659,13 +659,37 @@ function BehaviourPage(props) {
       {
         title: "Active review",
         description:
-          "Reviews each finished turn and tells the agent what it would change. It is the only mode that spends on every turn, which is why it is off by default.",
+          "Reviews finished turns, or steers the next one when timing is before. Pre-turn adds latency and is off unless chosen.",
       },
       h(Toggle, {
         label: "Review every turn",
         hint: "Off by default. A cheap, fast model keeps this close to free.",
         checked: values.active_enabled,
         onChange: (next) => state.save("active_enabled", next),
+      }),
+      h(Choice, {
+        label: "When to review",
+        value: values.active_timing || "post",
+        options: [
+          {
+            value: "post",
+            label: "After the turn",
+            description: "Critiques completed work. Current behavior.",
+          },
+          {
+            value: "pre",
+            label: "Before the turn",
+            description:
+              "Steers this turn with short guidance. Post review off. Adds latency; capped at 10s, fail-open.",
+          },
+          {
+            value: "both",
+            label: "Before and after",
+            description:
+              "Steers then critiques. Costs both calls; provenance is logged so post sees the guidance.",
+          },
+        ],
+        onChange: (next) => state.save("active_timing", next),
       }),
       h(Choice, {
         label: "Which turns",

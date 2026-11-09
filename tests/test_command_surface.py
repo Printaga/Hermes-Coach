@@ -218,3 +218,13 @@ def test_guidance_read_truncates_and_names_unknown_scopes(tmp_path):
     assert len(guidance.read("global", "")) == GUIDANCE_MAX_CHARS
     with pytest.raises(ValueError):
         guidance._path("everywhere", "")
+
+
+def test_active_command_accepts_timing_values(tmp_path):
+    target = plugin(tmp_path)
+    assert target.command("active both") == "Active on (both)."
+    assert target.settings.active_timing == "both"
+    assert target.settings.active_enabled is True
+    assert target.command("active pre") == "Active on (pre)."
+    assert target.command("active post") == "Active on (post)."
+    assert target.settings.active_timing == "post"
