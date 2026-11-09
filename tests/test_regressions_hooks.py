@@ -173,3 +173,59 @@ def test_pre_turn_fail_open_records_skip_on_provider_error(tmp_path):
     out = plugin.on_pre_llm_call(session_id="s", user_message="implement migration X")
     assert out is None or not out.get("context")
     assert plugin.store.load("s").calls.get("review_skips") == 1
+
+
+def test_pre_turn_records_provenance_on_the_turn(tmp_path):
+    plugin = _plugin(tmp_path, active_enabled=True, active_timing="both")
+    out = plugin.on_pre_llm_call(
+        session_id="s", turn_id="t1", user_message="implement migration X"
+    )
+    assert out is not None and out.get("context")
+    record = plugin.store.load("s").ledger[-1]
+    assert record.get("pre_guidance")
+    assert record.get("pre_reason") == "tool_turns_only"
+    assert record.get("pre_digest")
+    assert out["context"].endswith(record["pre_guidance"])
+
+
+def test_pre_turn_every_n_fires_first_then_gates(tmp_path):
+    plugin = _plugin(
+        tmp_path,
+        active_enabled=True,
+        active_timing="pre",
+        active_cadence="every_n",
+        active_every_n=3,
+    )
+    first = plugin.on_pre_llm_call(
+        session_id="s", turn_id="t1", user_message="task one"
+    )
+    assert first is not None and first.get("context")
+    # Same text again: duplicate digest, no second call.
+    assert plugin.on_pre_llm_call(
+        session_id="s", turn_id="t2", user_message="task one"
+    ) is None
+    # Fresh text but only one turn since guidance: gated.
+    assert plugin.on_pre_llm_call(
+        session_id="s", turn_id="t3", user_message="task two"
+    ) is None
+    # Two intervening finished turns: due again.
+    plugin.on_post_llm_call(
+        session_id="s",
+        turn_id="t4",
+        user_message="task two",
+        assistant_response="done",
+        conversation_history=[],
+        model="m",
+    )
+    plugin.on_post_llm_call(
+        session_id="s",
+        turn_id="t5",
+        user_message="task three",
+        assistant_response="done",
+        conversation_history=[],
+        model="m",
+    )
+    third = plugin.on_pre_llm_call(
+        session_id="s", turn_id="t6", user_message="task four"
+    )
+    assert third is not None and third.get("context")
