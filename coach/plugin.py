@@ -47,7 +47,7 @@ from .ledger import (
 from .lockfile import StoreLock
 from .logs import append as append_log
 from .logs import now_iso as _now_iso
-from .prompts import REVIEW_SYSTEM, SYSTEM
+from .prompts import PRE_SYSTEM, REVIEW_SYSTEM, SYSTEM
 from .scrub import strip_delimited
 from .settings import (
     DEFAULTS,
@@ -130,11 +130,18 @@ _CHILD_KEYS = (
     "child_id",
 )
 _SYSTEM = SYSTEM
+_PRE_SYSTEM = PRE_SYSTEM
 _REVIEW_SYSTEM = REVIEW_SYSTEM
 ASK_DESCRIPTION = (
-    "Ask the coach for one independent second opinion about the current work. "
-    "Returns JSON with advice, or an error explaining why it is unavailable. "
-    "Relay the advice's substance in your next visible reply, attributed to the "
+    "Escalate to a stronger reviewer when it would change your next step: "
+    "stuck, before substantive work, or before declaring done. Use for "
+    "uncertainty, stalled/contradictory evidence, material tradeoffs, "
+    "security/privacy/secrets, data loss/migration/API, arch/infra, "
+    "deployment risks, or repeated debugging failures. Ask with task, "
+    "findings, attempts, and the exact decision. Independent review, not a "
+    "substitute for evidence/tests; follow unless they justify otherwise, "
+    "saying why. Skip routine work. Returns JSON advice or an error. Relay "
+    "the advice's substance in your next visible reply, attributed to the "
     "coach, so the user does not have to expand the tool result to read it."
 )
 
@@ -327,6 +334,34 @@ def _last_reviewed_digest(state: Any) -> str:
             and record.get("digest")
         ):
             return str(record["digest"])
+    return ""
+
+
+def _pre_digest(user_text: str) -> str:
+    # Namespaced apart from _turn_digest: a pre-turn question and a finished
+    # turn must never compare equal in the duplicate-review guard.
+    return hashlib.sha1(f"pre\x1f{user_text}".encode()).hexdigest()
+
+
+def _turns_since_pre_guidance(state: Any) -> int:
+    count = 0
+    for record in reversed(state.ledger):
+        if not isinstance(record, Mapping):
+            continue
+        if record.get("pre_guidance"):
+            return count
+        count += 1
+    return count
+
+
+def _last_pre_digest(state: Any) -> str:
+    for record in reversed(state.ledger):
+        if (
+            isinstance(record, Mapping)
+            and record.get("pre_guidance")
+            and record.get("pre_digest")
+        ):
+            return str(record["pre_digest"])
     return ""
 
 
@@ -842,7 +877,7 @@ class CoachPlugin(CommandsMixin):
     def on_pre_llm_call(
         self, payload: Mapping[str, Any] | None = None, **kw: Any
     ) -> dict[str, str] | None:
-        """Return pending ambient notes once, dropping notes past their TTL."""
+        """Return pending ambient notes, plus opt-in pre-turn guidance."""
         try:
             self.refresh_settings()
             data = _payload(payload, kw)
@@ -850,31 +885,46 @@ class CoachPlugin(CommandsMixin):
             self._remember_cwd()
             self._snapshot_turn_base(data)
             session_id = str(data.get("session_id") or "current")
+            turn_id = str(data.get("turn_id") or "current")
+            user_text = _request_text(data)
             with self._store_lock:
                 state = self.store.load(session_id)
                 if not state.pending:
                     # Nothing to deliver and nothing to expire: rewriting the
                     # whole session file on every model call was measurable
                     # hook cost for no state change.
-                    return None
-                state.note_seq = _as_turn(state.note_seq) + 1
+                    pending_block = ""
+                else:
+                    state.note_seq = _as_turn(state.note_seq) + 1
 
-                delivered: list[str] = []
-                for note in state.pending:
-                    if not isinstance(note, Mapping):
-                        continue
-                    if _as_turn(note.get("expires_at_turn")) < state.note_seq:
-                        continue
-                    text = str(note.get("text") or "").strip()
-                    if text:
-                        delivered.append(text)
-                state.pending = []
-                state.updated_at = self.clock()
-                self.store.save(state)
+                    delivered: list[str] = []
+                    for note in state.pending:
+                        if not isinstance(note, Mapping):
+                            continue
+                        if _as_turn(note.get("expires_at_turn")) < state.note_seq:
+                            continue
+                        text = str(note.get("text") or "").strip()
+                        if text:
+                            delivered.append(text)
+                    state.pending = []
+                    state.updated_at = self.clock()
+                    self.store.save(state)
+                    pending_block = "\n".join(delivered)
 
-            if not delivered:
+            parts = [pending_block] if pending_block else []
+            try:
+                with self._store_lock:
+                    fresh = self.store.load(session_id)
+                if self.should_pre_review(fresh, self.settings, user_text):
+                    extra = self._pre_turn_guidance(session_id, turn_id, user_text)
+                    if extra:
+                        parts.append(extra)
+            except Exception:
+                pass
+
+            if not parts:
                 return None
-            return {"context": "\n".join(delivered)}
+            return {"context": "\n".join(parts)}
         except Exception:
             return None
 
@@ -997,6 +1047,8 @@ class CoachPlugin(CommandsMixin):
         """Decide whether one finished turn earns an Active review."""
         if not settings.active_enabled or self._paused:
             return False
+        if str(getattr(settings, "active_timing", "post") or "post") == "pre":
+            return False
         if self.coach.check("active"):
             return False
         if settings.budget_on_exceed in {"soft", "hard"} and _at_budget(
@@ -1015,6 +1067,124 @@ class CoachPlugin(CommandsMixin):
         if digest and digest == _last_reviewed_digest(state):
             return False
         return True
+
+    def should_pre_review(
+        self,
+        state: Any,
+        settings: Settings,
+        user_text: str,
+    ) -> bool:
+        """Decide whether the coming turn earns pre-turn Active guidance."""
+        if not settings.active_enabled or self._paused:
+            return False
+        if str(getattr(settings, "active_timing", "post") or "post") not in (
+            "pre",
+            "both",
+        ):
+            return False
+        if self.coach.check("active"):
+            return False
+        if settings.budget_on_exceed in {"soft", "hard"} and _at_budget(
+            settings, state.spend_usd
+        ):
+            return False
+        text = str(user_text or "").strip()
+        if not text:
+            return False
+        digest = _pre_digest(text)
+        if digest and digest == _last_pre_digest(state):
+            return False
+        if settings.active_cadence == "every_n":
+            # Reset scope is the session ledger: the first guided turn is
+            # always due, then one guidance per N turns.
+            every = max(1, int(settings.active_every_n))
+            guided_any = any(
+                isinstance(record, Mapping) and record.get("pre_guidance")
+                for record in state.ledger
+            )
+            if guided_any and _turns_since_pre_guidance(state) < every - 1:
+                return False
+        # tool_turns_only maps to every_turn pre-turn: no tools exist yet.
+        return True
+
+    def _pre_turn_guidance(
+        self, session_id: str, turn_id: str, user_text: str
+    ) -> str:
+        """Run one bounded pre-turn guidance call; empty string on any miss.
+
+        The charge and the provenance land in one atomic commit, and the
+        payload is built from the saved record — partial guidance never
+        reaches the turn.
+        """
+        sid = str(session_id or "current")
+        tid = str(turn_id or "current")
+        text = str(user_text or "").strip()
+        if not text:
+            return ""
+        try:
+            cwd = str(self.cwd() or os.getcwd())
+            guidance = (
+                self.guidance.system_block(cwd)
+                if self.settings.guidance_enabled
+                else ""
+            )
+            with self._store_lock:
+                state = self.store.load(sid)
+            # Reuse the prompt builder so ledger/user text stays data, never
+            # directives — no raw string concat on this path.
+            messages = self._prompt_call(state, _PRE_SYSTEM, guidance, text)
+            reply = self.coach.ask(
+                messages,
+                mode="active",
+                structured=False,
+                timeout=min(float(self.settings.worker_timeout_s), 10.0),
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-open is the contract
+            self._record_skip(sid, f"pre-turn crashed: {type(exc).__name__}")
+            return ""
+        body = str(getattr(reply, "text", "") or "").strip()
+        if reply.error or not body:
+            self._record_skip(sid, reply.error or "empty_guidance")
+            return ""
+        capped = body[:500]
+        digest = _pre_digest(text)
+        reason = str(self.settings.active_cadence)
+
+        def commit(state: Any) -> None:
+            _charge(state, reply.cost_usd)
+            _record_turn(
+                state,
+                {
+                    "turn_id": tid,
+                    "user": text[:4000],
+                    "assistant": "",
+                    "tools": [],
+                    "cwd": str(self.cwd() or os.getcwd()),
+                    "digest": digest,
+                    "pre_guidance": capped,
+                    "pre_reason": reason,
+                    "pre_digest": digest,
+                },
+            )
+            state.last_error = ""
+
+        try:
+            self._reload_and_save(sid, commit)
+        except Exception:
+            self._record_skip(sid, "pre-turn save failed")
+            return ""
+        if reply.finding is not None:
+            try:
+                self.deliver(reply.finding, session_id=sid, turn_id=tid)
+            except Exception:
+                pass
+        with self._store_lock:
+            try:
+                record = _find_turn(self.store.load(sid), tid)
+                saved = str((record or {}).get("pre_guidance") or "")
+            except Exception:
+                saved = ""
+        return saved
 
     def run_review(self, session_id: str, turn_id: str) -> None:
         """Run one Active review; every outcome is swallowed and recorded."""

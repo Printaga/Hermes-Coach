@@ -12,6 +12,7 @@ from coach.plugin import (
 )
 from coach.settings import load_settings
 from coach.state import Store
+from tests.support import AdvisorLlm as _AdvisorLlm
 from tests.support import ConsultLlm as _ConsultLlm
 from tests.support import FakeWorker as _FakeWorker
 
@@ -135,3 +136,40 @@ def test_model_command_rejects_unparseable_values(tmp_path):
     assert _parse_model("/model")[0] is False
     assert _parse_model("just-a-name")[0] is False
     assert _coerce_setting("active_enabled", "maybe") == (False, None)
+
+
+def test_pre_llm_call_returns_guidance_when_timing_pre_and_first_turn(tmp_path):
+    plugin = _plugin(tmp_path, active_enabled=True, active_timing="pre")
+    out = plugin.on_pre_llm_call(session_id="s", user_message="implement migration X")
+    assert out is not None and out.get("context")
+
+
+def test_pre_only_timing_disables_post_turn_review(tmp_path):
+    plugin = _plugin(tmp_path, active_enabled=True, active_timing="pre")
+    state = plugin.store.load("s")
+    assert (
+        plugin.should_review(
+            state,
+            {"turn_id": "t1", "tools": [{"name": "read_file"}]},
+            plugin.settings,
+        )
+        is False
+    )
+
+
+def test_pre_turn_skips_blank_user_text(tmp_path):
+    plugin = _plugin(tmp_path, active_enabled=True, active_timing="pre")
+    assert plugin.on_pre_llm_call(session_id="s", user_message="   ") is None
+
+
+def test_pre_turn_fail_open_records_skip_on_provider_error(tmp_path):
+    plugin = _plugin(tmp_path, active_enabled=True, active_timing="pre")
+
+    class FailingLlm(_AdvisorLlm):
+        def complete(self, messages, **kwargs):
+            raise RuntimeError("provider down")
+
+    plugin.coach.llm = FailingLlm()
+    out = plugin.on_pre_llm_call(session_id="s", user_message="implement migration X")
+    assert out is None or not out.get("context")
+    assert plugin.store.load("s").calls.get("review_skips") == 1

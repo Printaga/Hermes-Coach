@@ -31,6 +31,10 @@ _MAX_TURNS = 60
 _TURN_ID_CHARS = 64
 _CWD_CHARS = 512
 _DIGEST_CHARS = 64
+# Pre-turn guidance provenance: kept only when present so ordinary turn
+# records stay exactly as before.
+_PRE_GUIDANCE_CHARS = 500
+_PRE_REASON_CHARS = 64
 
 
 def _bound_card(card: Any) -> dict:
@@ -68,7 +72,7 @@ def bound_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
     else:
         bounded["tools"] = []
     # Only the known keys: an arbitrary payload key must not persist on disk.
-    return {
+    known = {
         "turn_id": str(bounded.get("turn_id") or "")[:_TURN_ID_CHARS],
         "user": bounded["user"],
         "assistant": bounded["assistant"],
@@ -76,6 +80,19 @@ def bound_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
         "cwd": str(bounded.get("cwd") or "")[:_CWD_CHARS],
         "digest": str(bounded.get("digest") or "")[:_DIGEST_CHARS],
     }
+    if bounded.get("pre_guidance"):
+        known["pre_guidance"] = str(bounded.get("pre_guidance") or "")[
+            :_PRE_GUIDANCE_CHARS
+        ]
+    if bounded.get("pre_reason"):
+        known["pre_reason"] = str(bounded.get("pre_reason") or "")[
+            :_PRE_REASON_CHARS
+        ]
+    if bounded.get("pre_digest"):
+        known["pre_digest"] = str(bounded.get("pre_digest") or "")[
+            :_DIGEST_CHARS
+        ]
+    return known
 
 
 def append_turn(
