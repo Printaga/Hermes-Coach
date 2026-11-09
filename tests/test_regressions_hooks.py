@@ -257,3 +257,18 @@ def test_pre_turn_structured_finding_posts_card_without_pending_note(tmp_path):
     assert out is not None and out.get("context")
     assert len(posted) == 1
     assert target.store.load("s").pending == []
+
+
+def test_pre_llm_call_default_timing_skips_extra_state_load(tmp_path):
+    plugin = _plugin(tmp_path, active_enabled=True)
+    assert plugin.settings.active_timing == "post"
+    calls: list[str] = []
+    real_load = plugin.store.load
+
+    def counting(session_id: str = "current"):
+        calls.append(session_id)
+        return real_load(session_id)
+
+    plugin.store.load = counting  # type: ignore[method-assign]
+    assert plugin.on_pre_llm_call(session_id="s", user_message="hi") is None
+    assert len(calls) == 1

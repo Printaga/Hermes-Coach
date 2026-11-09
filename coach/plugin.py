@@ -913,14 +913,18 @@ class CoachPlugin(CommandsMixin):
 
             parts = [pending_block] if pending_block else []
             try:
-                with self._store_lock:
-                    fresh = self.store.load(session_id)
-                if self.should_pre_review(fresh, self.settings, user_text):
-                    extra = self._pre_turn_guidance(
-                        session_id, turn_id, user_text, fresh
-                    )
-                    if extra:
-                        parts.append(extra)
+                timing = str(
+                    getattr(self.settings, "active_timing", "post") or "post"
+                )
+                if user_text and timing in ("pre", "both"):
+                    with self._store_lock:
+                        fresh = self.store.load(session_id)
+                    if self.should_pre_review(fresh, self.settings, user_text):
+                        extra = self._pre_turn_guidance(
+                            session_id, turn_id, user_text, fresh
+                        )
+                        if extra:
+                            parts.append(extra)
             except Exception:
                 pass
 
