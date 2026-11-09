@@ -98,3 +98,10 @@ def test_an_integral_float_beyond_the_int_range_is_rejected():
     # int(1e308) would produce a meaningless 300-digit "setting".
     assert as_int(1e308) == 0
     assert as_int(float(2**70)) == 0
+
+
+def test_active_timing_defaults_post_and_rejects_unknown():
+    s = load_settings({})
+    assert s.active_timing == "post"
+    assert load_settings({"active_timing": "both"}).active_timing == "both"
+    assert load_settings({"active_timing": "bogus"}).active_timing == "post"

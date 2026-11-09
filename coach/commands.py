@@ -351,7 +351,7 @@ class CommandsMixin:
             )
         lines.append(
             f"Active: {_on_off(settings.active_enabled)} "
-            f"({settings.active_cadence})"
+            f"({settings.active_cadence}, {settings.active_timing})"
         )
         lines.append(
             f"Review: {_on_off(settings.review_enabled)} "

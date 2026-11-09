@@ -55,6 +55,7 @@ DEFAULTS: dict[str, Any] = {
     "active_enabled": False,
     "active_cadence": "tool_turns_only",
     "active_every_n": 3,
+    "active_timing": "post",
     "review_enabled": True,
     "review_authority": "hold_once",
     "review_max_holds": 1,
@@ -112,6 +113,7 @@ _REASONING_FIELDS = {
 
 _CHOICES: dict[str, tuple[str, ...]] = {
     "active_cadence": ("tool_turns_only", "every_turn", "every_n"),
+    "active_timing": ("post", "pre", "both"),
     "review_authority": ("hold_once", "report"),
     "decide_backend": ("jev-openrouter", "jev-direct", "chat-model"),
     "delivery_policy": ("severity", "ambient", "corrective"),
@@ -191,6 +193,7 @@ class Settings:
     active_enabled: bool
     active_cadence: str
     active_every_n: int
+    active_timing: str
     review_enabled: bool
     review_authority: str
     review_max_holds: int
@@ -361,6 +364,9 @@ def load_settings(raw: Mapping[str, Any] | None = None) -> Settings:
             data.get("active_cadence"), "active_cadence", DEFAULTS["active_cadence"]
         ),
         active_every_n=_as_int(data.get("active_every_n"), DEFAULTS["active_every_n"]),
+        active_timing=_as_choice(
+            data.get("active_timing"), "active_timing", DEFAULTS["active_timing"]
+        ),
         review_enabled=_as_bool(
             data.get("review_enabled"), DEFAULTS["review_enabled"]
         ),
