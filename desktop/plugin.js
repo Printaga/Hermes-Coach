@@ -99,11 +99,15 @@ function modelLabel(value) {
 }
 
 function sameModel(a, b) {
-  if (!a || !b) return false;
-  return (
-    String(a.model || "").trim().toLowerCase() === String(b.model || "").trim().toLowerCase() &&
-    String(a.provider || "").trim().toLowerCase() === String(b.provider || "").trim().toLowerCase()
-  );
+  if (!a || !b) return false
+  const model = String(a.model || "").trim().toLowerCase()
+  if (!model || model !== String(b.model || "").trim().toLowerCase()) return false
+  const left = String(a.provider || "").trim().toLowerCase()
+  const right = String(b.provider || "").trim().toLowerCase()
+  // Hermes may not expose the primary's provider; the model name is then the
+  // only signal, matching settings.same_as_primary.
+  if (!left || !right) return true
+  return left === right
 }
 
 function flattenModels(result) {
@@ -311,13 +315,44 @@ function Choice(props) {
   )
 }
 
-function TextField(props) {
+function controlIdFor(prefix, props) {
+  return (
+    props.controlId ||
+    `coach-${prefix}-${String(props.label || "field").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
+  )
+}
+
+function useDraft(props) {
   const [draft, setDraft] = useState(String(props.value ?? ""))
   const editing = useRef(false)
   useEffect(() => {
     // Another field's save round-trip must not clobber what is being typed.
     if (!editing.current) setDraft(String(props.value ?? ""))
   }, [props.value])
+  return { draft, setDraft, editing }
+}
+
+// The one "a save must not clobber what is being typed" event contract.
+function draftInput(draft, setDraft, editing, commit) {
+  return {
+    value: draft,
+    onFocus: () => {
+      editing.current = true
+    },
+    onChange: (event) => setDraft(event.target.value),
+    onBlur: () => {
+      editing.current = false
+      commit()
+    },
+    onKeyDown: (event) => {
+      if (event.key === "Enter") commit()
+    },
+  }
+}
+
+function TextField(props) {
+  const controlId = controlIdFor("text", props)
+  const { draft, setDraft, editing } = useDraft(props)
   const commit = () => {
     const next = String(draft).trim()
     // Sync the draft to the trimmed value so the input shows what was kept.
@@ -326,33 +361,19 @@ function TextField(props) {
   }
   return h(
     Field,
-    { label: props.label, hint: props.hint, controlId: props.controlId },
+    { label: props.label, hint: props.hint, controlId },
     h("input", {
-      id: props.controlId,
+      id: controlId,
       style: INPUT,
-      value: draft,
       placeholder: props.placeholder,
-      onFocus: () => {
-        editing.current = true
-      },
-      onChange: (event) => setDraft(event.target.value),
-      onBlur: () => {
-        editing.current = false
-        commit()
-      },
-      onKeyDown: (event) => {
-        if (event.key === "Enter") commit()
-      },
+      ...draftInput(draft, setDraft, editing, commit),
     }),
   )
 }
 
 function NumberField(props) {
-  const [draft, setDraft] = useState(String(props.value ?? ""))
-  const editing = useRef(false)
-  useEffect(() => {
-    if (!editing.current) setDraft(String(props.value ?? ""))
-  }, [props.value])
+  const controlId = controlIdFor("num", props)
+  const { draft, setDraft, editing } = useDraft(props)
   const commit = () => {
     if (!String(draft).trim()) {
       setDraft(String(props.value ?? ""))
@@ -372,9 +393,6 @@ function NumberField(props) {
     const current = Number(props.value)
     if (!Number.isFinite(current) || clamped !== current) props.onChange(clamped)
   }
-  const controlId =
-    props.controlId ||
-    `coach-num-${String(props.label || "field").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
   return h(
     Field,
     { label: props.label, hint: props.hint, controlId },
@@ -382,21 +400,10 @@ function NumberField(props) {
       id: controlId,
       type: "number",
       style: INPUT,
-      value: draft,
       min: props.min,
       max: props.max,
       step: props.step ?? 1,
-      onFocus: () => {
-        editing.current = true
-      },
-      onChange: (event) => setDraft(event.target.value),
-      onBlur: () => {
-        editing.current = false
-        commit()
-      },
-      onKeyDown: (event) => {
-        if (event.key === "Enter") commit()
-      },
+      ...draftInput(draft, setDraft, editing, commit),
     }),
   )
 }
@@ -1312,7 +1319,7 @@ function StatusPage(props) {
       "Spend total, all sessions",
       `${formatUsd(totalSpend)} total · ${formatUsd(perSessionBudget)} budget per session`,
     ],
-    ["Pending notes", String(status.pending_notes || 0)],
+    ["Pending notes", String(status.pending_notes_total ?? status.pending_notes ?? 0)],
     ["Sessions with state", String(status.sessions || 0)],
   ]
 

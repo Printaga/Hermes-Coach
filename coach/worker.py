@@ -20,14 +20,20 @@ log = logging.getLogger(__name__)
 class Worker:
     """Runs at most one review at a time; newer requests replace queued ones."""
 
-    def __init__(self, run: Callable[[str, str], None]) -> None:
+    def __init__(
+        self,
+        run: Callable[[str, str], None],
+        timeout: Callable[[], float] | float | None = None,
+    ) -> None:
         self._run = run
+        self._timeout = timeout
         self._condition = threading.Condition()
         self._pending: tuple[str, str] | None = None
         self._evicted: tuple[str, str] | None = None
         self._current: tuple[str, str] | None = None
         self._running = False
         self._stopped = False
+        self._started = 0.0
         self._thread = threading.Thread(
             target=self._loop, name="coach-worker", daemon=True
         )
@@ -47,6 +53,11 @@ class Worker:
                 # queueing the same turn again would review (and pay for) it a
                 # second time after the in-flight run finishes.
                 return True
+            if self._running and self._overdue():
+                # The in-flight review is past its own budget. Queueing behind
+                # it would be invisible until it returns, so refuse and let the
+                # caller record the skip.
+                return False
             pending = self._pending
             if pending is not None and pending != target:
                 self._evicted = pending
@@ -89,6 +100,15 @@ class Worker:
             self._thread.join(timeout=timeout)
         return not self._thread.is_alive()
 
+    def _overdue(self) -> bool:
+        """True when the in-flight review has outlived its own timeout."""
+        budget = self._timeout() if callable(self._timeout) else self._timeout
+        try:
+            limit = max(0.0, float(budget or 0.0))
+        except (TypeError, ValueError):
+            return False
+        return bool(self._started) and limit > 0 and time.monotonic() - self._started > limit
+
     def _loop(self) -> None:
         while True:
             with self._condition:
@@ -100,6 +120,7 @@ class Worker:
                 self._pending = None
                 self._current = (session, turn)
                 self._running = True
+                self._started = time.monotonic()
             try:
                 self._run(session, turn)
             except Exception:  # fail-open: a bad review never kills the worker
@@ -108,4 +129,5 @@ class Worker:
                 with self._condition:
                     self._current = None
                     self._running = False
+                    self._started = 0.0
                     self._condition.notify_all()

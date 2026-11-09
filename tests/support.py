@@ -106,12 +106,16 @@ class AdvisorLlm:
 class FakeWorker:
     """Records submissions instead of running a thread."""
 
-    def __init__(self):
+    def __init__(self, result: bool = True):
         self.submitted = []
+        self.result = result
 
     def submit(self, session_id, turn_id=""):
         self.submitted.append((session_id, turn_id))
-        return True
+        return self.result
+
+    def pop_evicted(self):
+        return None
 
 
 def product_text(relative_path):

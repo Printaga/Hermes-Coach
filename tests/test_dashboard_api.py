@@ -159,7 +159,7 @@ def test_project_scope_accepts_a_directory_the_plugin_has_seen(tmp_path):
 
 
 def test_recent_excludes_decision_rows(tmp_path):
-    from coach.plugin import _log_name
+    from coach.logs import log_name as _log_name
 
     logs = tmp_path / "coach" / "logs"
     logs.mkdir(parents=True)

@@ -13,7 +13,17 @@ from typing import Any
 from .coerce import as_bool as as_coerce_bool
 from .coerce import as_finite_float, as_int
 
-__all__ = ["DEFAULTS", "ModelChoice", "Settings", "load_settings"]
+__all__ = ["DEFAULTS", "ModelChoice", "SECRET_KEYS", "Settings", "is_secret", "load_settings"]
+
+# Settings whose value must never be written by a command, returned by the
+# config API, or echoed in a status payload. One predicate, used by both
+# surfaces: a name-suffix rule and an exact-name rule disagreed.
+SECRET_KEYS: frozenset[str] = frozenset({"decide_typesafe_api_key"})
+
+
+def is_secret(key: object) -> bool:
+    """True when the setting key holds a secret value."""
+    return str(key or "") in SECRET_KEYS
 
 
 @dataclass(frozen=True)

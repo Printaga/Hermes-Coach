@@ -20,13 +20,13 @@ from coach.commands import _bool_arg
 from coach.evidence import _git, _heads, _read_text, _safe_paths, _stdout
 from coach.findings import Finding, parse_finding
 from coach.ledger import _summary_line, build_messages, tool_card
+from coach.logs import log_name as _log_name
 from coach.plugin import (
     CoachPlugin,
     _as_turn,
     _child_id,
     _find_turn,
     _last_reviewed_digest,
-    _log_name,
     _payload,
     _primary_identity,
     _record_turn,
@@ -541,8 +541,8 @@ def test_dashboard_status_aggregates_sessions(tmp_path):
     second.spend_usd = 0.3
     store.save(second)
     body = TestClient(app_for_tests(home=tmp_path), base_url="http://127.0.0.1").get("/status").json()
-    assert body["spend_usd"] == 0.5
-    assert body["pending_notes"] == 1
+    assert body["spend_total_usd"] == 0.5
+    assert body["pending_notes_total"] == 1
     assert body["sessions"] == 2
     assert body["last_error"] == "boom"
 
@@ -706,7 +706,7 @@ def test_trim_log_keeps_small_files_and_log_names_are_safe(tmp_path):
     target = tmp_path / "coach-coverage-test.jsonl"
     target.write_text("a\nb\n", encoding="utf-8")
     try:
-        from coach.plugin import _trim_log
+        from coach.logs import trim as _trim_log
 
         _trim_log(target, keep=10)
         assert target.read_text(encoding="utf-8").splitlines() == ["a", "b"]

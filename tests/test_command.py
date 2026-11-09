@@ -1,6 +1,7 @@
 # tests/test_command.py
+from coach.commands import _bool_arg, _coerce_setting, _parse_model
 from coach.plugin import CoachPlugin
-from coach.settings import load_settings
+from coach.settings import DEFAULTS, load_settings
 from coach.state import Store
 from tests.support import ConsultLlm as Llm
 
@@ -86,7 +87,7 @@ def test_log_lists_recent_findings(tmp_path):
 
 
 def test_review_log_is_trimmed(tmp_path):
-    from coach.plugin import _trim_log
+    from coach.logs import trim as _trim_log
 
     path = tmp_path / "big.jsonl"
     path.write_text("".join("x" * 120 + "\n" for _ in range(2000)), encoding="utf-8")
@@ -130,7 +131,7 @@ def test_decisions_are_logged_and_listed(tmp_path):
 def test_log_prints_the_whole_finding_record(tmp_path):
     import json
 
-    from coach.commands import _log_name
+    from coach.logs import log_name as _log_name
 
     p = _p_with_own_logs(tmp_path)
     logs = tmp_path / "logs"
@@ -167,7 +168,7 @@ def test_log_prints_the_whole_finding_record(tmp_path):
 def test_log_marks_a_clipped_legacy_field_and_full_prints_it(tmp_path):
     import json
 
-    from coach.commands import _log_name
+    from coach.logs import log_name as _log_name
 
     p = _p_with_own_logs(tmp_path)
     logs = tmp_path / "logs"
@@ -186,7 +187,7 @@ def test_log_marks_a_clipped_legacy_field_and_full_prints_it(tmp_path):
 def test_log_reports_unreadable_lines_instead_of_hiding_them(tmp_path):
     import json
 
-    from coach.commands import _log_name
+    from coach.logs import log_name as _log_name
 
     p = _p_with_own_logs(tmp_path)
     logs = tmp_path / "logs"
@@ -254,3 +255,21 @@ def test_set_stores_the_canonical_value(tmp_path):
     out = plugin.command("set budget_session_usd 99999")
     assert "1000" in out
     assert saved["budget_session_usd"] == 1000.0
+
+
+def test_bool_and_setting_coercions_reject_ambiguous_input():
+    """Lives beside the module it covers: /coach set owns these parsers."""
+    assert _bool_arg("YES") is True
+    assert _bool_arg("disable") is False
+    assert _bool_arg("maybe") is None
+    assert _coerce_setting("active_enabled", "enable") == (True, True)
+    assert _coerce_setting("active_every_n", "3") == (True, 3)
+    assert _coerce_setting("active_every_n", "3.5") == (False, None)
+    assert _coerce_setting("decide_min_confidence", "high") == (False, None)
+    assert (
+        load_settings({"decide_backend": "nope"}).decide_backend
+        == DEFAULTS["decide_backend"]
+    )
+    assert _coerce_setting("decide_model", 42) == (True, "42")
+    valid, choice = _parse_model("openrouter / a/b")
+    assert (valid, choice.provider, choice.model) == (True, "openrouter", "a/b")

@@ -38,6 +38,10 @@ _HARDENED = [
     "-c",
     "core.fsmonitor=false",
     "--no-pager",
+    # A reported path is a path, not a pattern. Without this a changed file
+    # named "*.py" (or a leading ":") is expanded by git and the diff no longer
+    # matches the host's change set.
+    "--literal-pathspecs",
 ]
 
 
@@ -80,7 +84,11 @@ def _filter_overrides(
             if name.count(".") >= 2:
                 overrides.extend(["-c", f"{name}="])
     overrides = overrides[:120]
-    _FILTER_CACHE[key] = overrides
+    # Cache only a probe that actually answered: exit 0 is "drivers found",
+    # exit 1 is "none declared". A timeout or a hard failure returns [] for
+    # this call but must not be cached as if the repo declared no drivers.
+    if result is not None and result.returncode in (0, 1):
+        _FILTER_CACHE[key] = overrides
     return overrides
 
 
@@ -442,6 +450,11 @@ def _other_dirty(
     if result is None or result.returncode != 0:
         return 0
     known = set(safe)
+    # git prints repo-root-relative paths; the host reports cwd-relative ones.
+    # The same prefix strip `_gather` applies to untracked entries has to be
+    # applied here, or a session started in a subdirectory counts its own turn
+    # work as foreign.
+    prefix = _show_prefix(root, runner, min(_GIT_TIMEOUT, max(0.0, remaining())))
     others = 0
     fields = _stdout(result).split("\0")
     index = 0
@@ -452,6 +465,8 @@ def _other_dirty(
             continue
         status = entry[:2]
         rel = entry[3:].removesuffix("/")
+        if prefix and rel.startswith(prefix):
+            rel = rel[len(prefix):]
         names = {rel}
         if "R" in status or "C" in status:
             # A rename/copy emits the destination as the entry path and the
@@ -686,6 +701,125 @@ def _gather(
     )
 
 
+def _collect_discovered(
+    root: Path,
+    safe: Sequence[str],
+    runner: Callable[..., object],
+    reader: Callable[[Path], str | None],
+    remaining: Callable[[], float],
+) -> tuple[_Gathered | None, Path, list[str], str]:
+    """Find the repo the reported paths actually live in and gather there.
+
+    git is not usable under the plugin's cwd when the agent works in a project
+    below it. Returns the gathered evidence (or None), the root and paths to
+    use, and the note that tells the reviewer which prefix the paths carry.
+    """
+    found, rels, others = _discover_repo(root, safe, runner, remaining)
+    if found == root or not rels:
+        return None, root, list(safe), ""
+    gathered = _gather(found, rels, "", runner, reader, remaining)
+    if gathered is None:
+        return None, root, list(safe), ""
+    try:
+        prefix = str(found.relative_to(root).as_posix()) + "/"
+    except (OSError, ValueError, RuntimeError):
+        prefix = ""
+    extra = (
+        "Paths outside this repo were listed but not diffed:\n"
+        + "\n".join(others[:10])
+        if others
+        else ""
+    )
+    mapping = (
+        f"Report these repo-relative paths against the claim with the\n"
+        f"prefix `{prefix}` (the report named them under the plugin's).\n"
+        if prefix
+        else "The report named these paths by absolute location.\n"
+    )
+    head = _DISCOVERY_NOTE.format(
+        root=found,
+        extra=mapping + (f"{extra}\n" if extra else ""),
+    )
+    return gathered, found, list(rels), head
+
+
+def _git_unavailable(
+    root: Path, safe: Sequence[str], reader: Callable[[Path], str | None], limit: int
+) -> str:
+    """File heads only: say what was read and that the list is the host's."""
+    read_files = _heads(root, safe, reader)
+    listing = "--- files (git unavailable; host-reported paths) ---\n" + "\n".join(
+        f"? {rel}" for rel in safe
+    )
+    coverage = _coverage(
+        len(safe), len(safe), limit, git=False, truncated=len(read_files) > limit
+    )
+    return _assemble([listing, coverage], [read_files], limit)
+
+
+def _empty_change_set(remaining: Callable[[], float], limit: int) -> str:
+    """Distinguish 'nothing changed' from 'the git budget ran out'."""
+    if remaining() <= 0:
+        return _assemble(
+            [
+                "--- coverage ---\n"
+                "Evidence collection ran out of its git budget before the "
+                "change set could be read. Treat the work as unverified, not "
+                'unchanged, and report the gap as severity "unverifiable".'
+            ],
+            [],
+            limit,
+        )
+    # Nothing changed: reviewing nothing is worse than skipping, and the
+    # caller turns an empty result into "no review".
+    return ""
+
+
+def _evidence_text(
+    gathered: _Gathered,
+    files: str,
+    stat: str,
+    listed: int,
+    safe: Sequence[str],
+    others: int,
+    discovery_head: str,
+    limit: int,
+) -> str:
+    """Assemble the stat, file list, coverage and patch under one budget."""
+    body: list[str] = []
+    if gathered.committed:
+        body.append(f"--- committed during this turn ---\n{gathered.committed.rstrip()}")
+    if gathered.uncommitted:
+        body.append(f"--- uncommitted ---\n{gathered.uncommitted.rstrip()}")
+    if gathered.new_files:
+        body.append(f"--- new files ---\n{gathered.new_files.rstrip()}")
+
+    header: list[str] = []
+    if stat:
+        header.append(
+            f"--- stat ({gathered.base_note}) ---\n"
+            f"{_cap(stat.rstrip(), max(400, limit // 2), 'stat truncated')}"
+        )
+    if files:
+        header.append(f"--- files changed ({listed}) ---\n{files}")
+    # The coverage sentence is the authoritative completeness statement, so it
+    # has to describe the assembly that actually ships. Build once with the
+    # warning present, and only downgrade to "complete" when the patch really
+    # did fit.
+    header.append(
+        _coverage(listed, len(safe), limit, git=True, truncated=True, others=others)
+    )
+    if discovery_head:
+        header.append(discovery_head)
+    probe = _assemble(header, body, limit)
+    if "[patch truncated]" in probe:
+        return probe
+    header[-2 if discovery_head else -1] = _coverage(
+        listed, len(safe), limit, git=True, truncated=False, others=others
+    )
+    return _assemble(header, body, limit)
+
+
 def collect(
     cwd: str,
     paths: Sequence[str],
@@ -734,45 +868,17 @@ def collect(
         # still lives in a repo beneath it (agent cwd = home directory,
         # project = ~/Development/...): find that repo from the reported
         # paths and collect there instead of degrading to file-head reads.
-        found, rels, others = _discover_repo(root, safe, runner, remaining)
-        if found != root and rels:
-            gathered = _gather(found, rels, "", runner, reader, remaining)
-            if gathered is not None:
-                use_root, use_safe = found, rels
-                # The turn base was snapshotted in the plugin's repo; it is
-                # meaningless for a discovered one.
-                base = ""
-                try:
-                    prefix = str(found.relative_to(root).as_posix()) + "/"
-                except (OSError, ValueError, RuntimeError):
-                    prefix = ""
-                extra = (
-                    "Paths outside this repo were listed but not diffed:\n"
-                    + "\n".join(others[:10])
-                    if others
-                    else ""
-                )
-                mapping = (
-                    f"Report these repo-relative paths against the claim with the\n"
-                    f"prefix `{prefix}` (the report named them under the plugin's).\n"
-                    if prefix
-                    else "The report named these paths by absolute location.\n"
-                )
-                discovery_head = _DISCOVERY_NOTE.format(
-                    root=found,
-                    extra=mapping + (f"{extra}\n" if extra else ""),
-                )
+        gathered, use_root, use_safe, discovery_head = _collect_discovered(
+            root, safe, runner, reader, remaining
+        )
+        # The turn base was snapshotted in the plugin's repo; it is
+        # meaningless for a discovered one.
+        if gathered is not None:
+            base = ""
     if gathered is None:
         # git is unusable here: still say what was read and that the list is
         # the host's report, never a complete change set.
-        read_files = _heads(root, safe, reader)
-        listing = "--- files (git unavailable; host-reported paths) ---\n" + "\n".join(
-            f"? {rel}" for rel in safe
-        )
-        coverage = _coverage(
-            len(safe), len(safe), limit, git=False, truncated=len(read_files) > limit
-        )
-        return _assemble([listing, coverage], [read_files], limit)
+        return _git_unavailable(root, safe, reader, limit)
 
     if not (
         gathered.committed
@@ -780,24 +886,7 @@ def collect(
         or gathered.new_files
         or gathered.range_names
     ):
-        # An empty change set and an exhausted git budget look identical here:
-        # _diff/_names return "" for a failure and for "nothing to report".
-        # Silence is only honest when the queries ran; otherwise the gate reads
-        # a timeout as "nothing changed" and skips a turn that did change files.
-        if remaining() <= 0:
-            return _assemble(
-                [
-                    "--- coverage ---\n"
-                    "Evidence collection ran out of its git budget before the "
-                    "change set could be read. Treat the work as unverified, not "
-                    'unchanged, and report the gap as severity "unverifiable".'
-                ],
-                [],
-                limit,
-            )
-        # Nothing changed: reviewing nothing is worse than skipping, and the
-        # caller turns an empty result into "no review".
-        return ""
+        return _empty_change_set(remaining, limit)
 
     files = _file_list(
         runner,
@@ -829,25 +918,6 @@ def collect(
             timeout=min(_GIT_TIMEOUT, remaining()),
         )
 
-    body: list[str] = []
-    if gathered.committed:
-        body.append(f"--- committed during this turn ---\n{gathered.committed.rstrip()}")
-    if gathered.uncommitted:
-        body.append(f"--- uncommitted ---\n{gathered.uncommitted.rstrip()}")
-    if gathered.new_files:
-        body.append(f"--- new files ---\n{gathered.new_files.rstrip()}")
-
-    header: list[str] = []
-    if stat:
-        header.append(
-            f"--- stat ({gathered.base_note}) ---\n"
-            f"{_cap(stat.rstrip(), max(400, limit // 2), 'stat truncated')}"
-        )
-    if files:
-        header.append(f"--- files changed ({listed}) ---\n{files}")
-    rest = "\n\n".join(body)
-    truncated = bool(rest) and (sum(len(section) for section in header) + len(rest) + 48 > limit)
-    header.append(_coverage(listed, len(safe), limit, git=True, truncated=truncated, others=others))
-    if discovery_head:
-        header.append(discovery_head)
-    return _assemble(header, body, limit)
+    return _evidence_text(
+        gathered, files, stat, listed, safe, others, discovery_head, limit
+    )

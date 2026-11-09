@@ -11,12 +11,16 @@ from tests.support import StructuredLlm
 
 
 class FakeWorker:
-    def __init__(self):
+    def __init__(self, result: bool = True):
         self.submitted = []
+        self.result = result
 
     def submit(self, session_id, turn_id=""):
         self.submitted.append(session_id)
-        return True
+        return self.result
+
+    def pop_evicted(self):
+        return None
 
 
 def _p(tmp_path, *, llm=None, **cfg):
@@ -129,7 +133,7 @@ def test_run_review_records_spend_logs_and_delivers(tmp_path):
     assert state.last_error == ""
     assert state.pending and state.pending[0]["title"] == "Unchecked write"
 
-    from coach.plugin import _log_name
+    from coach.logs import log_name as _log_name
 
     log = tmp_path / "logs" / f"{_log_name('s')}.jsonl"
     assert log.exists()
@@ -250,3 +254,10 @@ def test_padded_ids_do_not_strand_the_review_queue(tmp_path):
     p.on_post_llm_call(**dict(TURN, session_id=" s ", turn_id=" t1 "))
     assert ("s", "t1") in p._queued
     assert (" s ", " t1 ") not in p._queued
+
+
+def test_a_refused_submit_records_a_skip(tmp_path):
+    p = _p(tmp_path, active_cadence="every_turn")
+    p.worker = FakeWorker(result=False)
+    p.on_post_llm_call(dict(TURN))
+    assert p.store.load("s").calls.get("review_skips") == 1

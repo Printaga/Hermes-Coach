@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import pytest
 
 from coach.advisor import _content_text, _split_messages
-from coach.commands import _bool_arg, _coerce_setting, _parse_model
 from coach.findings import Finding
 from coach.jev import _inner, _probabilities, decide
 from coach.plugin import (
@@ -28,7 +27,7 @@ from coach.plugin import (
     _tool_arg,
     _turns_since_review,
 )
-from coach.settings import DEFAULTS, load_settings
+from coach.settings import load_settings
 from coach.state import Store
 from tests.support import ConsultLlm as _ConsultLlm
 
@@ -48,30 +47,6 @@ def _plugin(tmp_path, **config):
 # ---------------------------------------------------------------------------
 # Suite-quality coverage: small helpers and uncovered branches
 # ---------------------------------------------------------------------------
-
-
-def test_bool_and_setting_coercions_reject_ambiguous_input():
-    assert _bool_arg("YES") is True
-    assert _bool_arg("disable") is False
-    assert _bool_arg("maybe") is None
-    assert _coerce_setting("active_enabled", "enable") == (True, True)
-    assert _coerce_setting("active_every_n", "3") == (True, 3)
-    assert _coerce_setting("active_every_n", "3.5") == (False, None)
-    assert _coerce_setting("decide_min_confidence", "high") == (
-        False,
-        None,
-    )
-    assert (
-        load_settings({"decide_backend": "nope"}).decide_backend
-        == DEFAULTS["decide_backend"]
-    )
-    assert _coerce_setting("decide_model", 42) == (True, "42")
-    valid, choice = _parse_model("openrouter / a/b")
-    assert (valid, choice.provider, choice.model) == (
-        True,
-        "openrouter",
-        "a/b",
-    )
 
 
 def test_request_text_prefers_history_over_missing_fields():
@@ -356,7 +331,7 @@ def test_send_pending_keeps_a_failed_duplicate_of_a_delivered_note(tmp_path):
 
 
 def test_recent_log_skips_malformed_lines(tmp_path):
-    from coach.plugin import _log_name
+    from coach.logs import log_name as _log_name
 
     logs = tmp_path / "logs"
     logs.mkdir(parents=True)
@@ -652,13 +627,12 @@ def test_guidance_strips_tag_variants_case_insensitively(tmp_path):
 def test_guidance_strips_attribute_bearing_close_tags(tmp_path):
     """Close tags with attributes must strip like open tags do, or the
     injected variant closes the guidance block early (probe-confirmed)."""
-    from coach.guidance import _CLOSE_TAG, _OPEN_TAG
+    from coach.scrub import strip_delimited
 
     for tag in ("</coach-guidance x>", "</coach-guidance data-a=1>", "</ coach-guidance>"):
-        assert _CLOSE_TAG.sub("", tag) != tag, tag
-        assert _CLOSE_TAG.sub("", tag) == ""
+        assert strip_delimited(tag, "coach-guidance") == "", tag
     for tag in ("<coach-guidance x>", "<coach-guidance data-a=1>"):
-        assert _OPEN_TAG.sub("", tag) == "", tag
+        assert strip_delimited(tag, "coach-guidance") == "", tag
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo is POSIX-only")

@@ -26,7 +26,14 @@ if str(_PLUGIN_ROOT) not in sys.path:
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request
 
 from coach.guidance import GUIDANCE_MAX_CHARS
-from coach.settings import _CHOICES, DEFAULTS, ModelChoice, load_settings
+from coach.settings import (
+    _CHOICES,
+    DEFAULTS,
+    SECRET_KEYS,
+    ModelChoice,
+    is_secret,
+    load_settings,
+)
 from coach.state import Store
 
 __all__ = ["app_for_tests", "router"]
@@ -39,7 +46,6 @@ _GUIDANCE_WRITE_MAX = GUIDANCE_MAX_CHARS
 _RECENT_BYTES = 256 * 1024
 _GLOBAL_FILE = "guidance.md"
 _PROJECT_FILE = "COACH.md"
-_SECRET_KEY = "decide_typesafe_api_key"
 
 # FastAPI runs these sync routes in a threadpool, so two mutations can overlap
 # inside one process even though the host config write itself is serialized.
@@ -180,7 +186,7 @@ def _canonical_values(raw: Mapping[str, Any]) -> dict[str, Any]:
     settings = load_settings(raw)
     out: dict[str, Any] = {}
     for key in DEFAULTS:
-        if key == _SECRET_KEY:
+        if is_secret(key):
             continue
         out[key] = _json_value(getattr(settings, key, DEFAULTS[key]))
     return out
@@ -189,7 +195,7 @@ def _canonical_values(raw: Mapping[str, Any]) -> dict[str, Any]:
 def _json_value(value: Any) -> Any:
     """Make one config value JSON-safe without dropping structure."""
     if isinstance(value, ModelChoice):
-        return {"provider": value.provider, "model": value.model}
+        return value.as_dict()
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -441,13 +447,12 @@ def _status_payload(request: Request) -> dict[str, Any]:
         "review_enabled": settings.review_enabled,
         "decide_enabled": settings.decide_enabled,
         "decide_backend": settings.decide_backend,
-        "spend_usd": round(spend, 6),
         "spend_total_usd": round(spend, 6),
         "spend_sessions": spend_sessions,
         "budget_usd": settings.budget_session_usd,
         "budget_per_session_usd": settings.budget_session_usd,
         "budget_on_exceed": settings.budget_on_exceed,
-        "pending_notes": pending,
+        "pending_notes_total": pending,
         "sessions": len(states),
         "last_error": last_error,
         "permissions": _permissions(config),
@@ -475,7 +480,7 @@ def get_config(request: Request) -> dict[str, Any]:
     effective = load_settings(raw)
     values: dict[str, Any] = {}
     for key, default in DEFAULTS.items():
-        if key == _SECRET_KEY:
+        if is_secret(key):
             values[key] = ""
         else:
             values[key] = _json_value(getattr(effective, key, default))
@@ -484,12 +489,14 @@ def get_config(request: Request) -> dict[str, Any]:
         "defaults": {
             key: _json_value(default)
             for key, default in DEFAULTS.items()
-            if key != _SECRET_KEY
+            if not is_secret(key)
         },
         "choices": {key: list(choices) for key, choices in _CHOICES.items()},
         "configured": load_settings(raw).is_configured(),
         "permissions": _permissions(config),
-        "secret_set": bool(str(raw.get(_SECRET_KEY) or "").strip()),
+        "secret_set": any(
+            str(raw.get(key) or "").strip() for key in SECRET_KEYS
+        ),
     }
 
 
@@ -504,7 +511,7 @@ def put_config(request: Request, payload: Annotated[dict[str, Any], Body()]) -> 
     clean: dict[str, Any] = {}
     for key, value in incoming.items():
         name = str(key)
-        if name not in DEFAULTS or name == _SECRET_KEY:
+        if name not in DEFAULTS or is_secret(name):
             raise HTTPException(status_code=400, detail=f"unknown_setting: {name}")
         clean[name] = value
     if not clean:

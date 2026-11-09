@@ -183,7 +183,24 @@ class Coach:
             # A host may resolve an auto-router id (or serve a fallback) to a
             # different concrete model. That is normal, so the reply is kept
             # and attributed/priced as served instead of demanding the exact
-            # pair; the caller sees which model actually answered.
+            # pair; the caller sees which model actually answered. One fallback
+            # is not normal: the primary model answering the coach call, which
+            # is the blind spot the pre-call guard exists to prevent.
+            served = ModelChoice(
+                provider=actual_provider or provider,
+                model=actual_model or model,
+            )
+            if self.settings.skip_same_model and self.settings.same_as_primary(
+                served, self.primary_model, self.primary_provider
+            ):
+                return CoachReply(
+                    error="same_model_fallback",
+                    provider=served.provider,
+                    model=served.model,
+                    usage=usage,
+                    cost_usd=cost,
+                    cost_estimated=estimated,
+                )
             return CoachReply(
                 text=text,
                 finding=parse_finding(parsed, text),

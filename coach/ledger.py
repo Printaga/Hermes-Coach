@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .coerce import as_int
 from .state import SessionState
 
 __all__ = [
@@ -37,7 +38,7 @@ def _bound_card(card: Any) -> dict:
     if not isinstance(card, dict):
         return {"name": "tool", "arg": "", "status": "", "size": 0, "preview": ""}
     try:
-        size = int(card.get("size", 0) or 0)
+        size = as_int(card.get("size"), 0)
     except (TypeError, ValueError):
         size = 0
     return {
@@ -117,7 +118,7 @@ def tool_card(
     """Build one compact tool record, truncating its preview."""
     limit = max(0, int(max_chars))
     try:
-        size_int = max(0, int(size or 0))
+        size_int = max(0, as_int(size, 0))
     except (TypeError, ValueError):
         size_int = 0
     return {
@@ -139,7 +140,7 @@ def _card_line(card: dict[str, Any], max_chars: int) -> str:
     arg = str(card.get("arg") or "").strip()[:_ARG_CHARS]
     status = str(card.get("status") or "").strip()[:_STATUS_CHARS]
     try:
-        size = max(0, int(card.get("size", 0) or 0))
+        size = max(0, as_int(card.get("size"), 0))
     except (TypeError, ValueError):
         size = 0
     preview = str(card.get("preview") or "")[: max(0, max_chars)]
@@ -280,7 +281,7 @@ def build_messages(
 ) -> list[dict[str, str]]:
     """Assemble the coach prompt from the bounded ledger."""
     preview_chars = max(0, int(tool_result_chars))
-    keep_cards = max(0, int(recent_turns))
+    keep_cards = max(0, as_int(recent_turns, 0))
     lines = _turn_lines(
         state.ledger, keep_cards=keep_cards, preview_chars=preview_chars
     )

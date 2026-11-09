@@ -8,7 +8,7 @@ change it without breaking the host contract.
 
 Run every command from the repository root.
 
-- Everything: `./scripts/test.sh` (pytest plus the desktop page check)
+- Everything: `./scripts/test.sh` (ruff, pytest, and the desktop page check)
 - One file: `./scripts/test.sh tests/test_ledger.py`
 - Page only: `node scripts/check-desktop-page.mjs`
 - Host contract: `hermes plugins doctor .`
@@ -16,7 +16,8 @@ Run every command from the repository root.
 - Windows: `scripts/test.ps1`. `COACH_PYTHON` overrides the interpreter;
   `SKIP_DESKTOP_CHECK=1` skips the node gate.
 
-There is no package install and no linter or typecheck configured. Tests run
+There is no package install. `ruff` is the only linter (`ruff.toml`, run as a
+gate by `scripts/test.sh`); there is no typecheck configured. Tests run
 through `uv run --python "$PYTHON" --with <pinned deps>`, so nothing is added to
 the runtime environment.
 
@@ -34,10 +35,12 @@ the runtime environment.
 - `plugin.yaml` — manifest and the tools/hooks the host registers. No `config_schema`.
 - `__init__.py` — `register(ctx)`; imports the package lazily and fails open.
 - `coach/` — pure core: `settings`, `state`, `ledger`, `findings`, `advisor`,
-  `jev`, `delivery`, `evidence`, `guidance`, `worker`, `coerce`, `commands`,
+  `jev`, `delivery`, `evidence`, `guidance`, `worker`, `coerce`, `scrub`,
+  `cards`, `counters`, `lockfile`, `logs`, `prompts`, `commands`, `trustflags`,
   `plugin`.
   `plugin` holds lifecycle, hooks and the model surfaces; `commands` holds the
-  `/coach` surface (a mixin) so the class does not carry four jobs.
+  `/coach` surface (a mixin) so the class does not carry four jobs;
+  `trustflags` is the only writer of the `llm.allow_*` flags.
 - `dashboard/plugin_api.py` — `/config`, `/status`, `/guidance`,
   `/permissions/grant` for the settings page.
 - `desktop/plugin.js` — the settings page: plain ESM, no build step.

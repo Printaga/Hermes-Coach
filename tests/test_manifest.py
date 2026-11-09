@@ -74,3 +74,14 @@ def test_register_without_hook_surface_still_registers_unload():
 def test_register_without_any_surface_never_raises():
     entry = _load_entry()
     entry.register(_BareCtx())  # must not raise
+
+
+def test_manifest_hooks_equal_the_registration_list():
+    """A hook advertised but never registered is a silent dead mode."""
+    entry = _load_entry()
+    manifest = yaml.safe_load(open("plugin.yaml"))
+    assert set(manifest["provides_hooks"]) == {name for name, _ in entry.HOOKS}
+    from coach.plugin import CoachPlugin
+
+    for _name, attr in entry.HOOKS:
+        assert callable(getattr(CoachPlugin, attr, None)), attr

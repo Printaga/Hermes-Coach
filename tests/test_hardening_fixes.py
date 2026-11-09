@@ -321,7 +321,8 @@ def test_status_reports_aggregate_and_per_session(tmp_path):
 
     client = TestClient(_api(tmp_path), base_url="http://127.0.0.1")
     body = client.get("/status").json()
-    assert body["spend_total_usd"] == body["spend_usd"]
+    assert body["spend_total_usd"] == 0.0
+    assert "spend_usd" not in body
     assert isinstance(body["spend_sessions"], dict)
     assert "budget_per_session_usd" in body
 

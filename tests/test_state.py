@@ -145,3 +145,21 @@ def test_recent_quarantine_files_are_kept(tmp_path):
     bad.write_text("{", encoding="utf-8")
     store._sweep_quarantine()
     assert bad.exists()
+
+
+def test_a_negative_spend_is_clamped_to_zero(tmp_path):
+    store = Store(tmp_path)
+    state = store.load("s1")
+    state.spend_usd = -5.0
+    store.save(state)
+    assert store.load("s1").spend_usd == 0.0
+
+
+def test_charge_ignores_a_negative_cost():
+    from types import SimpleNamespace
+
+    from coach.plugin import _charge
+
+    state = SimpleNamespace(spend_usd=1.0)
+    _charge(state, -2.0)
+    assert state.spend_usd == 1.0

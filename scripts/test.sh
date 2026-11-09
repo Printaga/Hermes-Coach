@@ -15,6 +15,9 @@ args=("$@")
 if [ "$#" -eq 0 ]; then
   args=(tests)
 fi
+
+# ruff.toml is a real policy: run it here or it is a config nothing enforces.
+uvx ruff check . || status=$?
 uv run --python "$PYTHON" --with "pytest==9.2.0" --with "pyyaml==6.0.2" \
   --with "fastapi==0.133.1" --with "httpx==0.28.1" \
   python -m pytest -q "${args[@]}" || status=$?

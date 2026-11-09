@@ -206,6 +206,22 @@ def test_ask_omits_reasoning_on_an_old_host_without_the_kwarg():
     assert llm.calls  # called without the kwarg
 
 
+def test_a_fallback_to_the_primary_model_is_refused():
+    """A host that serves the primary model defeats the pre-call guard."""
+    llm = FakeLlm(Result("advice", provider="openrouter", model="primary"))
+    coach = Coach(
+        llm,
+        _settings(),
+        primary_model="primary",
+        primary_provider="openrouter",
+        cost_fn=lambda model, usage, provider: 0.0042,
+    )
+    reply = coach.ask([{"role": "user", "content": "q"}], mode="consult")
+    assert reply.error == "same_model_fallback"
+    assert reply.cost_usd == 0.0042
+    assert (reply.provider, reply.model) == ("openrouter", "primary")
+
+
 def test_a_missing_usage_is_flagged_as_estimated_not_free():
     from coach.advisor import Coach
 

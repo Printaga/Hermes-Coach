@@ -15,9 +15,10 @@ from __future__ import annotations
 import errno
 import logging
 import os
-import re
 import stat
 from pathlib import Path
+
+from .scrub import strip_delimited
 
 __all__ = ["GUIDANCE_MAX_CHARS", "Guidance"]
 
@@ -29,12 +30,9 @@ _PROJECT_FILE = "COACH.md"
 _PROJECT_SCOPES = {"project", "local", "cwd"}
 _GLOBAL_SCOPES = {"global", "all", ""}
 
-# A repo can carry COACH.md, so block delimiters must be neutralized
-# case-insensitively and with any inner whitespace: otherwise injected text
-# can close the block early and turn guidance into free-standing instructions,
-# or reopen a nested block the model treats as authoritative.
-_CLOSE_TAG = re.compile(r"</\s*coach-guidance(?:\s[^>]*)?>", re.IGNORECASE)
-_OPEN_TAG = re.compile(r"<\s*coach-guidance(?:\s[^>]*)?>", re.IGNORECASE)
+# A repo can carry COACH.md, so block delimiters are neutralized before the
+# block is assembled; the shared strip in coach.scrub handles split,
+# attribute-bearing, zero-width and bare forms to a fixpoint.
 
 
 class Guidance:
@@ -121,6 +119,5 @@ class Guidance:
                 parts.append(text.strip())
         if not parts:
             return ""
-        body = "\n\n".join(parts)
-        body = _OPEN_TAG.sub("", _CLOSE_TAG.sub("", body))
+        body = strip_delimited("\n\n".join(parts), "coach-guidance")
         return f"<coach-guidance>\n{body}\n</coach-guidance>"

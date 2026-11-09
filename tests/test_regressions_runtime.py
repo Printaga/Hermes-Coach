@@ -63,8 +63,8 @@ def test_last_advice_never_leaks_across_known_sessions(tmp_path):
 
 
 def test_log_entries_carry_kind_timestamp_and_evidence(tmp_path):
+    from coach.logs import log_name as _log_name
     from coach.plugin import Finding as PluginFinding
-    from coach.plugin import _log_name
 
     plugin = CoachPlugin(
         llm=_ConsultLlm(),

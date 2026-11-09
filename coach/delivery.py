@@ -7,9 +7,8 @@ never inject: an injected turn there has no live agent to act on it.
 
 from __future__ import annotations
 
-import re
-
 from .findings import Finding, is_deliverable
+from .scrub import strip_delimited
 from .settings import Settings
 
 __all__ = ["format_ambient", "format_card", "format_corrective", "route"]
@@ -88,25 +87,14 @@ def _attr(value: object) -> str:
     )
 
 
-_NOTE_CLOSE = re.compile(r"</\s*coach-note\s*>", re.IGNORECASE)
-_NOTE_OPEN = re.compile(r"<\s*coach-note\b[^>]*>", re.IGNORECASE)
-
-
 def _text(value: object) -> str:
     """Neutralize note block delimiters in model-supplied text.
 
-    Finding text rides back into model context inside ``<coach-note>``, so both
-    the closing and opening forms are stripped case-insensitively (allowing
-    inner whitespace) before the note is assembled.
+    Finding text rides back into model context inside ``<coach-note>``. The
+    strip in :mod:`coach.scrub` removes every form of the tag - split,
+    attribute-bearing, zero-width and bare - to a fixpoint.
     """
-    text = str(value or "")
-    # One pass is not enough: removing a close tag can join the halves of
-    # another ("</coach-note </coach-note>>"), so iterate to a fixpoint.
-    while True:
-        cleaned = _NOTE_OPEN.sub("", _NOTE_CLOSE.sub("", text))
-        if cleaned == text:
-            return cleaned
-        text = cleaned
+    return strip_delimited(value, "coach-note")
 
 
 def sanitize(value: object) -> str:

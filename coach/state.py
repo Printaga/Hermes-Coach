@@ -209,8 +209,9 @@ class Store:
             log.warning("coach store root not private: %s: %s", self.root, exc)
         state.updated_at = time.time()
         # A non-finite spend would be written as Infinity and read back as 0.0,
-        # resetting the budget stop. Clamp before serialising.
-        state.spend_usd = _as_float(state.spend_usd, 0.0)
+        # resetting the budget stop. A negative one would lower the running
+        # total and reopen it, so the clamp is two-sided.
+        state.spend_usd = max(0.0, _as_float(state.spend_usd, 0.0))
         path = self._path(state.session_id)
         descriptor, temporary = tempfile.mkstemp(
             dir=self.root, prefix=f".{path.name}.", suffix=".tmp"

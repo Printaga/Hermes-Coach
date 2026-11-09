@@ -11,6 +11,19 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# The one list of hooks this plugin wires. plugin.yaml declares the same set for
+# the host, and tests/test_manifest.py asserts both directions so a deleted or
+# misspelled entry cannot leave a hook advertised but never registered.
+HOOKS: tuple[tuple[str, str], ...] = (
+    ("pre_verify", "on_pre_verify"),
+    ("post_tool_call", "on_post_tool_call"),
+    ("post_llm_call", "on_post_llm_call"),
+    ("pre_llm_call", "on_pre_llm_call"),
+    ("subagent_start", "on_subagent_start"),
+    ("subagent_stop", "on_subagent_stop"),
+    ("on_session_end", "on_session_end"),
+)
+
 
 def register(ctx):
     try:
@@ -67,15 +80,7 @@ def register(ctx):
     if register_hook is None:
         log.warning("coach: host has no register_hook; ambient delivery unavailable")
     else:
-        hooks = (
-            ("pre_verify", "on_pre_verify"),
-            ("post_tool_call", "on_post_tool_call"),
-            ("post_llm_call", "on_post_llm_call"),
-            ("pre_llm_call", "on_pre_llm_call"),
-            ("subagent_start", "on_subagent_start"),
-            ("subagent_stop", "on_subagent_stop"),
-            ("on_session_end", "on_session_end"),
-        )
+        hooks = HOOKS
         for name, attr in hooks:
             try:
                 register_hook(name, getattr(plugin, attr))

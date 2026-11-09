@@ -8,22 +8,22 @@ which is what made a 2 100-line file out of four separate responsibilities.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-from collections.abc import Mapping
-from datetime import UTC, datetime
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from .coerce import as_int
+from .logs import last_row, path_for, read_tail
 from .settings import (
     DEFAULTS,
     ModelChoice,
     Settings,
+    is_secret,
     load_settings,
     split_provider_model,
 )
-from .state import safe_session_name as _state_safe_name
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def _raw_settings(settings: Settings) -> dict[str, Any]:
     for key in DEFAULTS:
         value = getattr(settings, key, DEFAULTS[key])
         if isinstance(value, ModelChoice):
-            raw[key] = {"provider": value.provider, "model": value.model}
+            raw[key] = value.as_dict()
         else:
             raw[key] = value
     return raw
@@ -123,21 +123,7 @@ def _coerce_setting(key: str, text: str) -> tuple[bool, Any]:
 
 
 def _as_turn(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _log_name(session_id: str) -> str:
-    # Same encoding as session files: sanitising unsafe characters to "_" made
-    # "task/1" and "task_1" share one log, which leaked reviews between chats.
-    raw = str(session_id or "").strip()
-    return _state_safe_name(raw) if raw else "session"
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return as_int(value)
 
 
 # The writer stores body/evidence/fix at their schema maxima (600/1000/1000),
@@ -200,6 +186,23 @@ def _log_meta(row: Mapping[str, Any]) -> str:
 
 class CommandsMixin:
     """The /coach subcommands, mixed into CoachPlugin."""
+
+    if TYPE_CHECKING:
+        # The host class supplies these attributes. Declaring them is the
+        # mixin's half of the contract: rename one on CoachPlugin and pyright
+        # reports it here instead of the split failing at the first command.
+        store: Any
+        _store_lock: Any
+        coach: Any
+        guidance: Any
+        clock: Callable[[], float]
+        cwd: Callable[[], str]
+        set_setting: Callable[..., Any] | None
+        inject: Callable[[str], Any] | None
+
+        def refresh_settings(self) -> None: ...
+
+        def _inject(self, text: str) -> bool: ...
 
     def command(self, raw: str, **kw: Any) -> str:
         """Run one /coach subcommand; unknown input prints the help."""
@@ -315,7 +318,7 @@ class CommandsMixin:
         key = args[0]
         if key not in DEFAULTS:
             return f"Unknown setting: {key}. Run /coach status for current values."
-        if key.endswith("_api_key"):
+        if is_secret(key):
             return (
                 f"{key} belongs in .env, not config.yaml: set it there and "
                 "restart Hermes. Secrets are never written to the host config."
@@ -375,13 +378,8 @@ class CommandsMixin:
 
     def _last_event_text(self, session_id: str = "current") -> str:
         """One line summarising the newest logged event, for status."""
-        path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
-        try:
-            line = path.read_text(encoding="utf-8", errors="replace").splitlines()[-1]
-            row = json.loads(line)
-            if not isinstance(row, Mapping):
-                return ""
-        except (OSError, IndexError, ValueError):
+        row = last_row(path_for(self.store.root, session_id))
+        if not isinstance(row, Mapping):
             return ""
         if str(row.get("kind") or "") == "decide":
             return (
@@ -475,27 +473,10 @@ class CommandsMixin:
         except (TypeError, ValueError):
             count = 5
         count = max(1, min(20, count))
-        path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
+        path = path_for(self.store.root, session_id)
         if not path.exists():
             return "No coach reviews logged for this session yet."
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return "No coach reviews logged for this session yet."
-        rows: list[Mapping[str, Any]] = []
-        skipped = 0
-        for line in lines[-count:]:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                skipped += 1
-                continue
-            if not isinstance(row, Mapping):
-                # A stray scalar line parses without raising and would blow
-                # up row.get() below; skip it like an unparseable line.
-                skipped += 1
-                continue
-            rows.append(row)
+        rows, skipped = read_tail(path, count)
         if not rows:
             message = "No coach reviews logged for this session yet."
             if skipped:
@@ -669,7 +650,7 @@ class CommandsMixin:
             self.store.forget(session_id)
         except Exception:
             return "Coach: could not forget this session."
-        log_path = self.store.root.parent / "logs" / f"{_log_name(session_id)}.jsonl"
+        log_path = path_for(self.store.root, session_id)
         try:
             log_path.unlink(missing_ok=True)
         except OSError:
