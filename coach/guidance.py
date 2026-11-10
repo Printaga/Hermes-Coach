@@ -85,7 +85,10 @@ class Guidance:
                 os.close(descriptor)
                 return ""
             set_blocking = getattr(os, "set_blocking", None)
-            if set_blocking is not None:
+            if set_blocking is not None and getattr(os, "O_NONBLOCK", 0):
+                # Only where O_NONBLOCK exists (POSIX): the descriptor above
+                # was opened non-blocking, so restore blocking reads. On
+                # Windows the flag is 0 and set_blocking rejects the handle.
                 try:
                     set_blocking(descriptor, True)
                 except OSError:

@@ -504,6 +504,7 @@ def test_consult_ignores_model_supplied_cwd(tmp_path):
     assert "/tmp/evil" not in seen["body"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; chmod is a no-op on Windows")
 def test_log_files_are_private(tmp_path):
     from tests.support import plugin as make_plugin
 

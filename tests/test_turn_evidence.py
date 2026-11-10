@@ -314,6 +314,7 @@ def test_a_repo_fsmonitor_never_runs_during_collect(tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="mkfifo is POSIX-only")
 def test_evidence_reads_refuse_non_regular_files(tmp_path):
     from coach.evidence import _read_text
 
