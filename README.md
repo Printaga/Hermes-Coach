@@ -269,6 +269,11 @@ What the plugin touches, for the catalog record:
 
 Apache 2.0 — see [LICENSE](LICENSE). Release history: [changelog.md](changelog.md).
 
+## Demo
+
+52-second walkthrough (three use-cases, Desktop page, all terminal output
+real): [the Hackatron post on X](https://x.com/printagapub/status/2120118626111868988).
+
 ## Development
 
 ```bash
