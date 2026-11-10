@@ -49,6 +49,7 @@ from .logs import append as append_log
 from .logs import now_iso as _now_iso
 from .prompts import PRE_SYSTEM, REVIEW_SYSTEM, SYSTEM
 from .scrub import strip_delimited
+from .secrets import get_secret as _get_secret
 from .settings import (
     DEFAULTS,
     ModelChoice,
@@ -1806,10 +1807,11 @@ class CoachPlugin(CommandsMixin):
 
         backend = self.settings.decide_backend
         if backend == "jev-openrouter":
-            api_key = str(os.environ.get("OPENROUTER_API_KEY") or "").strip()
+            api_key = _get_secret("OPENROUTER_API_KEY").strip()
         elif backend == "jev-direct":
-            api_key = self.settings.decide_typesafe_api_key or str(
-                os.environ.get("TYPESAFE_API_KEY") or ""
+            api_key = (
+                self.settings.decide_typesafe_api_key
+                or _get_secret("TYPESAFE_API_KEY")
             ).strip()
         else:
             api_key = ""

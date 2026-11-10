@@ -3,7 +3,9 @@
     "components": [
       "plugin.yaml::plugin.yaml",
       "scripts/test.sh::test.sh",
-      "scripts/test.ps1::test.ps1"
+      "scripts/test.ps1::test.ps1",
+      ".github/workflows/test.yml::test",
+      ".github/workflows/test.yml::test.yml"
     ],
     "path": "plugin.yaml"
   },
@@ -43,7 +45,8 @@
       "coach/state.py::Store._read_quiet",
       "coach/state.py::Store._sweep_tmp_files",
       "coach/state.py::Store.has",
-      "coach/state.py::Store.sessions_by_recency"
+      "coach/state.py::Store.sessions_by_recency",
+      "coach/secrets.py::get_secret"
     ],
     "path": "coach/settings.py"
   },

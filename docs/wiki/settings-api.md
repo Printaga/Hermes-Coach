@@ -40,8 +40,9 @@ user's `config.yaml`. Production falls through to `_load_host_config()` /
 ## Safety rules encoded here
 
 - **Writes are explicit.** `PUT /config` accepts only keys present in
-  `DEFAULTS`, rejects `decide_typesafe_api_key` (it belongs in `.env`), and
-  refuses an empty payload. A failed `save_config` is a 500, not a silent no-op.
+  `DEFAULTS`, rejects `decide_typesafe_api_key` (Decide keys live in the
+  profile environment under `requires_env`, read via the host secret scope),
+  and refuses an empty payload. A failed `save_config` is a 500, not a silent no-op.
 - **One cap for read and write.** `GUIDANCE_MAX_CHARS` (4 000) bounds both the
   prompt block and the largest accepted save; the route used to accept 8 000 and
   report success for text the prompt never saw.

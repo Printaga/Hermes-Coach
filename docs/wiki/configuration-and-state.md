@@ -80,9 +80,15 @@ directory per process, 0600, capped at 20 entries.
 
 ## Secrets
 
-`decide_typesafe_api_key` is read from `.env` only. `/coach set` refuses it and
+Decide keys (`OPENROUTER_API_KEY`, `TYPESAFE_API_KEY`) are declared in
+`plugin.yaml` under `requires_env` and prefer the host's profile-scoped
+secret scope (`agent.secret_scope.get_secret`); on hosts predating that
+seam they fall back to the process environment (single-profile hosts have
+no other profile to leak from). No code path reads a credential file
+directly. `/coach set` refuses `decide_typesafe_api_key` and
 the dashboard rejects the key by name, so no route writes a credential to
-`config.yaml`.
+`config.yaml`; the setting survives only as an explicit config-file
+override.
 
 ## Log names
 

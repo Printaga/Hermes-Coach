@@ -15,6 +15,8 @@ Run every command from the repository root.
 - Live dispatch: `hermes -z 'Call the coach_ask tool with {"question":"ok"} and print its exact JSON.'`
 - Windows: `scripts/test.ps1`. `COACH_PYTHON` overrides the interpreter;
   `SKIP_DESKTOP_CHECK=1` skips the node gate.
+- CI: `.github/workflows/test.yml` runs `test.sh` (`test.ps1` on Windows)
+  on ubuntu/macos/windows for every push and PR.
 
 There is no package install. `ruff` is the only linter (`ruff.toml`, run as a
 gate by `scripts/test.sh`); there is no typecheck configured. Tests run
@@ -32,12 +34,13 @@ the runtime environment.
 
 ## Structure
 
-- `plugin.yaml` — manifest and the tools/hooks the host registers. No `config_schema`.
+- `plugin.yaml` — manifest: tools/hooks the host registers, `requires_env`
+  secret declarations, `requires_hermes` floor. No `config_schema`.
 - `__init__.py` — `register(ctx)`; imports the package lazily and fails open.
 - `coach/` — pure core: `settings`, `state`, `ledger`, `findings`, `advisor`,
   `jev`, `delivery`, `evidence`, `guidance`, `worker`, `coerce`, `scrub`,
   `cards`, `counters`, `lockfile`, `logs`, `prompts`, `commands`, `trustflags`,
-  `plugin`.
+  `secrets`, `plugin`.
   `plugin` holds lifecycle, hooks and the model surfaces; `commands` holds the
   `/coach` surface (a mixin) so the class does not carry four jobs;
   `trustflags` is the only writer of the `llm.allow_*` flags.
@@ -58,6 +61,12 @@ the runtime environment.
   and only `hermes plugins doctor` catches it.
 - Tool handlers return `str` (JSON). Errors are `{"ok": false, "error": …}`;
   never raise out of a handler.
+- Credentials come only through the host: new secrets are declared in
+  `plugin.yaml` under `requires_env` and read with
+  `coach/secrets.py:get_secret` (the `agent.secret_scope` profile-scoped
+  route). Never read `os.environ`, `.env` files, or `auth.json` directly
+  for a credential, and never write one to `config.yaml` — `SECRET_KEYS`
+  in `coach/settings.py` is the refusal list every writer checks.
 - Hooks are fail-open and bounded. `post_llm_call` queues work and returns; no
   hook may block or raise into a turn.
 - The Review hook runs under the host's 30 s `hook_callback_timeout`. The gate

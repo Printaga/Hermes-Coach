@@ -55,6 +55,11 @@ flowchart LR
 
 - Endpoints: `https://openrouter.ai/api/alpha/decisions` and
   `https://api.typesafe.ai/v1/systemone`, JSON POST with a 15 s timeout.
+- API keys never come from the process environment directly: `tool_decide`
+  resolves them through `coach/secrets.py`, which prefers the host's
+  profile-scoped secret scope (`agent.secret_scope.get_secret`) and falls
+  back to the process env only on hosts predating that seam. An explicit
+  `decide_typesafe_api_key` setting still wins for the direct backend.
 - Confidence is clamped to 0–1; NaN or infinity becomes the default.
 - An unknown or missing `gate` becomes **`escalate`**, never `act`: the
   tiebreaker withholds action unless it is sure.

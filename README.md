@@ -5,7 +5,7 @@ mid-task, ask for a plan review before starting, or hand it a finished piece of
 work; two optional modes let it review a turn automatically or gate the agent's
 "done" claim.
 
-Built and verified against Hermes Agent 0.22.7 on Linux.
+Built and verified against Hermes Agent 0.23.0 on Linux.
 
 ## What it does
 
@@ -32,8 +32,13 @@ Every mode uses one shared model unless you give it its own.
   `amount_usd=None`) are costed from their token counts at
   `fallback_price_per_mtok`, so the budget still fires; set that to `0` to
   leave unpriced calls free.
-- `decide_typesafe_api_key` is read from `.env`; `/coach set` refuses to write a
-  key into `config.yaml`.
+- Decide API keys (`OPENROUTER_API_KEY`, `TYPESAFE_API_KEY`) are declared in
+  `requires_env` and prefer the host's profile-scoped secret scope, so one
+  profile's key never leaks into another's turn (pre-seam hosts fall back
+  to the process environment). Set them in `~/.hermes/.env` (offered as a
+  masked prompt at install); `/coach set` refuses to write a key into
+  `config.yaml`. `decide_typesafe_api_key` remains as an explicit
+  config-file override that no command or API writes.
 - `ambient`: a card now, and the model sees the note next turn. No extra call.
 - `corrective`: every note starts a turn.
 
@@ -139,9 +144,10 @@ unrecognised answer also escalates.
 
 ## What it reads and sends
 
-The coach has no tools: it cannot read files or run commands. The plugin
-assembles what it sees — a bounded turn ledger, the diff of the files the agent
-changed for a completion review, and your guidance files. Calls go through
+The coach is granted no host tools: it cannot read arbitrary files or run
+arbitrary commands. The plugin assembles what it sees — a bounded turn
+ledger, the diff of the files the agent changed for a completion review
+(read-only `git` queries), and your guidance files. Calls go through
 Hermes' own model routing, so credentials stay in Hermes.
 
 The completion review covers the whole turn, not just what is still
@@ -231,7 +237,34 @@ one per request is the intended setting.
   ledger. User messages are kept; tool detail is what thins out.
 - The completion gate reviews a diff, not a plan, a document, or a chat answer.
 - One coach at a time: no panel and no vote.
-- Not published to the Hermes plugin catalog; install from a checkout.
+- Not yet listed in the Hermes plugin catalog; until 1.0.0 is listed,
+  install from a checkout.
+
+## Disclosures
+
+What the plugin touches, for the catalog record:
+
+- Network: Consult, Active and Review calls go through the host model
+  router. Only the optional Decide backends call out directly —
+  `https://openrouter.ai` (`jev-openrouter`) and
+  `https://api.typesafe.ai` (`jev-direct`) — and only when Decide is
+  enabled. No other third-party traffic, no telemetry.
+- Reads: the completion review reads the turn's git diff (`base..HEAD`),
+  worktree status and new files through read-only `git` commands. The
+  plugin never writes outside `$HERMES_HOME/coach/` and the project's own
+  `COACH.md` guidance file.
+- Processes: one bounded worker thread runs background reviews inside the
+  hook budgets; the only child processes are the read-only `git` queries
+  above. Nothing inherits YOLO or non-interactive mode, and anything
+  awaiting a person fails rather than hangs under cron or the gateway.
+- Credentials: Decide keys live in the profile environment (declared under
+  `requires_env`, offered as masked prompts at install) and are read
+  through the host's profile-scoped secret scope. No key is ever written
+  to `config.yaml`, and no credential file is read directly.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE). Release history: [changelog.md](changelog.md).
 
 ## Development
 

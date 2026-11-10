@@ -11,6 +11,14 @@ if ($args.Count -gt 0) { $testArgs = $args } else { $testArgs = @("tests") }
 
 try {
   try {
+    uvx ruff check .
+    if ($LASTEXITCODE -ne 0) { $status = $LASTEXITCODE }
+  } catch {
+    Write-Error $_ -ErrorAction Continue
+    $status = 1
+  }
+
+  try {
     uv run --python "$python" --with "pytest==9.2.0" --with "pyyaml==6.0.2" `
       --with "fastapi==0.133.1" --with "httpx==0.28.1" `
       python -m pytest -q @testArgs

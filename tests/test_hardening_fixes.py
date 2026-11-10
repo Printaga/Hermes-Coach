@@ -501,8 +501,8 @@ def test_soft_budget_blocks_decide_but_not_consult(tmp_path):
 def test_manifest_versions_match():
     plugin_yaml = open("plugin.yaml", encoding="utf-8").read()
     manifest = json.load(open("dashboard/manifest.json", encoding="utf-8"))
-    assert 'version: "0.4.1"' in plugin_yaml
-    assert manifest["version"] == "0.4.1"
+    version = manifest["version"]
+    assert f'version: "{version}"' in plugin_yaml
 
 
 def test_hook_registration_matches_manifest():

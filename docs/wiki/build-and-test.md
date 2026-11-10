@@ -1,8 +1,9 @@
 # Build, manifest and test gates
 
 The plugin ships as source: there is no compile step, no bundler, and no package
-install. `plugin.yaml` declares what the host registers, and two scripts run the
-same pair of quality gates on Linux/macOS (`scripts/test.sh`) and Windows
+install. `plugin.yaml` declares what the host registers — tools, hooks, secret
+requirements, and the minimum host version — and two scripts run the same three
+quality gates on Linux/macOS (`scripts/test.sh`) and Windows
 (`scripts/test.ps1`).
 
 ## What the manifest declares
@@ -14,16 +15,19 @@ same pair of quality gates on Linux/macOS (`scripts/test.sh`) and Windows
 | `provides_tools` | `coach_ask`, `coach_decide` | The two agent-facing tools |
 | `provides_hooks` | `post_llm_call`, `pre_llm_call`, `pre_verify`, `post_tool_call`, `subagent_start`, `subagent_stop`, `on_session_end` | Active review, ambient delivery, completion gate, child tracking, pruning |
 | `config_schema` | **absent** | The host adds no "Agent settings" tab; the Desktop page is the only settings surface |
+| `requires_env` | `OPENROUTER_API_KEY`, `TYPESAFE_API_KEY` (both optional, secret) | Prompted — skippably — at install; read at runtime through the host secret scope |
+| `requires_hermes` | `>=0.22.7` | Older hosts skip the plugin instead of breaking |
 
 `config_schema` is deliberately missing. Any schema makes Hermes render a
 generic form that edits the same keys as the Coach page, and the two surfaces
 then disagree. Defaults live in [configuration and state](configuration-and-state.md);
 the page is the only editor.
 
-## The two gates
+## The three gates
 
 ```mermaid
 flowchart LR
+  R[ruff check .] --> E[scripts/test.sh]
   A[tests/*.py] --> B[pytest via uv]
   C[desktop/plugin.js] --> D[check-desktop-page.mjs]
   B --> E[scripts/test.sh]
@@ -35,7 +39,8 @@ flowchart LR
 
 | Gate | Command | What it proves |
 |---|---|---|
-| Python suite | `./scripts/test.sh` | 276 tests across settings, state, ledger, findings, advisor, jev, delivery, evidence, turn scoping, plugin hooks, command, dashboard API |
+| Style and likely defects | `uvx ruff check .` (inside `test.sh`) | Import order, pyflakes errors, bugbear catches, pyupgrade modernisation |
+| Python suite | `./scripts/test.sh` | Full pytest suite across settings, state, ledger, findings, advisor, jev, delivery, evidence, turn scoping, plugin hooks, command, dashboard API |
 | Desktop page | `node scripts/check-desktop-page.mjs` | The page exports `{id, register}`, avoids context APIs the host does not provide, builds elements with `createElement`, covers every setting, registers all tabs, and renders each one against a route-aware stub |
 | Host contract | `hermes plugins doctor .` | Manifest, import, registration: `2 tool(s), 7 hook(s)` |
 | Live dispatch | `hermes -z '…'` | The real dispatcher accepts the tool's return shape |
@@ -46,8 +51,17 @@ first non-zero status, so a pytest failure cannot hide a page regression.
 `SKIP_DESKTOP_CHECK=1` skips the node gate with a visible warning. Tests run
 through `uv run --python "$PYTHON" --with <pinned deps>` — pytest, pyyaml,
 fastapi and httpx at fixed versions — so results are reproducible and the
-runtime environment stays untouched. `scripts/test.ps1` mirrors the same two
-gates on Windows and folds both into one exit status.
+runtime environment stays untouched. `scripts/test.ps1` mirrors the same three
+gates on Windows (ruff first, then pytest, then the page check) and folds them
+into one exit status.
+
+## Continuous integration
+
+`.github/workflows/test.yml` runs the same scripts on every push and pull
+request: `test.sh` on `ubuntu-latest` and `macos-latest`, `test.ps1` on
+`windows-latest`, with Python 3.12, `uv`, and Node 22 provided by pinned
+`actions/*` and `astral-sh/setup-uv` majors. The host-dependent gates (`doctor`,
+live dispatch) stay manual: no Hermes install exists on the runners.
 
 ## Why the page gate exists
 
