@@ -3,6 +3,7 @@ version: "1.0.0"
 description: "Four modes: Consult on demand, Active per-turn review, Review before claiming done, and Decide for forks with Jev."
 author: Printaga Publishing LLC
 kind: standalone
+homepage: https://pluginsforhermes.com/
 requires_hermes: ">=0.22.7"
 
 requires_env:

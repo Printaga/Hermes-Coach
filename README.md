@@ -5,6 +5,8 @@ mid-task, ask for a plan review before starting, or hand it a finished piece of
 work; two optional modes let it review a turn automatically or gate the agent's
 "done" claim.
 
+Home: [pluginsforhermes.com](https://pluginsforhermes.com/)
+
 Built and verified against Hermes Agent 0.23.0 on Linux.
 
 ## What it does
@@ -227,8 +229,9 @@ one per request is the intended setting.
 
 ## Limitations
 
-- Verified on Linux; macOS and Windows are untested, though the code avoids
-  shell-specific calls and ships a PowerShell test runner.
+- Tested on Linux, macOS and Windows: the CI matrix
+  (`.github/workflows/test.yml`) runs the full suite on all three on every
+  push.
 - Messaging surfaces (Telegram, Discord, …) never receive corrective turns;
   advice stays ambient there.
 - Ambient advice arrives one turn late by design, and a note whose turns expire
