@@ -297,7 +297,11 @@ class Store:
                 if now - path.stat().st_mtime < older_than_s:
                     continue
                 path.unlink(missing_ok=True)
-            except OSError:
+            except OSError as exc:
+                # Best-effort cleanup: a transient lock (Windows AV/indexer
+                # briefly holding a just-written file) skips this pass. Debug
+                # level, or a bare CI assert is all that is left to diagnose.
+                log.debug("coach: quarantine sweep skipped %s: %s", path, exc)
                 continue
 
     def _sweep_tmp_files(self, older_than_s: float = 3600.0) -> None:
