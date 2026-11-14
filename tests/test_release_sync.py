@@ -15,11 +15,21 @@ TAG_SHA = "b" * 40
 class Recorder:
     """A fake runner that answers gh/git calls and records every argv."""
 
-    def __init__(self, *, tag_sha=None, release_body=None, release_url="https://x/rel"):
+    def __init__(
+        self,
+        *,
+        tag_sha=None,
+        release_body=None,
+        release_url="https://x/rel",
+        tag_error="HTTP 404: Not Found",
+        release_error="release not found",
+    ):
         self.calls = []
         self.tag_sha = tag_sha
         self.release = release_body
         self.release_url = release_url
+        self.tag_error = tag_error
+        self.release_error = release_error
         self.notes_seen = None
 
     def __call__(self, argv, **kwargs):
@@ -29,11 +39,11 @@ class Recorder:
             return self._ok(HEAD + "\n")
         if argv[:2] == ["gh", "api"] and "/commits/" in argv[2]:
             if self.tag_sha is None:
-                return self._fail("not found")
+                return self._fail(self.tag_error)
             return self._ok(self.tag_sha + "\n")
         if argv[:3] == ["gh", "release", "view"]:
             if self.release is None:
-                return self._fail("release not found")
+                return self._fail(self.release_error)
             return self._ok(json.dumps({"body": self.release, "url": self.release_url}))
         if argv[:3] == ["gh", "release", "create"]:
             return self._write_notes(argv, "https://x/new")
@@ -151,4 +161,19 @@ def test_check_mode_writes_nothing(changelog):
     runner = Recorder()
     summary = sync(version="1.0.1", repo="o/r", changelog=changelog, run=runner, apply=False)
     assert "create release" in summary["actions"]
+    assert runner.mutating() == []
+
+
+def test_a_failed_tag_read_aborts_instead_of_creating(changelog):
+    """A 401/timeout is not "no such tag": abort, never POST a duplicate ref."""
+    runner = Recorder(tag_error="gh: authentication failed (HTTP 401)")
+    with pytest.raises(RuntimeError):
+        sync(version="1.0.1", repo="o/r", changelog=changelog, run=runner, apply=True)
+    assert runner.mutating() == []
+
+
+def test_a_failed_release_read_aborts(changelog):
+    runner = Recorder(tag_sha=TAG_SHA, release_error="dial tcp: lookup api.github.com")
+    with pytest.raises(RuntimeError):
+        sync(version="1.0.1", repo="o/r", changelog=changelog, run=runner, apply=True)
     assert runner.mutating() == []

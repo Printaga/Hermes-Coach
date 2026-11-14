@@ -86,16 +86,46 @@ def _default_repo(run: Run) -> str:
     return result.stdout.strip()
 
 
+def _not_found(result: subprocess.CompletedProcess) -> bool:
+    """True only when gh says the object is absent, not when it failed."""
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return any(marker in text for marker in ("404", "not found", "no commit found"))
+
+
+def _read_optional(run: Run, argv: Sequence[str], what: str) -> str | None:
+    """The call's stdout, or None for a definite 404; raise on anything else.
+
+    Treating every failure as "absent" turned a transient auth/network error
+    into "create the tag", whose POST then failed on an existing ref with a
+    confusing message instead of the real one.
+    """
+    result = _run(run, argv)
+    if result.returncode == 0:
+        return result.stdout
+    if _not_found(result):
+        return None
+    message = (result.stderr or result.stdout or "").strip()
+    raise RuntimeError(f"{what} could not be read: {message[:300]}")
+
+
 def _tag_sha(repo: str, tag: str, run: Run) -> str | None:
-    result = _run(run, ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".sha"])
-    return result.stdout.strip() if result.returncode == 0 else None
+    output = _read_optional(
+        run,
+        ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".sha"],
+        f"{tag} tag",
+    )
+    return output.strip() if output is not None else None
 
 
 def _release(repo: str, tag: str, run: Run) -> tuple[str, str] | None:
-    result = _run(run, ["gh", "release", "view", tag, "--repo", repo, "--json", "body,url"])
-    if result.returncode != 0:
+    output = _read_optional(
+        run,
+        ["gh", "release", "view", tag, "--repo", repo, "--json", "body,url"],
+        f"{tag} release",
+    )
+    if output is None:
         return None
-    data = json.loads(result.stdout or "{}")
+    data = json.loads(output or "{}")
     return str(data.get("body") or ""), str(data.get("url") or "")
 
 
