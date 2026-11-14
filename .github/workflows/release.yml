@@ -1,0 +1,22 @@
+name: release
+on:
+  push:
+    branches: [main]
+    paths: [plugin.yaml, changelog.md]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Sync the GitHub Release with plugin.yaml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # No event payload is interpolated into run:; the script reads
+        # plugin.yaml and changelog.md from the checkout only.
+        run: python3 scripts/release_sync.py --apply

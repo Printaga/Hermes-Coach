@@ -124,6 +124,13 @@ the runtime environment.
 - The catalog pins a released tag, so a catalog install stays on the tagged
   version until the tag and entry move; a checkout always runs the working
   tree.
+- The `release` workflow (`.github/workflows/release.yml`) owns the tag and the
+  GitHub **Release object** — a pushed tag alone never appears on the Releases
+  page. On a push to `main` that touches `plugin.yaml` or `changelog.md`,
+  `scripts/release_sync.py --apply` creates `v<version>` if missing, creates the
+  release from the matching changelog section, and rewrites notes that drifted.
+  Never move an existing tag; `python3 scripts/release_sync.py --check`
+  previews without writing.
 
 ## Verification
 
