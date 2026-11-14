@@ -28,6 +28,7 @@ from .advisor import Coach
 from .cards import advice_card as _advice_card
 from .cards import decision_card as _decision_card
 from .cards import hold_message as _hold_message
+from .changes import MAX_PRIOR_PATHS, SessionChanges, action_line, mutation_paths
 from .coerce import as_finite_float
 from .commands import CommandsMixin, _as_turn
 from .counters import TurnCounters
@@ -513,6 +514,20 @@ class CoachPlugin(CommandsMixin):
         self._turn_base: dict[str, tuple[str, str]] = {}
         self._base_lock = threading.Lock()
         self._turn_tools: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        # Session change ledger. The host's pre_verify payload only names the
+        # CURRENT turn's files, so this keeps every path and non-file action
+        # this session touched, with the coach's own turn counter, and the
+        # HEAD the session started from. Without it a completion claim that
+        # covers earlier turns was reviewed against the last turn alone.
+        self._changes: dict[str, SessionChanges] = {}
+        self._changes_dirty: set[str] = set()
+        self._seeded: set[str] = set()
+        self._changes_lock = threading.Lock()
+        self._turn_seq: dict[str, int] = {}
+        self._turn_ids: dict[str, str] = {}
+        # HEAD at the session's first turn: commits made in any turn of the
+        # session stay inside session_base..HEAD, unlike the per-turn base.
+        self._session_base: dict[str, str] = {}
         self._seen_cwds: set[str] = set()
         # Where coach/state.json lives; the store root's parent in production.
         self.home = self.store.root.parent
@@ -561,6 +576,10 @@ class CoachPlugin(CommandsMixin):
         committed is still reviewable. A turn spans several ``pre_llm_call``
         firings (one per model call); only the first one for a turn may set the
         base, or a mid-turn commit would move it past the change being made.
+
+        The session's first snapshot is kept separately as ``session_base``:
+        commits from EARLIER turns fall outside the turn range, and only a
+        session-wide base makes them visible to a completion claim.
         """
         session_id = str(data.get("session_id") or "")
         turn_id = str(data.get("turn_id") or "")
@@ -592,6 +611,193 @@ class CoachPlugin(CommandsMixin):
                 # Hook firings can outlive session-end; keep the map bounded.
                 self._turn_base.pop(next(iter(self._turn_base)), None)
             self._turn_base[session_id] = (turn_id, commit)
+            if len(self._session_base) > 64:
+                self._session_base.pop(next(iter(self._session_base)), None)
+            self._session_base.setdefault(session_id, commit)
+
+    def _note_turn(self, session_id: str, turn_id: str) -> None:
+        """Count a new host turn so recorded changes can be dated by turn."""
+        with self._changes_lock:
+            if not turn_id:
+                return
+            if self._turn_ids.get(session_id, "") == turn_id:
+                return
+            self._turn_ids[session_id] = turn_id
+            seq = self._turn_seq.get(session_id, 0) + 1
+            self._turn_seq[session_id] = seq
+            ledger = self._changes.get(session_id)
+            if ledger is not None:
+                # Paths recorded before any turn was counted (a plugin reload
+                # mid-turn) belong to THIS turn; leaving them at 0 made the
+                # evidence call them earlier-turn work.
+                for path, seen in ledger.items():
+                    if seen == 0:
+                        ledger.add_path(path, seq)
+            self._changes_dirty.add(session_id)
+
+    def _seed_ledger(self, session_id: str, state: Any) -> None:
+        """Merge the persisted ledger into this process's in-memory one, once.
+
+        A reload can land mid-turn: ``post_tool_call`` may record a path before
+        any ``pre_llm_call`` seeds the session, so an existing entry must gain
+        the persisted history rather than suppress it.
+        """
+        with self._changes_lock:
+            if session_id in self._seeded:
+                return
+            self._seeded.add(session_id)
+            if len(self._seeded) > 128:
+                # Entries are cheap to redo; a bound beats an unbounded set.
+                self._seeded.clear()
+                self._seeded.add(session_id)
+            ledger = self._changes.get(session_id)
+            if ledger is None:
+                ledger = SessionChanges()
+                self._changes[session_id] = ledger
+                self._trim_sessions()
+            known = {path for path, _ in ledger.items()}
+            for item in getattr(state, "changes", ()) or ():
+                if not isinstance(item, Mapping):
+                    continue
+                path = str(item.get("path") or "").strip()
+                if path and path not in known:
+                    ledger.add_path(path, _as_turn(item.get("turn")))
+                    known.add(path)
+            seen_actions = {str(item.get("line") or "") for item in ledger.to_actions()}
+            for item in getattr(state, "actions", ()) or ():
+                if not isinstance(item, Mapping):
+                    continue
+                line = str(item.get("line") or "").strip()
+                if line and line not in seen_actions:
+                    ledger.add_action(line, _as_turn(item.get("turn")))
+                    seen_actions.add(line)
+            if getattr(state, "turn_seq", 0):
+                # Never move the counter backwards: this process may already
+                # have counted turns the state file has not seen yet.
+                self._turn_seq[session_id] = max(
+                    self._turn_seq.get(session_id, 0), int(state.turn_seq)
+                )
+            if getattr(state, "turn_id", ""):
+                self._turn_ids.setdefault(session_id, str(state.turn_id))
+        base = str(getattr(state, "session_base", "") or "")
+        if base:
+            with self._base_lock:
+                self._session_base.setdefault(session_id, base)
+
+    def session_changes(self, session_id: str) -> list[str]:
+        """Paths this session changed, oldest first; empty for an unknown one."""
+        key = str(session_id).strip()
+        with self._changes_lock:
+            ledger = self._changes.get(key)
+            return ledger.paths() if ledger is not None else []
+
+    def _review_scope(
+        self, cwd: str, session_id: str, changed: list[str]
+    ) -> tuple[list[str], list[str], list[str]]:
+        """This turn's host report plus the session ledger's earlier turns.
+
+        The host's ``changed_paths`` is the current turn only, so a completion
+        claim that covers several turns named files the reviewer never got.
+        The ledger supplies the rest, and the split is kept so the evidence
+        block can label which paths came from earlier turns. Actions are the
+        session's calls that leave no diff at all (memory, skills, cron).
+        """
+        try:
+            root = os.path.abspath(str(cwd or os.getcwd()))
+        except (OSError, ValueError):
+            root = os.getcwd()
+
+        def absolute(value: Any) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return ""
+            return text if os.path.isabs(text) else os.path.abspath(os.path.join(root, text))
+
+        current = {absolute(path) for path in changed}
+        with self._changes_lock:
+            ledger = self._changes.get(session_id)
+            turn = self._turn_seq.get(session_id, 0)
+            entries = ledger.items() if ledger is not None else []
+            actions = ledger.actions() if ledger is not None else []
+        same_turn: list[str] = []
+        prior: list[str] = []
+        for path, seen in entries:
+            if path in current:
+                continue
+            (same_turn if seen >= turn else prior).append(path)
+        prior = prior[-MAX_PRIOR_PATHS:]
+        return [*changed, *same_turn, *prior], prior, actions
+
+    def _trim_sessions(self) -> None:
+        """Drop the oldest session ledgers; hook firings can outlive session-end.
+
+        The caller holds ``_changes_lock``.
+        """
+        while len(self._changes) > 64:
+            oldest = next(iter(self._changes))
+            self._changes.pop(oldest, None)
+            self._changes_dirty.discard(oldest)
+            self._seeded.discard(oldest)
+            self._turn_seq.pop(oldest, None)
+            self._turn_ids.pop(oldest, None)
+
+    def _record_changes(
+        self, session_id: str, paths: Any, line: str = ""
+    ) -> None:
+        """Add one tool call's landed paths (and non-file action) to the ledger."""
+        safe_paths = [str(path) for path in (paths or ()) if str(path or "").strip()]
+        if not safe_paths and not line:
+            return
+        try:
+            cwd = str(self.cwd() or os.getcwd())
+        except Exception:
+            cwd = os.getcwd()
+        with self._changes_lock:
+            turn = self._turn_seq.get(session_id, 0)
+            ledger = self._changes.get(session_id)
+            if ledger is None:
+                ledger = SessionChanges()
+                self._changes[session_id] = ledger
+                self._trim_sessions()
+            for path in safe_paths:
+                text = path.strip()
+                if not text:
+                    continue
+                # Absolute at record time: the cwd can change between turns,
+                # and a relative path recorded then would point nowhere.
+                if not os.path.isabs(text):
+                    text = os.path.abspath(os.path.join(cwd, text))
+                ledger.add_path(text, turn)
+            if line:
+                ledger.add_action(line, turn)
+            self._changes_dirty.add(session_id)
+
+    def _flush_ledger(self, session_id: str) -> None:
+        """Persist the session ledger once per model call, not per tool call."""
+        with self._changes_lock:
+            if session_id not in self._changes_dirty:
+                return
+            ledger = self._changes.get(session_id)
+            paths = ledger.to_paths() if ledger is not None else []
+            actions = ledger.to_actions() if ledger is not None else []
+            turn_seq = self._turn_seq.get(session_id, 0)
+            turn_id = self._turn_ids.get(session_id, "")
+            self._changes_dirty.discard(session_id)
+        with self._base_lock:
+            session_base = self._session_base.get(session_id, "")
+        try:
+            with self._store_lock:
+                state = self.store.load(session_id)
+                state.changes = paths
+                state.actions = actions
+                state.turn_seq = turn_seq
+                state.turn_id = turn_id
+                state.session_base = session_base
+                self.store.save(state)
+        except Exception:
+            log.debug("coach: ledger flush failed", exc_info=True)
+            with self._changes_lock:
+                self._changes_dirty.add(session_id)
 
     def head_commit(self) -> str:
         """Return the working directory's HEAD commit; replaced in tests."""
@@ -644,6 +850,13 @@ class CoachPlugin(CommandsMixin):
                     del self._turn_tools[key]
             with self._base_lock:
                 self._turn_base.pop(session_id, None)
+                self._session_base.pop(session_id, None)
+            with self._changes_lock:
+                self._changes.pop(session_id, None)
+                self._changes_dirty.discard(session_id)
+                self._seeded.discard(session_id)
+                self._turn_seq.pop(session_id, None)
+                self._turn_ids.pop(session_id, None)
             with self._queued_lock:
                 for key in [k for k in self._queued if k[0] == session_id]:
                     self._queued.pop(key, None)
@@ -885,11 +1098,13 @@ class CoachPlugin(CommandsMixin):
             self._remember_primary(data)
             self._remember_cwd()
             self._snapshot_turn_base(data)
-            session_id = str(data.get("session_id") or "current")
-            turn_id = str(data.get("turn_id") or "current")
+            session_id = str(data.get("session_id") or "current").strip()
+            turn_id = str(data.get("turn_id") or "current").strip()
             user_text = _request_text(data)
             with self._store_lock:
                 state = self.store.load(session_id)
+                self._seed_ledger(session_id, state)
+                self._note_turn(session_id, turn_id)
                 if not state.pending:
                     # Nothing to deliver and nothing to expire: rewriting the
                     # whole session file on every model call was measurable
@@ -939,18 +1154,33 @@ class CoachPlugin(CommandsMixin):
         self, payload: Mapping[str, Any] | None = None, **kw: Any
     ) -> None:
         """Buffer one tool card for the turn Active may review."""
-        if not self.settings.active_enabled:
-            return
         data = _payload(payload, kw)
         session_id = str(data.get("session_id") or "current").strip()
         turn_id = str(data.get("turn_id") or "current").strip()
         args = data.get("args")
         if not isinstance(args, Mapping):
             args = {}
+        tool_name = str(data.get("tool_name") or data.get("name") or "tool")
+        # The session ledger is independent of Active: the completion gate
+        # needs every path this session touched, including this turn's. A
+        # failed call changed nothing and must not be recorded as a change.
+        failed = bool(data.get("error")) or str(data.get("status") or "").lower() in {
+            "error",
+            "failed",
+            "failure",
+        }
+        if not failed:
+            self._record_changes(
+                session_id,
+                mutation_paths(tool_name, args, data.get("result")),
+                action_line(tool_name, args),
+            )
+        if not self.settings.active_enabled:
+            return
         text = _result_text(data.get("result"))
         status = str(data.get("status") or ("error" if data.get("error") else "ok"))
         card = tool_card(
-            str(data.get("tool_name") or data.get("name") or "tool"),
+            tool_name,
             _tool_arg(args),
             status,
             len(text),
@@ -982,6 +1212,7 @@ class CoachPlugin(CommandsMixin):
         self._remember_primary(data)
         session_id = str(data.get("session_id") or "current").strip()
         turn_id = str(data.get("turn_id") or "current").strip()
+        self._flush_ledger(session_id)
         with self._tools_lock:
             tools = self._turn_tools.pop((session_id, turn_id), [])
         if not self.settings.active_enabled and not self.settings.review_enabled:
@@ -1348,6 +1579,7 @@ class CoachPlugin(CommandsMixin):
             return None
         with self._store_lock:
             state = self.store.load(session_id)
+            self._seed_ledger(session_id, state)
             if (
                 self.settings.budget_on_exceed in {"soft", "hard"}
                 and _at_budget(self.settings, state.spend_usd)
@@ -1363,9 +1595,21 @@ class CoachPlugin(CommandsMixin):
         base = ""
         with self._base_lock:
             entry = self._turn_base.get(session_id)
-            if entry is not None and str(entry[0]) == turn_id:
+            # The host sends pre_verify no turn_id, so the lookup used to miss
+            # every time and committed work was never diffed. The snapshot is
+            # taken at the start of each turn, so the latest one is this turn's.
+            if entry is not None and (turn_id == "current" or str(entry[0]) == turn_id):
                 base = entry[1]
-        evidence = self.collect_evidence(cwd, changed, base=base)
+            session_base = self._session_base.get(session_id, "") or state.session_base
+        review_paths, prior, actions = self._review_scope(cwd, session_id, changed)
+        evidence = self.collect_evidence(
+            cwd,
+            review_paths,
+            base=base,
+            prior=prior,
+            actions=actions,
+            session_base=session_base,
+        )
         if not evidence.strip():
             self._record_skip(session_id, "gate skipped: no evidence collected")
             return None
@@ -1428,12 +1672,23 @@ class CoachPlugin(CommandsMixin):
         )
         return None
 
-    def collect_evidence(self, cwd: str, paths: list[str], base: str = "") -> str:
+    def collect_evidence(
+        self,
+        cwd: str,
+        paths: list[str],
+        base: str = "",
+        prior: Any = (),
+        actions: Any = (),
+        session_base: str = "",
+    ) -> str:
         """Return bounded diff evidence; replaced in tests."""
         return collect(
             cwd,
             paths,
             base=base,
+            prior=prior,
+            actions=actions,
+            session_base=session_base,
             max_chars=self.settings.review_evidence_max_chars,
         )
 

@@ -82,7 +82,11 @@ report its own blind spot as a defect:
 |---|---|---|
 | Active | Turn ledger: messages and one-line tool cards | "never raise a finding that evidence or a diff is missing" |
 | Consult | Question, context, ledger tail | Answer the question; evidence is data |
-| Review | Request, claim, and the turn's diff | A missing diff is a coverage limit of the plugin: at most a nit, never a concern |
+| Review | Request, claim, this turn's diff, earlier-session commits and the ledger's paths | A missing diff is a coverage limit of the plugin: at most a nit, never a concern; `unverifiable` only for a file the coverage block cannot account for |
+
+The Review prompt also names the session: it says the evidence covers this
+turn and, labelled, the paths earlier turns changed, so a multi-turn claim is
+not reported as missing work.
 
 ## Related pages
 

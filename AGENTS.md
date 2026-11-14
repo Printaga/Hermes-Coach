@@ -90,14 +90,40 @@ the runtime environment.
   because model ids contain slashes.
 - The coach gets no tools. The plugin assembles evidence and wraps it in tags;
   strip closing tags so model text cannot close its own block.
-- Completion evidence is turn-scoped: `pre_llm_call` snapshots `HEAD` once per
-  turn (`_snapshot_turn_base`), and `pre_verify` collects
-  `base..HEAD` + worktree + new files. Never snapshot per model call — a
-  mid-turn commit would move the base past the change. Worktree-only evidence
-  is the fallback, not the default. The coverage block names how many dirty
-  worktree paths lie outside the turn (`_other_dirty`), so a claim that counts
-  the whole tree does not read to the reviewer as work it cannot find.
+- Completion evidence is SESSION-scoped, and the host payload is not: the host
+  sends `pre_verify` only `changed_paths` for the CURRENT turn (its
+  `_turn_file_mutation_paths` resets every turn) and no `turn_id`. So
+  `post_tool_call` records every `write_file`/`patch` path into a per-session
+  ledger (`coach/changes.py`; a failed call changed nothing and is not
+  recorded), `pre_llm_call` snapshots `HEAD` once per turn
+  (`_snapshot_turn_base`) AND once per session (`session_base`), and
+  `pre_verify` collects the turn's `base..HEAD` + the session's
+  `session_base..base` + worktree + new files + the earlier-turn paths. Never
+  snapshot per model call — a mid-turn commit would move the base past the
+  change. The base lookup must fall back to the latest snapshot when the
+  payload has no `turn_id`, or committed work is never diffed. Reported
+  absolute paths outside cwd are read as content (never diffed), because
+  dropping them silently made a claimed skill/notes edit look missing. The
+  coverage block labels which paths came from earlier turns and names how many
+  dirty worktree paths lie outside the set (`_other_dirty`), so neither a
+  multi-turn claim nor a whole-tree count reads as work the reviewer cannot
+  find.
 - Session state: atomic writes, `0600`, hashed file names, pruned by mtime.
+  The change ledger (`changes`, `actions`, `session_base`, `turn_seq`,
+  `turn_id`) rides the same file, flushed once per model call, never per tool
+  call.
+
+## Release
+
+- Bump `version` in `plugin.yaml` **and** `dashboard/manifest.json` together:
+  the host reads the first, the desktop page the second, and nothing else keeps
+  them equal. `tests/test_manifest.py` asserts the pair matches.
+- Add a `changelog.md` entry under the new version, using `Added` / `Changed` /
+  `Fixed` headings. The changelog is the reader-facing record; the README links
+  to it and does not restate it.
+- The catalog pins a released tag, so a catalog install stays on the tagged
+  version until the tag and entry move; a checkout always runs the working
+  tree.
 
 ## Verification
 

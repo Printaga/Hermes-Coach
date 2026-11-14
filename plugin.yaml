@@ -1,5 +1,5 @@
 name: coach
-version: "1.0.0"
+version: "1.0.1"
 description: "Four modes: Consult on demand, Active per-turn review, Review before claiming done, and Decide for forks with Jev."
 author: Printaga Publishing LLC
 kind: standalone

@@ -767,7 +767,7 @@ function BehaviourPage(props) {
         hint: "How much changed-file patch the review may read. Past this the stat and file list survive and the patch is clipped, which can make a large change look unverifiable.",
         value: values.review_evidence_max_chars,
         min: 2000,
-        max: 160000,
+        max: 400000,
         step: 1000,
         onChange: (next) => state.save("review_evidence_max_chars", next),
       }),

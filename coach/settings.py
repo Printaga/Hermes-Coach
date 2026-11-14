@@ -61,9 +61,11 @@ DEFAULTS: dict[str, Any] = {
     "review_max_holds": 1,
     # How many characters of changed-file patch the completion review may see.
     # 8 000 was too small for multi-file turns: the review then reported the
-    # truncation as "unverifiable" instead of judging the work. 128 000 covers
-    # every observed commit in this repo's history except one 141k refactor.
-    "review_evidence_max_chars": 128000,
+    # truncation as "unverifiable" instead of judging the work. The owner asked
+    # for 160 000 on 2026-11-14 (from 128 000), so this default and the 400 000
+    # ceiling below are deliberate; a change set that still does not fit is
+    # clipped, and the block names every file it did not show.
+    "review_evidence_max_chars": 160000,
     "decide_enabled": False,
     "decide_backend": "jev-openrouter",
     "decide_model": "typesafe/jev-1.14",
@@ -319,7 +321,10 @@ _MAXIMUMS: dict[str, float] = {
     "max_reply_tokens": 2000,
     "active_every_n": 100,
     "review_max_holds": 10,
-    "review_evidence_max_chars": 160000,
+    # Above the default so a change set that needs more than 160k can be
+    # reviewed whole; the review model's context is the real ceiling, and a
+    # provider rejection fails the gate open (no review, no wrong verdict).
+    "review_evidence_max_chars": 400000,
     "decide_max_calls_per_turn": 10,
     "consult_max_calls_per_turn": 10,
     "delivery_max_corrective_per_request": 10,

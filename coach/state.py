@@ -47,6 +47,14 @@ class SessionState:
     last_advice: dict[str, Any] = field(default_factory=dict)
     advice: list[dict[str, Any]] = field(default_factory=list)
     last_decision: dict[str, Any] = field(default_factory=dict)
+    # Session change ledger: the host's changed_paths is turn-scoped, so the
+    # gate keeps its own record of the paths this session touched, and the
+    # HEAD the session started from, to diff work committed in earlier turns.
+    changes: list[dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    session_base: str = ""
+    turn_seq: int = 0
+    turn_id: str = ""
     updated_at: float = field(default_factory=time.time)
 
 
@@ -184,6 +192,11 @@ class Store:
                 if isinstance(data.get("last_decision"), Mapping)
                 else {}
             ),
+            changes=_dict_items(data.get("changes")),
+            actions=_dict_items(data.get("actions")),
+            session_base=_as_str(data.get("session_base"))[:64],
+            turn_seq=_as_int(data.get("turn_seq")),
+            turn_id=_as_str(data.get("turn_id"))[:200],
             updated_at=_as_float(data.get("updated_at"), 0.0),
         )
 

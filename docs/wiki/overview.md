@@ -53,7 +53,7 @@ separate surface over the same config and state.
 | Configuration and state | The 33 settings keys and the per-session store | [configuration-and-state.md](configuration-and-state.md) |
 | Prompt assembly | Ledger ceiling, finding schema, guidance files | [prompt-assembly.md](prompt-assembly.md) |
 | Model access | The coach client and the three decision backends | [model-access.md](model-access.md) |
-| Delivery and evidence | Where advice goes and what the gate may read | [delivery-and-evidence.md](delivery-and-evidence.md) |
+| Delivery and evidence | Where advice goes, what the gate may read, and the session change ledger that spans turns | [delivery-and-evidence.md](delivery-and-evidence.md) |
 | Settings API | The HTTP routes behind the page | [settings-api.md](settings-api.md) |
 | Desktop settings page | The six-tab GUI | [desktop-settings.md](desktop-settings.md) |
 | Build and test | Manifest, gates, and the page checker | [build-and-test.md](build-and-test.md) |
@@ -63,10 +63,11 @@ separate surface over the same config and state.
 - **No transcript replay.** The coach sees a compiled ledger, capped by tokens,
   with tool detail thinned first and user messages dropped only as a last
   resort.
-- **The gate reviews the whole turn.** Commits made before a completion claim
-  and the worktree both reach the review, and each prompt states what its
-  reviewer can see, so a blind spot never resurfaces as a finding about work
-  the reviewer simply could not read.
+- **The gate reviews the whole session.** Commits made before a completion
+  claim, commits from earlier turns, the worktree and the session ledger's
+  paths all reach the review, and each prompt states what its reviewer can
+  see, so a blind spot never resurfaces as a finding about work the reviewer
+  simply could not read.
 - **No tools for the coach.** The plugin gathers evidence; the model only reads
   it. Text wrapped in note tags cannot close its own block.
 - **Fail-open everywhere.** A timeout, provider error, or malformed answer

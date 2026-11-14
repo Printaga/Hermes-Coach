@@ -1,7 +1,16 @@
 # tests/test_manifest.py
+import json
+
 import yaml
 
 from coach.settings import DEFAULTS
+
+
+def test_the_desktop_manifest_version_matches_plugin_yaml():
+    """The host reads plugin.yaml, the page reads the manifest: keep them equal."""
+    manifest = yaml.safe_load(open("plugin.yaml"))
+    desk = json.load(open("dashboard/manifest.json", encoding="utf-8"))
+    assert desk["version"] == manifest["version"]
 
 
 def test_manifest_is_a_standalone_plugin():

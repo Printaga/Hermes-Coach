@@ -192,14 +192,26 @@ hermes-coach/
 
 1. `pre_verify` fires with `changed_paths` and `final_response`.
 2. Skip if a hold was already issued for this request.
-3. Evidence, composed under `ctx.session_cwd()` and capped at 8k characters,
-   covers the **whole turn**, not only what is still uncommitted:
+3. Evidence, composed under `ctx.session_cwd()` and capped at the configured
+   evidence budget (default 160 000 characters, ceiling 400 000),
+   covers the **whole session**, not only the current turn and not only what
+   is still uncommitted:
    - `pre_llm_call` recorded the commit `HEAD` pointed at when the turn started
      (once per turn — a turn spans several model calls, and re-snapshotting
-     after a mid-turn commit would move the base past the change).
+     after a mid-turn commit would move the base past the change) and the
+     commit `HEAD` pointed at when the session's first turn started.
    - `git diff <base>..HEAD -- <paths>` for commits the turn produced,
-     `git diff HEAD -- <paths>` for tracked files still uncommitted, and the
-     head of each untracked path marked `(new file)`.
+     `git diff <session_base>..<base> -- <paths>` for commits earlier turns
+     produced, `git diff HEAD -- <paths>` for tracked files still uncommitted,
+     and the head of each untracked path marked `(new file)`.
+   - The host's `changed_paths` is **turn-scoped** (its
+     `_turn_file_mutation_paths` resets every turn) and `pre_verify` carries no
+     `turn_id`, so `post_tool_call` records every `write_file`/`patch` path in a
+     per-session ledger. `pre_verify` merges the ledger's earlier-turn paths
+     into the evidence and the coverage block labels them; the same ledger
+     records earlier-turn `memory`/`skill_manage`/cron actions as corroboration.
+   - A reported absolute path outside the working directory is read as content
+     (never diffed, never silently dropped).
    - A `git --stat` line leads the block, so an over-budget diff keeps the file
      list and clips the patch instead of losing one or the other.
    - Unusable range (rebase, amended history, detached or missing base) falls

@@ -74,7 +74,7 @@ def test_review_skipped_when_disabled(tmp_path):
 
 def test_report_authority_never_holds(tmp_path):
     p = _p(tmp_path, review_authority="report", llm=StructuredLlm(FINDING))
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
     out = p.on_pre_verify(**PAY)
     assert out is None or "action" not in out
     assert p._test_post
@@ -82,7 +82,7 @@ def test_report_authority_never_holds(tmp_path):
 
 def test_hold_is_capped_per_request(tmp_path):
     p = _p(tmp_path, review_authority="hold_once")
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
     p.review_now = lambda **kw: type(
         "F",
         (),
@@ -137,7 +137,7 @@ def test_review_now_uses_a_bounded_deadline(tmp_path):
 
 def test_non_blocker_is_reported_as_a_card(tmp_path):
     p = _p(tmp_path)
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
     p.review_now = lambda **kw: Finding(
         "concern", "Missing check", "No validation.", "a.py:1", "Validate."
     )
@@ -155,7 +155,7 @@ def test_evidence_uses_the_session_cwd(tmp_path):
         cwd=lambda: str(project),
     )
     seen = {}
-    p.collect_evidence = lambda cwd, paths, base="": seen.setdefault("cwd", cwd) or ""
+    p.collect_evidence = lambda cwd, paths, base="", **kw: seen.setdefault("cwd", cwd) or ""
     p.review_now = lambda **kw: None
     p.on_pre_verify(**PAY)
     assert seen["cwd"] == str(project)
@@ -179,7 +179,7 @@ def test_review_uses_the_last_user_message_as_request(tmp_path):
         assistant_response="ok", conversation_history=[], model="m",
     )
     seen = {}
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
     p.review_now = lambda **kw: seen.update(kw) or None
     p.on_pre_verify(session_id="s", turn_id="t1", final_response="done",
                     changed_paths=["a.py"], cwd=str(tmp_path))
@@ -196,7 +196,7 @@ def test_the_gate_fits_inside_the_host_hook_timeout(tmp_path, monkeypatch):
     clock = iter([100.0, 100.0, 101.0])
     monkeypatch.setattr(plugin_mod.time, "monotonic", lambda: next(clock, 101.0))
     p = _p(tmp_path)
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
     seen = {}
     p.review_now = lambda **kw: seen.update(kw) or None
     p.on_pre_verify(**PAY)
@@ -209,7 +209,7 @@ def test_the_gate_skips_the_model_when_evidence_used_the_window(tmp_path, monkey
     clock = iter([100.0, 100.0, 121.0, 121.0, 121.0])
     monkeypatch.setattr(plugin_mod.time, "monotonic", lambda: next(clock, 121.0))
     p = _p(tmp_path)
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
 
     def never(**kw):
         raise AssertionError("no time left: the review must not start")
@@ -231,7 +231,7 @@ def _concern():
 def test_a_concern_is_queued_for_the_model_not_only_carded(tmp_path):
     """The bug: a review finding was a card the model never read."""
     p = _p(tmp_path, llm=StructuredLlm(_concern()))
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/client.py"
 
     p.on_pre_verify(
         session_id="s",
@@ -252,7 +252,7 @@ def test_a_concern_is_queued_for_the_model_not_only_carded(tmp_path):
 
 def test_the_queued_note_reaches_the_next_turn_as_context(tmp_path):
     p = _p(tmp_path, llm=StructuredLlm(_concern()))
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/client.py"
     p.on_pre_verify(
         session_id="s",
         turn_id="t1",
@@ -275,7 +275,7 @@ def test_the_gate_never_starts_a_turn_through_delivery_policy(tmp_path):
         review_authority="report",
     )
     p.inject = lambda text: injected.append(text) or True
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/client.py"
 
     p.on_pre_verify(
         session_id="s",
@@ -290,7 +290,7 @@ def test_the_gate_never_starts_a_turn_through_delivery_policy(tmp_path):
 
 def test_a_hold_posts_a_card_and_a_complete_message(tmp_path):
     p = _p(tmp_path, llm=StructuredLlm({**_concern(), "severity": "blocker"}))
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/client.py"
 
     out = p.on_pre_verify(
         session_id="s",
@@ -325,7 +325,7 @@ def test_the_same_finding_is_queued_once_per_turn(tmp_path):
 
 def test_cards_can_be_switched_off_entirely(tmp_path):
     p = _p(tmp_path, llm=StructuredLlm(_concern()), delivery_show_cards=False)
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/client.py"
 
     p.on_pre_verify(
         session_id="s",
@@ -342,7 +342,7 @@ def test_a_second_claim_is_reviewed_after_a_hold(tmp_path):
     """The claim that answers a held blocker must still be checked."""
     llm = StructuredLlm({**_concern(), "severity": "blocker"})
     p = _p(tmp_path, llm=llm)
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/client.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/client.py"
 
     first = p.on_pre_verify(**PAY)
     second = p.on_pre_verify(**PAY)
@@ -356,7 +356,7 @@ def test_hold_cap_is_rechecked_after_the_review(tmp_path):
     """A concurrent gate firing may use the last hold mid-review; the commit
     must re-check the cap instead of letting both firings hold."""
     p = _p(tmp_path, review_authority="hold_once", review_max_holds=1)
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
 
     def concurrent_review(**kw):
         with p._store_lock:
@@ -437,7 +437,9 @@ def test_collect_evidence_uses_the_configured_budget(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_collect(cwd, paths, *, base="", max_chars=0):
+    def fake_collect(
+        cwd, paths, *, base="", prior=(), actions=(), session_base="", max_chars=0
+    ):
         seen["max_chars"] = max_chars
         return "evidence"
 

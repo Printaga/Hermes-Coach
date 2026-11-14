@@ -218,7 +218,7 @@ def test_hold_does_not_clobber_review_spend(tmp_path):
         "fix": "Copy first.",
     }
     p = _p(tmp_path, llm=StructuredLlm(blocker), review_authority="hold_once")
-    p.collect_evidence = lambda cwd, paths, base="": "diff --git a/a.py"
+    p.collect_evidence = lambda cwd, paths, base="", **kw: "diff --git a/a.py"
     out = p.on_pre_verify(
         session_id="s", turn_id="t1", final_response="done",
         changed_paths=["a.py"], cwd=str(tmp_path),

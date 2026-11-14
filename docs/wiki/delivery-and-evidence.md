@@ -75,32 +75,48 @@ spoofed one) and become an instruction.
 ```mermaid
 sequenceDiagram
   participant P as pre_llm_call
+  participant L as changes ledger
   participant H as pre_verify
   participant E as evidence.collect
   participant G as git
   participant F as files
-  P->>G: rev-parse HEAD (first call of each turn)
-  H->>E: cwd, changed_paths, base
-  E->>E: reject absolute paths and ..
+  P->>G: rev-parse HEAD (first call of each turn, and of the session)
+  P->>L: count the turn, merge the persisted ledger
+  H->>L: earlier-turn paths and actions
+  H->>E: cwd, this turn's paths, prior paths, base, session_base
+  E->>E: split inside-cwd paths from reported paths outside it
   E->>G: status --porcelain -z --untracked-files=all
   E->>G: merge-base --is-ancestor base HEAD
   alt base is an ancestor
     E->>G: diff base..HEAD -- paths
   end
+  alt session base is an ancestor and earlier-turn paths exist
+    E->>G: diff session_base..base -- prior paths
+  end
   E->>G: diff HEAD -- paths
   alt git fails or not a repo
-    E->>F: read file heads
+    E->>F: read file contents
   else tracked changes
-    E->>F: heads for untracked paths
+    E->>F: contents for untracked paths
   end
-  E-->>H: stat + patch, capped at 8000 chars
+  E-->>H: stat, list and patch, capped at the configured budget
 ```
 
-The review covers the whole turn, not only what is still uncommitted. The
-plugin records `HEAD` on the first `pre_llm_call` of a turn, so an agent that
-commits before claiming completion is still reviewable. When the range is
-unusable (rebase, amended history, no recorded base) the block says
-`not an ancestor of HEAD` and falls back to the worktree.
+The review covers the whole **session**, not only the current turn and not
+only what is still uncommitted. The plugin records `HEAD` on the first
+`pre_llm_call` of a turn (and of the session), so an agent that commits before
+claiming completion is still reviewable, and commits made in earlier turns are
+diffed with `session_base..base`. When a range is unusable (rebase, amended
+history, no recorded base) the block says `not an ancestor of HEAD` and falls
+back to the worktree.
+
+`coach/changes.py` is the session ledger. The host reports only the current
+turn's changed paths, so the plugin records every `write_file`/`patch` path it
+sees (`post_tool_call`) plus the actions that leave no diff — `memory`,
+`skill_manage`, cron — each tagged with the coach's own turn counter. Paths
+are stored absolute, merged from the persisted state after a reload, and capped
+at 500 per session; the reviewer receives the earlier-turn paths labelled as
+such.
 
 - `git status -z --untracked-files=all` keeps paths verbatim and lists new
   files individually, instead of collapsing a new directory into a `dir/` entry
@@ -110,13 +126,21 @@ unusable (rebase, amended history, no recorded base) the block says
   `--no-textconv`, so repository config cannot colour the patch, invoke an
   external diff, or run a textconv driver.
 - Untracked paths are appended as `(new file)` heads so they are reviewed too.
-- Paths are project-relative and resolved under the session cwd; absolute paths
-  and any `..` component are refused, and `_heads` re-resolves each read so a
-  symlink swap cannot redirect it.
-- A `--stat` line leads the block. Over budget, the file list survives and the
-  patch is clipped with `[diff truncated]`, so neither half is traded away.
+- Paths under the session cwd are project-relative and contained; `_heads` and
+  `_outside_text` re-resolve each read so a symlink swap cannot redirect it. A
+  reported absolute path **outside** cwd is read as content, never diffed, and
+  the block says so — dropping it made a claimed skill or notes edit look
+  missing.
+- A `--stat` line leads the block. Over budget, the file list and coverage line
+  survive and the patch is clipped **by name**: the note lists the files it did
+  not show (the file straddling the cut included), never a bare
+  `[patch truncated]`.
+- Every cap either fits the configured budget or declares its overflow: the
+  file list clips itself with a counted row, the path cap names examples, the
+  contents budget reports a file's real size, and an exhausted git budget says
+  so instead of reading as "nothing changed".
 - The runner is injected, so tests exercise every branch without a real repo.
-  Each git call has a 5 s timeout and `shell=False`.
+  Each git call has a 2 s timeout inside an 8 s total budget, and `shell=False`.
 
 ## Related pages
 

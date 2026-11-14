@@ -124,7 +124,7 @@ def test_a_partially_truncated_diff_keeps_hunks_after_the_stat(tmp_path):
     assert "--- stat" in text
     assert "committed during this turn" in text
     assert "diff --git" in text
-    assert text.endswith("[patch truncated]")
+    assert "[patch truncated" in text
 
 
 @needs_git
@@ -159,7 +159,7 @@ def test_gate_receives_the_turn_base(tmp_path):
     p = make_plugin(tmp_path, review_enabled=True)
     seen = {}
 
-    def evidence(cwd, paths, base=""):
+    def evidence(cwd, paths, base="", **kw):
         seen["base"] = base
         return "diff --git a/f.py"
 
@@ -180,7 +180,7 @@ def test_gate_receives_the_turn_base(tmp_path):
 def test_gate_still_works_without_a_recorded_base(tmp_path):
     p = make_plugin(tmp_path, review_enabled=True)
     seen = {}
-    p.collect_evidence = lambda cwd, paths, base="": (
+    p.collect_evidence = lambda cwd, paths, base="", **kw: (
         seen.setdefault("base", base) or "diff --git a/f.py"
     )
     p.review_now = lambda **kw: None
@@ -251,9 +251,10 @@ def test_review_prompt_gives_missing_evidence_its_own_severity():
     assert "coverage limit" in _REVIEW_SYSTEM
     assert "never" in _REVIEW_SYSTEM
     # The scope rule that keeps a whole-worktree claim from reading as missing
-    # work: the evidence is turn-scoped and says so.
-    assert "turn-scoped" in _REVIEW_SYSTEM
+    # work: the evidence names this turn AND the session's earlier turns.
+    assert "earlier turns" in _REVIEW_SYSTEM
     assert "not missing work" in _REVIEW_SYSTEM
+    assert "Only a file the claim names" in _REVIEW_SYSTEM
 
 
 
@@ -277,8 +278,30 @@ def test_the_file_list_survives_a_clipped_patch(tmp_path):
     assert "--- files changed (2) ---" in text
     assert "small.py" in text
     assert "huge.py" in text
-    assert text.endswith("[patch truncated]")
+    assert "[patch truncated" in text
     assert "has NOT been shown to be unchanged" in text
+
+
+def test_the_list_is_budgeted_and_says_so(tmp_path):
+    """A list big enough to evict the coverage block must clip itself instead.
+
+    Before this, a 2000-char budget with 1000 files dropped the stat and the
+    list silently while the coverage still said 'N changed file(s) listed'.
+    """
+    root = _repo(tmp_path)
+    (root / "seed.txt").write_text("s\n", encoding="utf-8")
+    _commit(root, "base")
+    for index in range(300):
+        (root / f"file{index:04d}.py").write_text("x = 1\n", encoding="utf-8")
+    _run(root, "add", "-A")
+
+    text = collect(str(root), [f"file{i:04d}.py" for i in range(300)], max_chars=2000)
+
+    assert "--- coverage ---" in text
+    assert "changed file(s) listed" in text
+    assert "did not fit the list's character budget" in text
+    assert "--- header clipped" not in text.split("--- coverage ---")[0]
+    assert len(text) <= 2000
 
 
 def test_the_header_leads_with_stat_then_a_counted_file_list(tmp_path):
@@ -347,9 +370,11 @@ def test_the_turn_range_is_described_in_full_not_by_reported_paths(tmp_path):
     assert "--- files changed (3) ---" in text
     assert "tests/test_x.py" in text
     assert "docs.md" in text
-    assert "the patch shows only the paths the host reported" in text
-    # The patch itself stays scoped to what the host reported.
     assert "only.py" in text
+    # Scope transparency still has to be stated: the list is the range's, the
+    # patch is the reported paths'.
+    assert "the patch shows only those paths" in text
+    # The patch itself stays scoped to what the host reported.
     assert "+def test_x" not in text
 
 
@@ -407,11 +432,13 @@ def test_new_files_are_seen_from_a_subdirectory(tmp_path):
     assert "--- new files ---" in text
 
 
-def test_the_file_list_announces_its_cap():
+def test_the_file_list_announces_its_cap(monkeypatch):
+    from coach import evidence
     from coach.evidence import _file_list
 
+    monkeypatch.setattr(evidence, "_MAX_LISTED_FILES", 200)
     rows = "\n".join(f"A\tf{i}.py" for i in range(205))
-    out = _file_list(
+    out, omitted = _file_list(
         lambda *a, **k: None,
         __import__("pathlib").Path("."),
         ["f0.py"],
@@ -419,6 +446,7 @@ def test_the_file_list_announces_its_cap():
         range_names=rows,
     )
     assert "[+5 more files]" in out
+    assert omitted == 5
 
 
 @needs_git
@@ -465,8 +493,11 @@ def test_a_rename_counts_once_and_follows_the_turn_paths(tmp_path):
 
 
 @needs_git
-def test_the_listed_count_excludes_the_overflow_row(tmp_path):
+def test_the_listed_count_excludes_the_overflow_row(tmp_path, monkeypatch):
     """'N changed file(s) listed' counts files, not the [+] marker row."""
+    from coach import evidence
+
+    monkeypatch.setattr(evidence, "_MAX_LISTED_FILES", 200)
     root = _repo(tmp_path)
     names = [f"f{i}.py" for i in range(202)]
     for name in names:

@@ -41,29 +41,29 @@ sequenceDiagram
   participant C as Coach
   participant D as delivery
   H->>P: post_tool_call
-  P->>P: record one-line tool card
+  P->>P: record tool card + session change ledger
   H->>P: post_llm_call
-  P->>P: snapshot turn + should_review
+  P->>P: flush ledger, snapshot turn + should_review
   P->>W: submit session, turn
   P-->>H: return immediately
   W->>C: ask mode=active, 45 s
   C-->>W: finding + cost
   W->>D: route and deliver
   H->>P: pre_llm_call
-  P->>P: snapshot HEAD once per turn
+  P->>P: seed ledger, count turn, snapshot HEAD (turn + session)
   P-->>H: pending notes as context
   H->>P: pre_verify
-  P->>P: collect base..HEAD + worktree
+  P->>P: collect turn range + session range + worktree + ledger paths
   P->>C: ask mode=review, 20 s
   P-->>H: continue with a blocker, or nothing
 ```
 
 | Hook | Job | Failure posture |
 |---|---|---|
-| `post_tool_call` | Buffer a compact tool card for the current turn | Ignore |
-| `post_llm_call` | Snapshot the turn, check cadence/budget/digest, queue a review | Return immediately |
-| `pre_llm_call` | Hand over ambient notes once, drop expired ones, snapshot the turn's base commit | Return `None` |
-| `pre_verify` | Review the turn's diff, card the finding, queue it for the next turn, and optionally hold completion | Fail open |
+| `post_tool_call` | Buffer a compact tool card and record the session's changed paths and diff-less actions | Ignore |
+| `post_llm_call` | Flush the change ledger, snapshot the turn, check cadence/budget/digest, queue a review | Return immediately |
+| `pre_llm_call` | Hand over ambient notes once, drop expired ones, seed the ledger, count the turn, snapshot the turn's and the session's base commit | Return `None` |
+| `pre_verify` | Review the turn's and earlier turns' diffs, card the finding, queue it for the next turn, and optionally hold completion | Fail open |
 | `subagent_start/stop` | Track child sessions so their tools are refused | Ignore |
 | `on_session_end` | Prune old session files | Log and continue |
 

@@ -284,7 +284,7 @@ def test_review_paths_stay_fail_open(tmp_path):
         raise RuntimeError("review exploded")
 
     target.review_now = fail
-    target.collect_evidence = lambda cwd, paths, base="": "diff"
+    target.collect_evidence = lambda cwd, paths, base="", **kw: "diff"
     assert (
         target.on_pre_verify(
             session_id="s",

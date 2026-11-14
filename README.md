@@ -15,7 +15,7 @@ Built and verified against Hermes Agent 0.23.0 on Linux.
 |---|---|---|---|
 | Consult | on | the agent calls `coach_ask` | advice on demand; nothing is spent until it is called |
 | Active | off | after each turn, per cadence | a review of the turn that just finished |
-| Review | on | the agent is about to finish a turn that edited files | a bounded diff review; it may send the agent back to work once |
+| Review | on | the agent is about to finish a turn that edited files | a bounded diff review of this turn and earlier turns in the session; it may send the agent back to work once |
 | Decide | off | the agent calls `coach_decide` | a typed choice with a confidence, not prose |
 
 Every mode uses one shared model unless you give it its own.
@@ -152,16 +152,24 @@ ledger, the diff of the files the agent changed for a completion review
 (read-only `git` queries), and your guidance files. Calls go through
 Hermes' own model routing, so credentials stay in Hermes.
 
-The completion review covers the whole turn, not just what is still
-uncommitted: the plugin records `HEAD` when the turn starts, so the evidence is
-the commits the turn produced plus any worktree changes plus new files, led by
-a `git --stat` summary. Committing before saying "done" therefore no longer
-hides the work from the reviewer. When the range is unusable (rebase, amended
-history, no recorded base) the review falls back to the worktree and says so.
-The evidence block is capped by `review_evidence_max_chars` (128 000 characters
+The completion review covers the whole **session**, not just the current turn
+and not just what is still uncommitted. The host's changed-path report resets
+at every turn, so the plugin keeps its own session ledger of every path the
+agent's file tools touched plus the actions that leave no diff (`memory`,
+`skill_manage`, cron). The evidence is the commits this turn produced, commits
+made earlier in the session, worktree changes, new files, and the earlier-turn
+paths — led by a `git --stat` summary. Committing before saying "done"
+therefore no longer hides the work from the reviewer. When a range is unusable
+(rebase, amended history, no recorded base) the review falls back to the
+worktree and says so.
+The evidence block is capped by `review_evidence_max_chars` (160 000 characters
 by default; adjustable on the Completion review card or with
-`/coach set review_evidence_max_chars <n>`); past that the stat list and file
-list survive and the patch is clipped.
+`/coach set review_evidence_max_chars <n>`, up to 400 000). Past that the stat,
+the file list and the coverage line survive, and the patch is clipped **by
+name**: a bare `[patch truncated]` is gone, and the note lists every file whose
+patch did not fit. Every other cap — per-file contents, path count, files
+outside the working directory, the git time budget — either fits inside that
+budget or states, in the coverage block, that it dropped something.
 
 The per-turn (Active) review sees messages and one-line tool cards only, never
 file contents, and its prompt says so — completion evidence belongs to the
@@ -240,8 +248,10 @@ one per request is the intended setting.
   ledger. User messages are kept; tool detail is what thins out.
 - The completion gate reviews a diff, not a plan, a document, or a chat answer.
 - One coach at a time: no panel and no vote.
-- Not yet listed in the Hermes plugin catalog; until 1.0.0 is listed,
-  install from a checkout.
+- Listed in the Hermes plugin catalog as `coach`:
+  `hermes plugins install coach`. The catalog pins the released tag, so a
+  checkout is the way to run unreleased commits; `hermes plugins list` shows
+  the installed version.
 
 ## Disclosures
 
@@ -252,10 +262,13 @@ What the plugin touches, for the catalog record:
   `https://openrouter.ai` (`jev-openrouter`) and
   `https://api.typesafe.ai` (`jev-direct`) — and only when Decide is
   enabled. No other third-party traffic, no telemetry.
-- Reads: the completion review reads the turn's git diff (`base..HEAD`),
-  worktree status and new files through read-only `git` commands. The
-  plugin never writes outside `$HERMES_HOME/coach/` and the project's own
-  `COACH.md` guidance file.
+- Reads: the completion review reads this turn's git diff (`base..HEAD`),
+  commits made earlier in the same session (`session_base..base`), worktree
+  status, new files and the paths the session change ledger recorded, through
+  read-only `git` commands and direct file reads. A reported path outside the
+  working directory is read as content and never diffed. The plugin never
+  writes outside `$HERMES_HOME/coach/` and the project's own `COACH.md`
+  guidance file.
 - Processes: one bounded worker thread runs background reviews inside the
   hook budgets; the only child processes are the read-only `git` queries
   above. Nothing inherits YOLO or non-interactive mode, and anything
@@ -291,3 +304,4 @@ Layout: `coach/` (pure Python core; `commands.py` is the `/coach` surface), `das
 
 - Design: [docs/superpowers/specs/2026-11-05-hermes-coach-design.md](docs/superpowers/specs/2026-11-05-hermes-coach-design.md)
 - Plan: [docs/superpowers/plans/2026-11-05-hermes-coach.md](docs/superpowers/plans/2026-11-05-hermes-coach.md)
+- Architecture wiki: [docs/wiki/overview.md](docs/wiki/overview.md)

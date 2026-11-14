@@ -258,10 +258,10 @@ def test_settings_maxima_clamp():
 
 
 def test_review_evidence_budget_defaults_and_clamps():
-    assert load_settings({}).review_evidence_max_chars == 128000
+    assert load_settings({}).review_evidence_max_chars == 160000
     assert (
         load_settings({"review_evidence_max_chars": "nope"}).review_evidence_max_chars
-        == 128000
+        == 160000
     )
     assert (
         load_settings({"review_evidence_max_chars": 10}).review_evidence_max_chars
@@ -269,7 +269,7 @@ def test_review_evidence_budget_defaults_and_clamps():
     )
     assert (
         load_settings({"review_evidence_max_chars": 10**9}).review_evidence_max_chars
-        == 160000
+        == 400000
     )
 
 

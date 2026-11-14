@@ -48,7 +48,12 @@ flowchart TD
 ```
 
 `SessionState` carries the ledger, the coach's own session note, pending advice,
-per-turn call counters, holds used, spend, the last error, and `updated_at`.
+per-turn call counters, holds used, spend, the last error, and `updated_at`. It
+also carries the session change ledger the review gate depends on: `changes`
+(path → turn), `actions` (diff-less calls, turn-labelled), `session_base` (the
+commit `HEAD` pointed at when the session's first turn started), `turn_seq` and
+`turn_id`. The ledger is flushed once per model call, not per tool call, and is
+seeded from the file after a reload; a failed tool call is never recorded.
 
 `Store` is deliberately defensive:
 

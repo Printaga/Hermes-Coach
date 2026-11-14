@@ -40,7 +40,11 @@ flowchart LR
 | Gate | Command | What it proves |
 |---|---|---|
 | Style and likely defects | `uvx ruff check .` (inside `test.sh`) | Import order, pyflakes errors, bugbear catches, pyupgrade modernisation |
-| Python suite | `./scripts/test.sh` | Full pytest suite across settings, state, ledger, findings, advisor, jev, delivery, evidence, turn scoping, plugin hooks, command, dashboard API |
+| Python suite | `./scripts/test.sh` | Full pytest suite across settings, state, ledger, findings, advisor, jev, delivery, evidence, session change ledger, plugin hooks, command, dashboard API |
+
+`tests/test_manifest.py` also asserts that `plugin.yaml` and
+`dashboard/manifest.json` carry the same version, because the host reads one
+and the desktop page the other.
 | Desktop page | `node scripts/check-desktop-page.mjs` | The page exports `{id, register}`, avoids context APIs the host does not provide, builds elements with `createElement`, covers every setting, registers all tabs, and renders each one against a route-aware stub |
 | Host contract | `hermes plugins doctor .` | Manifest, import, registration: `2 tool(s), 7 hook(s)` |
 | Live dispatch | `hermes -z '…'` | The real dispatcher accepts the tool's return shape |
