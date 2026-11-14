@@ -43,8 +43,10 @@ whole change set:
 --- new files ---                    # bounded heads, [file truncated] markers
 ```
 
-The header survives truncation; only the patch is clipped, and the coverage
-line says so. Every git call runs with `-c core.fsmonitor=false` so a
+Header sections are kept whole where they fit and dropped from the front when
+they do not, and the block says `[header clipped: a section did not fit the
+budget]`; the coverage line states any truncation. Only the patch is clipped
+from the tail. Every git call runs with `-c core.fsmonitor=false` so a
 repository's own config cannot execute code inside the gate.
 
 The completion gate hands its finding to `deliver()` too, with
@@ -103,20 +105,25 @@ sequenceDiagram
 ```
 
 The review covers the whole **session**, not only the current turn and not
-only what is still uncommitted. The plugin records `HEAD` on the first
+only what is still uncommitted. Its patch budget is
+`review_evidence_max_chars` (default 160 000 characters, ceiling 400 000), and
+the evidence caps scale from that budget rather than sitting at fixed
+constants. The plugin records `HEAD` on the first
 `pre_llm_call` of a turn (and of the session), so an agent that commits before
 claiming completion is still reviewable, and commits made in earlier turns are
-diffed with `session_base..base`. When a range is unusable (rebase, amended
-history, no recorded base) the block says `not an ancestor of HEAD` and falls
-back to the worktree.
+diffed with `session_base..base` (`session_base..HEAD` when this turn's base is
+unusable). When a range is unusable (rebase, amended history, no recorded base)
+the block says `not an ancestor of HEAD` and falls back to the worktree.
 
 `coach/changes.py` is the session ledger. The host reports only the current
 turn's changed paths, so the plugin records every `write_file`/`patch` path it
 sees (`post_tool_call`) plus the actions that leave no diff — `memory`,
-`skill_manage`, cron — each tagged with the coach's own turn counter. Paths
-are stored absolute, merged from the persisted state after a reload, and capped
-at 500 per session; the reviewer receives the earlier-turn paths labelled as
-such.
+`skill_manage`, `cronjob_manage`, `manage_connections`, and the `kanban_*`
+tools — each tagged with the coach's own turn counter. A call the host reports
+as failed, or whose result says `success: false`, records no path. Paths are
+stored absolute, merged from the persisted state after a reload, and capped at
+500 per session (24 actions); the reviewer receives at most 200 earlier-turn
+paths, labelled as such.
 
 - `git status -z --untracked-files=all` keeps paths verbatim and lists new
   files individually, instead of collapsing a new directory into a `dir/` entry
@@ -133,12 +140,13 @@ such.
   missing.
 - A `--stat` line leads the block. Over budget, the file list and coverage line
   survive and the patch is clipped **by name**: the note lists the files it did
-  not show (the file straddling the cut included), never a bare
-  `[patch truncated]`.
+  not show (the file straddling the cut included), falling back to a bare
+  `[patch truncated]` only when no name can be recovered.
 - Every cap either fits the configured budget or declares its overflow: the
-  file list clips itself with a counted row, the path cap names examples, the
-  contents budget reports a file's real size, and an exhausted git budget says
-  so instead of reading as "nothing changed".
+  file list clips itself with a counted row (1 000 files, 200 earlier-session
+  rows), the 1 000-path cap names examples, at most 100 outside-cwd files are
+  read, the contents budget reports a file's real size, and an exhausted git
+  budget says so instead of reading as "nothing changed".
 - The runner is injected, so tests exercise every branch without a real repo.
   Each git call has a 2 s timeout inside an 8 s total budget, and `shell=False`.
 

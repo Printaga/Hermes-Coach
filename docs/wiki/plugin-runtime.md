@@ -2,13 +2,14 @@
 
 `coach/plugin.py` is the orchestrator: it owns the tools, every hook, the
 worker, and the decision of when to spend. The `/coach` surface lives in
-`coach/commands.py`. `coach/worker.py`
-is the single background thread that keeps reviews off the turn path, and the
-root `__init__.py` is the thin registration seam the host calls.
+`coach/commands.py`, and `coach/worker.py` is the single background thread that
+keeps reviews off the turn path; the root `__init__.py` is the thin
+registration seam the host calls.
 
 `coach/commands.py` holds the `/coach` command surface as a mixin: status,
-log, pending, send, model and set, plus their formatters. It imports the core
-modules only, never `plugin`, so the dependency runs one way.
+last, log, active/review/decide, model/set, guidance, pending, send, pause,
+grant/revoke and forget, plus their formatters. It imports the core modules
+only, never `plugin`, so the dependency runs one way.
 
 ## Registration
 
@@ -60,7 +61,7 @@ sequenceDiagram
 
 | Hook | Job | Failure posture |
 |---|---|---|
-| `post_tool_call` | Buffer a compact tool card and record the session's changed paths and diff-less actions | Ignore |
+| `post_tool_call` | Buffer a compact tool card and record the session's changed paths and diff-less actions; a failed call records nothing | Ignore |
 | `post_llm_call` | Flush the change ledger, snapshot the turn, check cadence/budget/digest, queue a review | Return immediately |
 | `pre_llm_call` | Hand over ambient notes once, drop expired ones, seed the ledger, count the turn, snapshot the turn's and the session's base commit | Return `None` |
 | `pre_verify` | Review the turn's and earlier turns' diffs, card the finding, queue it for the next turn, and optionally hold completion | Fail open |
@@ -96,10 +97,11 @@ sequenceDiagram
 
 ## Command surface
 
-`/coach` parses `status`, `active|review|decide on|off`, `model [mode]`,
-`set key value`, `guidance`, `pending`, `send`, `pause`, and `grant`. Unknown
-input prints help; a handler exception becomes a one-line error, never a broken
-session.
+`/coach` parses `status`, `last`, `log [n] [full]`,
+`active on|off|pre|post|both`, `review on|off`, `decide on|off`,
+`model [mode] [provider/model]`, `set key value`, `guidance`, `pending`, `send`,
+`pause`, `grant`, `revoke`, and `forget`. Unknown input prints help; a handler
+exception becomes a one-line error, never a broken session.
 
 ## Related pages
 

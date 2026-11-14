@@ -19,7 +19,7 @@ flowchart LR
   F --> I[is_configured]
 ```
 
-- **33 flat snake_case keys.** Dots are reserved: the host reads a dotted key as
+- **40 flat snake_case keys.** Dots are reserved: the host reads a dotted key as
   a path, so `active.enabled` would nest instead of naming one setting.
 - **Defaults live only here.** A checker script asserts the Desktop page has a
   control for every key, which is the drift guard that replaced the removed
@@ -29,6 +29,7 @@ flowchart LR
   `_as_model` requires string `provider` and `model`.
 - **Minimums are applied after validation.** `ledger_max_tokens` ≥ 500,
   `max_reply_tokens` ≥ 80, call caps ≥ 1, `worker_timeout_s` ≥ 5, budgets ≥ 0.
+  `review_evidence_max_chars` is clamped to 2 000–400 000, default 160 000.
 - **`model_for(mode)`** returns the mode override or the shared model; every
   mode resolves through it, so "inherit" needs no special case.
 - **`same_as_primary`** compares model *and* provider, case-insensitively. It is

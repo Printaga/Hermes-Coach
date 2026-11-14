@@ -50,7 +50,7 @@ separate surface over the same config and state.
 | Module | What it owns | Page |
 |---|---|---|
 | Plugin runtime | Registration, hooks, tools, command, worker, budgets | [plugin-runtime.md](plugin-runtime.md) |
-| Configuration and state | The 33 settings keys and the per-session store | [configuration-and-state.md](configuration-and-state.md) |
+| Configuration and state | The 40 settings keys and the per-session store | [configuration-and-state.md](configuration-and-state.md) |
 | Prompt assembly | Ledger ceiling, finding schema, guidance files | [prompt-assembly.md](prompt-assembly.md) |
 | Model access | The coach client and the three decision backends | [model-access.md](model-access.md) |
 | Delivery and evidence | Where advice goes, what the gate may read, and the session change ledger that spans turns | [delivery-and-evidence.md](delivery-and-evidence.md) |

@@ -45,7 +45,9 @@ flowchart TD
   mid-save reports "saved, the editor moved on" instead of writing one file and
   reporting on another.
 - Number and text fields sync their draft to the clamped or trimmed value, so
-  the control shows what was kept before the round-trip lands.
+  the control shows what was kept before the round-trip lands. The completion
+  review's diff budget is a character count: default 160 000, field maximum
+  400 000, matching the settings ceiling.
 - The main-model warning splits `provider/model` on the **last** slash; model
   ids contain slashes, and splitting on the first silently defeats the
   same-model warning.
